@@ -133,6 +133,12 @@ TERNARY_ITEMS = [
     ("NO", "Force No", "Force disabled"),
 ]
 
+NORMAL_MODE_ITEMS = (
+    ("CORRECT", "Correct Inverted", "Detect and flip mostly-inverted normals (default)"),
+    ("NONE", "Leave Unchanged", "Do not modify normals"),
+    ("FLIP", "Flip All", "Indiscriminately flip all normals"),
+)
+
 ANIMATION_PRESET_ITEMS = (
     (
         "DEPLOY_PAIR",
