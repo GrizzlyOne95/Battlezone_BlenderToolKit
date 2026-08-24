@@ -246,10 +246,12 @@ if (param_2->Class == 0xf) {
   `Spinner(transform, axisRadPerSec, TimeStepLocal())` **only while flags bit 0x200
   (destroyed) is clear** — `CommTower::StartSpinners/StopSpinners` toggle exactly that
   bit (:152693/:152713), so spinners halt when their building dies.
-- Caveat (UNKNOWN): VDF records are only 100 bytes — there are no Target/ddr bytes in
-  them, yet `NewObj` reads them unconditionally for class 15. How VDF spinners get sane
-  rates (or whether they read into the neighbouring record) should be settled
-  empirically before relying on VDF spinner tuning.
+- Caveat resolved: VDF records are only 100 bytes, so for a VDF spinner the engine reads
+  `ddr` from the **next record's bytes 0–3** (`GeometryFile` low half) and the Target
+  vector from that record's **bytes 4–15** (`GeometryFile` high half + `Parent`) reinterpreted
+  as three floats. This is precisely why the toolkit's spinner-helper convention places a
+  dummy/helper GEO *after* the target — the helper's name/parent bytes encode axis and
+  speed. Byte-exact mapping now confirmed from `NewObj` + record stride.
 
 ### 5.3 Disk bounding spheres stay authoritative for SCROUNGE(11) and PARKING_LOT(81)
 
@@ -281,6 +283,51 @@ are placeholders overwritten at load.
 - **Friendly craft collisions are harmless**: same-team craft-vs-craft impacts zero out
   their damage via the team nibble (:340862–868).
 
+### 5.6 VLOC — a live part-injection chunk the stock game never uses
+
+The VDF loader walks a 14-entry chunk table (`ReadBWD2File(…, VDFChunkDefs, 0xe, …)`,
+:342663). Stock files exercise only VDFC/VGEO/EXIT (+COLP/SPCS/ANIM where present);
+several remaining entries are recognized-but-ignored stubs (see §5.7). One is not:
+
+**`Process_VLOC_Chunk`** (00526CBE, context tag `"vhclload"`) dispatches on the chunk's
+first dword and *creates new parts on the vehicle at load time*:
+
+| Value | Behavior |
+|---|---|
+| `38` | Night-only headlight injection: if `Is_Day_Time()`, writes 0 to craft-state +0x104; otherwise builds a synthetic part named `"hdlt_msk"` (parent = vehicle root, matrix from the 48 payload bytes), attaches it via `AddReps`, registers it in craft state +0x104, and loads a **fixed** rep file `"hdlv_msk.geo"` at band (0,4). |
+| `40` | Creates a part via `create_obj_ext` with **class taken from the payload's first dword** and transform from the payload bytes, then stores it into craft state +0xF4 — the same slot `HoverCraft` uses for the eyepoint (:294202). A custom-POV injector. |
+| `42` | Copies two id/size pairs from the payload into craft state +0xE8/+0xF0. |
+| any other | Same generic path as 40 — an arbitrary new child part of arbitrary class with an authored matrix, injected into the hierarchy at load. |
+
+Stock corpus check: **zero VLOC chunks across all 99 stock VDFs**, and the toolkit has no
+VLOC support. This is a complete, engine-wired modding surface (inject lights, masks,
+POVs or extra parts via hex edits) that nothing documents. Caveats: the handler
+dereferences the root object's `class_ptr` (so the craft must already have funk handlers),
+and payload layout beyond dword 0 / 12 dwords for value 38 follows the ObjectType record
+shape.
+
+### 5.7 Recognized-but-stub chunks
+
+`Process_VTFC/VCST/VCFC/WEPN/SPEC/VCHK/WGEO/GGEO/OGEO/WDFC/GDFC/SCHK` are literal
+`return 1;` stubs — the loader traverses such chunks and discards their payloads.
+Conversely **COLP is not a stub**: its 12 dwords are copied into the collision context
+(+0xC) with an enable flag at +8 (:342760), matching the toolkit's collision-helper
+model. `SPCS` has no dedicated processor in this build (payload ignored); the toolkit
+already round-trips it under both spellings. SDF extras: `SOBJ` loads one inline .geo by
+chunk id straight into the structure context (`Geom_Load`, context+100).
+
+### 5.8 Exact name-magic rules
+
+- **Hardpoints**: `FindHardpoint` matches **id chars 5–7** of the 8-char name,
+  case-insensitive, recursively over the tree (:181894/:215829). The gc/gr/gm/gs
+  convention is just the common case — any name ending in the searched triple works.
+- **Turret rotators**: id char 7: `X`/`x` → yaw-slot array, `Y`/`y` → pitch slot, anything
+  else traces `Unusual turret id "%.8s" … assuming Y` (:228891).
+- **Parents**: records whose parent is `world` or `null` are rooted specially
+  (:341631–635); a `null` parent plus all-zero rotation rows gets the identity matrix
+  substituted (:341495–502).
+- **Spinner byte aliasing**: see §5.2 — exact byte map of the dummy-helper trick.
+
 ## 6. Recommended toolkit updates (documentation-level; not implemented)
 
 1. Relabel `33 LGT` and `34 RADAR` as *"not an engine class — renders as normal geometry"*
@@ -303,6 +350,11 @@ are placeholders overwritten at load.
    caveat as untested.
 10. Optional validation info: steep faces (>≈66° from horizontal) never become hover floor;
     scrounge/parking-lot parts keep their authored bounding spheres.
+11. Potential future feature: a VLOC chunk writer (§5.6) — engine-verified injection of
+    headlight masks, custom eyepoints or extra parts with no stock-file precedent. Needs
+    in-game testing before exposure; at minimum document its existence for hex editors.
+12. Validation could relax hardpoint-name checks: the engine only compares chars 5–7,
+    case-insensitively (§5.8).
 
 ## 7. Source index
 
@@ -328,3 +380,9 @@ are placeholders overwritten at load.
 - `AddTerrainSpecial` (00521833, :337607) — bounds recompute skip for classes 11/81
 - HELICOPTER/VEHICLE consumers: `IsCraft` (:11216), radar (:292411), dynamic_object
   (:292398), same-team damage cancel (:340862), explosion-class selection (:349024)
+- `Process_VLOC_Chunk` (00526CBE, :343000 region) — part injection; stub processors
+  VTFC/VCST/VCFC/WEPN/SPEC/VCHK/WGEO/GGEO/OGEO; COLP copy (:342760); SOBJ Geom_Load
+- VDF/SDF table sizes: `ReadBWD2File(…, VDFChunkDefs, 0xe …)` :342663,
+  `(…, SDFChunkDefs, 7 …)` :341322
+- Stock chunk census: 99 VDFs → {VDFC,VGEO,EXIT}×99, {COLP,SPCS}×77, no VLOC/XGEO/WGEO;
+  scanner script in temp workspace (`chunk_tags.py`)
