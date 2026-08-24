@@ -213,7 +213,7 @@ def export(
     imported_plan = ""
     if plan_store is not None:
         try:
-            imported_plan = plan_store.get() or ""
+            imported_plan = str(plan_store or "")
         except Exception:
             imported_plan = ""
     if imported_plan:
@@ -649,7 +649,7 @@ def export(
     # Preserve unknown chunks captured at import.
     # ------------------------------------------------------------------
     preserved_store = getattr(scene, "bz_preserved_chunks", None)
-    for entry in getattr(preserved_store, "elements", []) or []:
+    for entry in list(preserved_store) if preserved_store is not None else []:
         try:
             payload = base64.b64decode(entry.payload_b64)
         except Exception:
@@ -660,7 +660,7 @@ def export(
     # VLOC injection entries authored/preserved in the scene.
     # ------------------------------------------------------------------
     vloc_store = getattr(scene, "bz_vloc_chunks", None)
-    for entry in getattr(vloc_store, "elements", []) or []:
+    for entry in list(vloc_store) if vloc_store is not None else []:
         chunk = semantics.VLOCChunk()
         kind = str(getattr(entry, "kind", "GENERIC"))
         if kind == "HEADLIGHT":
@@ -703,6 +703,8 @@ def export(
     for idx, wrapper in enumerate(objects[0]):
         if _is_null_blender_object(wrapper):
             continue
+        # Base records feed variant synthesis (name-only rewrites).
+        damage_table.base_records[idx] = vdf_classes.serialize_section(wrapper.geo)
         geo_props = getattr(wrapper.object, "GEOPropertyGroup", None)
         if geo_props is None:
             continue
@@ -712,7 +714,7 @@ def export(
                 damage_table.set_variant_name(idx, state, variant_name[:8])
 
     damage_store = getattr(scene, "bz_damage_band_records", None)
-    for entry in getattr(damage_store, "elements", []) or []:
+    for entry in list(damage_store) if damage_store is not None else []:
         try:
             payload = base64.b64decode(entry.payload_b64)[:100]
         except Exception:

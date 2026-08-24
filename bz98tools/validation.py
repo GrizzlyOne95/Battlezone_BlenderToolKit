@@ -440,7 +440,11 @@ def _collect_scene_export_issues(context, validation_preset="AUTO"):
     )
     issues.extend(_collect_animation_guide_issues(scene, named_candidates))
     issues.extend(_collect_turret_cockpit_issues(named_candidates))
-    issues.extend(_collect_advanced_semantics_issues(scene, named_candidates, export_mode))
+    # Advanced checks emit issues tagged with the export modes they apply to;
+    # issue_applies() scopes them per export context.
+    issues.extend(
+        _collect_advanced_semantics_issues(scene, named_candidates, "ALL")
+    )
     return issues
 
 
@@ -825,7 +829,7 @@ def _collect_damage_rep_issues(scene, named_candidates, export_mode):
                     )
                 )
                 continue
-            if export_mode == "SDF":
+            if export_mode in ("SDF", "ALL"):
                 issues.append(
                     _make_issue(
                         "ERROR",
@@ -865,7 +869,7 @@ def _collect_damage_rep_issues(scene, named_candidates, export_mode):
             )
 
     preserved_store = getattr(scene, "bz_damage_band_records", None)
-    if preserved_store is not None and len(preserved_store) > 0 and export_mode == "SDF":
+    if preserved_store is not None and len(preserved_store) > 0 and export_mode in ("SDF", "ALL"):
         issues.append(
             _make_issue(
                 "INFO",

@@ -212,8 +212,8 @@ def load(
         )
 
     if plan_store is not None:
-        plan_store.set(
-            ",".join(kind for kind, _index in parsed.plan),
+        scene.bz_vdf_section_plan = ",".join(
+            kind for kind, _index in parsed.plan
         )
 
     if parsed.trailing_garbage.strip(b"\0"):
