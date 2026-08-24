@@ -430,6 +430,27 @@ damage variants into bands 1–6 is harmless today and becomes a live feature th
 anything calls `ObjTree_SelectRep(root, state)` — e.g. a small BZR-OpenShim hook mapping
 healthRatio thresholds to damage states, or a future Rebellion patch.
 
+**How the swap works mechanically:**
+
+- VGEO is 28 complete copies of the object table, walked as 7×4 blocks. Only the
+  (damage 0, LOD 0) block creates objects (`if ((inner | outer) == 0)` guards `NewObj`);
+  it alone defines names, hierarchy, transforms, classes and flags.
+- Every other block donates only filenames: for part *j* in block *(d,l)*,
+  `GeoCache_AddRep(part_j, "<record name>.geo", l, d)` registers that mesh in the cache
+  under key `(d << 16) | l`. Each block may name entirely different `.geo` files or
+  reuse the same ones per part.
+- At runtime each part holds `repNum`; rendering flips the LOD half constantly
+  (`GeoCache_SelectLOD`, index derived from camera distance vs the VDFC LOD
+  thresholds). The damage half never moves. A swap is therefore per-part, instant, and
+  reload-free — collision stays live and is rebuilt from whichever geometry is resident,
+  so damaged variants with fewer faces also change the hull while active.
+- Fallback: a missing LOD variant retries LOD 0 of the current damage state; failing
+  that, the part goes invisible (`geom = NULL` + texture purge). Sparse tables degrade
+  gracefully; breaking LOD 0 makes parts vanish.
+- Whole-file swapping does not exist anywhere — destroyed-state transitions in stock
+  content (recycler → wreck, building → rubble) are ODF/mission-level entity
+  replacements, unrelated to this axis.
+
 ### 5.12 Emitter collection can overflow — validation hazard
 
 `Craft::FindSmokeSource` (:154463) appends **every** class-76 part found anywhere in the
