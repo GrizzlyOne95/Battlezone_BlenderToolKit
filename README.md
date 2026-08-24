@@ -31,6 +31,7 @@ It combines legacy model editing, Redux mesh export, terrain tools, validation, 
 - Paint stock and custom world terrain atlases.
 - Convert `.map` textures to `.png` on import and prepare `.dds` output on export.
 - Validate legacy model naming, hierarchy, hardpoints, LODs, pivots, collision helpers, and animation setup.
+- Author advanced engine semantics directly: part classes, ObjectFlags bit fields, VLOC part injection, damage-representation bands, authored bounds, eyepoints, and bridge/floor decks - with unknown data preserved on round trips.
 - Generate cockpit GEOs from selected LOD1 faces.
 - Create organic Redux skins from legacy GEO control pivots.
 - Use advanced VDF helpers for spinners and raw transform experiments.
@@ -55,6 +56,7 @@ Use the wiki for workflows and modeling reference:
 Versioned technical notes stay in the repository:
 
 - [Release notes](docs/)
+- [Advanced GEO/VDF semantic authoring](docs/ADVANCED_AUTHORING.md)
 - [Experimental binary fields](docs/EXPERIMENTAL_BINARY_FIELDS.md)
 - [Organic Redux Skin source walkthrough copy](docs/ORGANIC_REDUX_SKIN_WALKTHROUGH.md)
 

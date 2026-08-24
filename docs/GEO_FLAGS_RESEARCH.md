@@ -9,6 +9,12 @@ Redux decompile, Nielk1's `bz1-geo-editor`, toolkit sources.
 
 **Investigated 2026-08-24. All line numbers verified against the trees cited.**
 
+> **Correction gate:** read alongside `GEO_FLAGS_RESEARCH_REVIEW.md`, which fixes
+> the 100-byte record layout below (name @0x00, matrix @0x08, parent @0x38), the
+> 13-byte GEO texture-name field, and the ANIM tail interpretation. The
+> implemented toolkit follows the corrected layouts and preserves all tail
+> bytes verbatim (`docs/ADVANCED_AUTHORING.md`).
+
 ---
 
 ## 0. Executive summary

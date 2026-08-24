@@ -2,6 +2,13 @@
 
 This note documents raw values currently exposed in the toolkit for advanced import/export workflows.
 
+**Status update:** see `GEO_FLAGS_RESEARCH_REVIEW.md` for corrections to the
+record layouts below, and `ADVANCED_AUTHORING.md` for the implemented
+authoring/preservation layer. In particular: the ANIM element tail is preserved
+verbatim regardless of interpretation; the VDF/SDF record order is name,
+matrix, parent (`=8s12f8s7fii`); and the toolkit never rewrites unknown bits or
+chunks it does not model.
+
 Sources used:
 - Commando950 addon docs
 - Nielk1 `bz1-geo-editor` (`BZ1GeoEditor/Geo.cs`)
