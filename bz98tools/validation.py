@@ -1,4 +1,5 @@
 from typing import Any
+import base64
 import os
 
 INNER_COLLISION_NAMES = {
@@ -284,6 +285,7 @@ def _collect_scene_export_issues(context, validation_preset="AUTO"):
         spinner_like = is_spinner_helper or (
             int(getattr(geo_props, "GEOType", 0)) == 15
         )
+        pov_like = _is_pov_helper_candidate(obj)
 
         if not name_info["valid"]:
             if _looks_like_export_candidate(obj, spinner_like):
@@ -338,6 +340,8 @@ def _collect_scene_export_issues(context, validation_preset="AUTO"):
                         action="select_object",
                     )
                 )
+            elif pov_like:
+                pass  # class-40 empties are legitimate invisible eyepoint records
             else:
                 issues.append(
                     _make_issue(
@@ -436,6 +440,519 @@ def _collect_scene_export_issues(context, validation_preset="AUTO"):
     )
     issues.extend(_collect_animation_guide_issues(scene, named_candidates))
     issues.extend(_collect_turret_cockpit_issues(named_candidates))
+    issues.extend(_collect_advanced_semantics_issues(scene, named_candidates, export_mode))
+    return issues
+
+
+# ---------------------------------------------------------------------------
+# Advanced semantic validation (part types / ObjectFlags / bounds / POV /
+# decks / emitters / damage reps / VLOC)
+# ---------------------------------------------------------------------------
+
+
+def _candidate_geotype(entry):
+    geo_props = getattr(entry["object"], "GEOPropertyGroup", None)
+    return int(getattr(geo_props, "GEOType", 0))
+
+
+def _is_pov_helper_candidate(obj):
+    if getattr(obj, "type", None) == "MESH":
+        return False
+    geo_props = getattr(obj, "GEOPropertyGroup", None)
+    return (
+        bool(getattr(geo_props, "IsPOVHelper", False))
+        or int(getattr(geo_props, "GEOType", 0)) == 40
+    )
+
+
+def _collect_object_flag_issues(entry):
+    obj = entry["object"]
+    from . import semantics as bz_semantics
+
+    geo_props = getattr(obj, "GEOPropertyGroup", None)
+    if geo_props is None:
+        return []
+    raw_flags = int(getattr(geo_props, "GEOFlags", 0)) & 0xFFFFFFFF
+    issues = []
+
+    unknown_bits = bz_semantics.unknown_flag_bits(raw_flags)
+    if unknown_bits:
+        issues.append(
+            _make_issue(
+                "WARNING",
+                "Object Flags",
+                obj.name,
+                f"Unknown ObjectFlags bits {bz_semantics.format_hex(unknown_bits)} are present. They are preserved through edits and round trips, but their engine meaning is undocumented.",
+                {"VDF", "SDF"},
+                object_name=obj.name,
+            )
+        )
+
+    decoded = bz_semantics.decode_object_flags(raw_flags)
+    if decoded["destroyed"]:
+        issues.append(
+            _make_issue(
+                "WARNING",
+                "Object Flags",
+                obj.name,
+                "ObjectFlags bit 0x200 seeds the destroyed state: IsAlive() is false from spawn, targeting skips it and path blocking stops. Intentional for non-blocking decks; otherwise clear it.",
+                {"VDF", "SDF"},
+                object_name=obj.name,
+            )
+        )
+
+    if decoded["keep_bounds"]:
+        issues.append(
+            _make_issue(
+                "INFO",
+                "Object Flags",
+                obj.name,
+                "Bit 0x1 keeps the authored bounds authoritative at load (and forces the collision nibble to non-collidable). Stock assets ship with this clear.",
+                {"VDF", "SDF"},
+                object_name=obj.name,
+            )
+        )
+
+    collision_class = decoded["collision_class"]
+    part_type = _candidate_geotype(entry)
+    if part_type == 55 and collision_class not in (0x1000,):
+        issues.append(
+            _make_issue(
+                "INFO",
+                "Object Flags",
+                obj.name,
+                "NONCOLLIDABLE class (55) forces the collision nibble to 0x1000 at load regardless of the stored value.",
+                {"VDF", "SDF"},
+                object_name=obj.name,
+            )
+        )
+    return issues
+
+
+def _compute_mesh_bounds(obj):
+    minx = miny = minz = maxx = maxy = maxz = None
+    maxoverall = 0.0
+    for vert in obj.data.vertices:
+        x, y, z = vert.co.x, vert.co.y, vert.co.z
+        minx = x if minx is None or x < minx else minx
+        maxx = x if maxx is None or x > maxx else maxx
+        miny = y if miny is None or y < miny else miny
+        maxy = y if maxy is None or y > maxy else maxy
+        minz = z if minz is None or z < minz else minz
+        maxz = z if maxz is None or z > maxz else maxz
+        for value in (x, y, z):
+            if abs(value) > maxoverall:
+                maxoverall = abs(value)
+    cx = (minx + maxx) / 2 if minx is not None else 0.0
+    cy = (miny + maxy) / 2 if miny is not None else 0.0
+    cz = (minz + maxz) / 2 if minz is not None else 0.0
+    return (cx, cy, cz, maxoverall)
+
+
+def _collect_bounds_issues(entry):
+    obj = entry["object"]
+    from . import semantics as bz_semantics
+
+    geo_props = getattr(obj, "GEOPropertyGroup", None)
+    if geo_props is None or obj.type != "MESH" or obj.data is None:
+        return []
+    issues = []
+    center = (
+        float(geo_props.GeoCenterX),
+        float(geo_props.GeoCenterY),
+        float(geo_props.GeoCenterZ),
+    )
+    radius = float(geo_props.SphereRadius)
+    half = (
+        float(geo_props.BoxHalfHeightX),
+        float(geo_props.BoxHalfHeightY),
+        float(geo_props.BoxHalfHeightZ),
+    )
+
+    for severity, message in bz_semantics.evaluate_authored_bounds(center, radius, half):
+        issues.append(
+            _make_issue(
+                severity,
+                "Bounds",
+                obj.name,
+                message,
+                {"VDF", "SDF"},
+                object_name=obj.name,
+            )
+        )
+
+    flags_raw = int(getattr(geo_props, "GEOFlags", 0)) & 0xFFFFFFFF
+    part_type = _candidate_geotype(entry)
+    has_authored = bool(getattr(geo_props, "HasAuthoredBounds", False))
+    if has_authored and not bz_semantics.bounds_are_authoritative(flags_raw, part_type):
+        issues.append(
+            _make_issue(
+                "INFO",
+                "Bounds",
+                obj.name,
+                "The file carries explicit bounds but ObjectFlags bit 0x1 is clear (class is not 11/81 either): the engine recomputes them from LOD0 vertices, so these values only matter for round-trip fidelity.",
+                {"VDF", "SDF"},
+                object_name=obj.name,
+            )
+        )
+
+    derived = _compute_mesh_bounds(obj)
+    for severity, message in bz_semantics.compare_bounds_to_geometry(
+        center, radius, derived[:3], derived[3]
+    ):
+        issues.append(
+            _make_issue(
+                severity,
+                "Bounds",
+                obj.name,
+                message,
+                {"VDF", "SDF"},
+                object_name=obj.name,
+            )
+        )
+    return issues
+
+
+def _collect_eyepoint_issues(named_candidates):
+    issues = []
+    pov_entries = [e for e in named_candidates if _candidate_geotype(e) == 40]
+    if len(pov_entries) > 1:
+        names = ", ".join(sorted(e["object"].name for e in pov_entries))
+        issues.append(
+            _make_issue(
+                "WARNING",
+                "Eyepoint",
+                names,
+                f"{len(pov_entries)} class-40 eyepoint parts found. Craft code resolves a single POV node; extras are inert records.",
+                {"VDF"},
+                object_name=pov_entries[0]["object"].name,
+            )
+        )
+    for entry in pov_entries:
+        obj = entry["object"]
+        scale = tuple(float(v) for v in getattr(obj, "scale", (1.0, 1.0, 1.0)))
+        if any(abs(v - 1.0) > 0.001 for v in scale):
+            issues.append(
+                _make_issue(
+                    "WARNING",
+                    "Eyepoint",
+                    obj.name,
+                    f"Eyepoint object scale is ({scale[0]:.2f}, {scale[1]:.2f}, {scale[2]:.2f}). HoverCraft::UpdateEyepoint multiplies the POV basis rows by 25, so baked scale changes first-person framing and head-bob; apply/clear scale deliberately.",
+                    {"VDF"},
+                    object_name=obj.name,
+                )
+            )
+        if entry["lod"] != 1:
+            issues.append(
+                _make_issue(
+                    "WARNING",
+                    "Eyepoint",
+                    obj.name,
+                    "Eyepoint parts normally live in the LOD1 set; a POV inside a cockpit/LOD3 slot may never be found by craft code.",
+                    {"VDF"},
+                    object_name=obj.name,
+                )
+            )
+    return issues
+
+
+def _collect_deck_face_components(obj):
+    """Blender-space face normal Z components (engine up axis after remap)."""
+    components = []
+    mesh = obj.data
+    transform = getattr(obj, "matrix_world", None)
+    import mathutils
+
+    identity = mathutils.Matrix.Identity(3)
+    basis = identity
+    if transform is not None:
+        rotation = transform.to_3x3()
+        basis = rotation
+    for poly in mesh.polygons:
+        normal = poly.normal @ basis
+        components.append(normal.normalized().z)
+    return components
+
+
+def _collect_bridge_floor_issues(named_candidates):
+    from . import semantics as bz_semantics
+
+    issues = []
+    root_bridges = []
+    floor_parts = []
+    for entry in named_candidates:
+        part_type = _candidate_geotype(entry)
+        obj = entry["object"]
+        geo_props = getattr(obj, "GEOPropertyGroup", None)
+        flags_raw = int(getattr(geo_props, "GEOFlags", 0)) & 0xFFFFFFFF
+        if part_type == bz_semantics.BRIDGE_CLASS and obj.parent is None:
+            root_bridges.append(entry)
+        if part_type == bz_semantics.FLOOR_CLASS:
+            floor_parts.append(entry)
+
+        if part_type == bz_semantics.FLOOR_CLASS and obj.type == "MESH":
+            total, drivable = bz_semantics.classify_deck_faces(
+                _collect_deck_face_components(obj)
+            )
+            if total == 0:
+                issues.append(
+                    _make_issue(
+                        "WARNING",
+                        "Deck",
+                        obj.name,
+                        "FLOOR-classed part has no faces to analyze; the engine requires collision geometry before any deck faces are collected.",
+                        {"VDF", "SDF"},
+                        object_name=obj.name,
+                    )
+                )
+            elif drivable == 0:
+                issues.append(
+                    _make_issue(
+                        "WARNING",
+                        "Deck",
+                        obj.name,
+                        "No face on this FLOOR part is within ~66 degrees of horizontal (world-up component > 0.4). The engine discards steep faces from hover decks, so this part will never be drivable even though it renders fine.",
+                        {"VDF", "SDF"},
+                        object_name=obj.name,
+                    )
+                )
+
+        if flags_raw & bz_semantics.OBJFLAG_KEEP_BOUNDS and part_type in (
+            bz_semantics.BRIDGE_CLASS,
+            bz_semantics.FLOOR_CLASS,
+        ):
+            issues.append(
+                _make_issue(
+                    "WARNING",
+                    "Deck",
+                    obj.name,
+                    "ObjectFlags bit 0x1 excludes this node from blocking accumulation AND strips its collision class to non-collidable, which removes its deck faces from the floor system. Not usable for drivable decks - decoration only. Also: never flag every part, or the empty accumulator yields a map-sized rect.",
+                    {"VDF", "SDF"},
+                    object_name=obj.name,
+                )
+            )
+
+    for entry in root_bridges:
+        obj = entry["object"]
+        issues.append(
+            _make_issue(
+                "INFO",
+                "Deck",
+                obj.name,
+                "BRIDGE-rooted entity: every part's upward collision polys become hover deck. Pathing never stamps BRIDGE footprints, so AI crossing depends on terrain tiles beneath the span being routable (geometric cliffs still block); an ODF whose class is 2/10 would block the full footprint instead.",
+                {"VDF"},
+                object_name=obj.name,
+            )
+        )
+
+    if floor_parts and not root_bridges:
+        names = ", ".join(sorted({e["object"].name for e in floor_parts}))
+        issues.append(
+            _make_issue(
+                "INFO",
+                "Deck",
+                names,
+                "FLOOR parts drive hover height only; they have zero pathing role. Visible floor geometry does not make cells traversable to AI route planning.",
+                {"VDF", "SDF"},
+            )
+        )
+    return issues
+
+
+def _collect_emitter_overflow_issues(named_candidates):
+    from . import semantics as bz_semantics
+
+    smoke = sum(1 for e in named_candidates if _candidate_geotype(e) == 76)
+    weapons = sum(1 for e in named_candidates if _candidate_geotype(e) == 70)
+    issues = []
+    if bz_semantics.emitter_overflow(smoke):
+        issues.append(
+            _make_issue(
+                "ERROR",
+                "Emitters",
+                f"{smoke} smoke emitters",
+                "Craft::FindSmokeSource appends every class-76 part into a fixed smokeList[8] with an unchecked count. More than 8 writes past the array into adjacent craft state: silent memory corruption or crashes.",
+                {"VDF", "SDF"},
+            )
+        )
+    if bz_semantics.emitter_overflow(weapons):
+        issues.append(
+            _make_issue(
+                "WARNING",
+                "Hardpoints",
+                f"{weapons} weapon hardpoints",
+                "Producer::FindSmokeSource collects every class-70 hardpoint into a fixed list of 8. More than 8 on a producing structure overflows it; plain vehicles without producer behavior are unaffected.",
+                {"VDF", "SDF"},
+            )
+        )
+    return issues
+
+
+def _collect_damage_rep_issues(scene, named_candidates, export_mode):
+    from . import semantics as bz_semantics
+
+    issues = []
+    export_names = {e["normalized_name"] for e in named_candidates}
+    base_by_slot_name = {}
+    for entry in named_candidates:
+        if entry.get("lod") == 1:
+            base_by_slot_name[entry["normalized_name"]] = entry["object"]
+
+    any_variant = False
+    for entry in named_candidates:
+        obj = entry["object"]
+        if entry.get("lod") != 1:
+            continue
+        geo_props = getattr(obj, "GEOPropertyGroup", None)
+        if geo_props is None:
+            continue
+        filled_states = []
+        for state in bz_semantics.AUTHORED_DAMAGE_STATES:
+            variant = str(getattr(geo_props, f"DamageGeo{state}", "") or "").strip().lower()
+            if not variant or variant == "null":
+                continue
+            any_variant = True
+            filled_states.append(state)
+            if variant == entry["normalized_name"]:
+                issues.append(
+                    _make_issue(
+                        "INFO",
+                        "Damage Reps",
+                        obj.name,
+                        f"Damage state {state} points back at the same geometry name; the swap would be a visual no-op.",
+                        {"VDF"},
+                        object_name=obj.name,
+                    )
+                )
+                continue
+            if export_mode == "SDF":
+                issues.append(
+                    _make_issue(
+                        "ERROR",
+                        "Damage Reps",
+                        obj.name,
+                        f"Damage variants are vehicles-only: AddStructReps registers each structure part under its d0 name for every band and never reads later blocks' name fields, so SDF exports cannot carry per-state meshes.",
+                        {"SDF"},
+                        object_name=obj.name,
+                    )
+                )
+                continue
+            if variant not in export_names:
+                issues.append(
+                    _make_issue(
+                        "ERROR",
+                        "Damage Reps",
+                        obj.name,
+                        f"Damage state {state} references '{variant}', which does not resolve to any exportable LOD1 part. A missing variant falls back to LOD 0 of the same state and then to invisibility.",
+                        {"VDF"},
+                        object_name=obj.name,
+                        action="select_object",
+                    )
+                )
+        if filled_states and len(filled_states) < len(bz_semantics.AUTHORED_DAMAGE_STATES):
+            missing = [
+                s for s in bz_semantics.AUTHORED_DAMAGE_STATES if s not in filled_states
+            ]
+            issues.append(
+                _make_issue(
+                    "WARNING",
+                    "Damage Reps",
+                    obj.name,
+                    f"Damage states {missing} have no mesh while {filled_states} do. The runtime fallback retries only LOD 0 of the current state, so an unfilled intermediate state can blank the part when a driver activates damage swapping.",
+                    {"VDF"},
+                    object_name=obj.name,
+                )
+            )
+
+    preserved_store = getattr(scene, "bz_damage_band_records", None)
+    if preserved_store is not None and len(preserved_store) > 0 and export_mode == "SDF":
+        issues.append(
+            _make_issue(
+                "INFO",
+                "Damage Reps",
+                "preserved bands",
+                "Imported VGEO variant-band content is preserved verbatim on SDF export even though structures cannot use damage states at runtime.",
+                {"SDF"},
+            )
+        )
+    if any_variant and export_mode in ("VDF", "ALL"):
+        issues.append(
+            _make_issue(
+                "INFO",
+                "Damage Reps",
+                "damage states",
+                "Authored damage states are inert in stock Battlezone 98 engines: nothing calls ObjTree_SelectRep. They become live the moment an external driver (e.g. BZR-OpenShim health hook) selects states.",
+                {"VDF"},
+            )
+        )
+    return issues
+
+
+def _collect_vloc_issues(scene, export_mode):
+    store = getattr(scene, "bz_vloc_chunks", None)
+    if store is None or len(store) == 0:
+        return []
+    from . import semantics as bz_semantics
+
+    issues = []
+    if export_mode == "SDF":
+        issues.append(
+            _make_issue(
+                "WARNING",
+                "VLOC",
+                "vehicle-load chunks",
+                "VLOC injection runs in the vehicle loader ('vhclload' context); SDF/structure loads have no VLOC handler, so entries will not apply to structures.",
+                {"SDF"},
+            )
+        )
+    for index, entry in enumerate(store):
+        kind = str(getattr(entry, "kind", "GENERIC"))
+        if kind == "IDSIZES":
+            continue
+        class_id = int(getattr(entry, "class_id", 0))
+        if kind == "GENERIC":
+            notes = bz_semantics.vloc_runtime_notes(class_id)
+            label = f"entry {index + 1} (class {class_id})"
+        else:
+            notes = bz_semantics.vloc_runtime_notes(
+                bz_semantics.VLOC_POV if kind == "POV" else bz_semantics.VLOC_HEADLIGHT
+            )
+            label = f"entry {index + 1}"
+        if not str(getattr(entry, "target_object", "") or "").strip() and bool(
+            getattr(entry, "preserve_raw", True)
+        ):
+            issues.append(
+                _make_issue(
+                    "INFO",
+                    "VLOC",
+                    label,
+                    "Payload preserved verbatim from import; bind a Blender object to edit its matrix deliberately.",
+                    {"VDF"},
+                )
+            )
+        for note in notes:
+            issues.append(
+                _make_issue(
+                    "INFO",
+                    "VLOC",
+                    label,
+                    note,
+                    {"VDF"},
+                )
+            )
+    return issues
+
+
+def _collect_advanced_semantics_issues(scene, named_candidates, export_mode):
+    issues = []
+    for entry in named_candidates:
+        issues.extend(_collect_object_flag_issues(entry))
+        issues.extend(_collect_bounds_issues(entry))
+    issues.extend(_collect_eyepoint_issues(named_candidates))
+    issues.extend(_collect_bridge_floor_issues(named_candidates))
+    issues.extend(_collect_emitter_overflow_issues(named_candidates))
+    issues.extend(_collect_damage_rep_issues(scene, named_candidates, export_mode))
+    issues.extend(_collect_vloc_issues(scene, export_mode))
     return issues
 
 

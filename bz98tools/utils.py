@@ -94,3 +94,44 @@ def open_path_in_shell(path):
         os.startfile(target_path)
         return
     raise RuntimeError("No supported path-open handler is available.")
+
+
+def blender_local_to_engine_matrix(obj):
+    """Convert a Blender object's local transform into the legacy engine
+    MAT_3D_FILE layout (right/up/front/posit rows, 12 floats).
+
+    Replicates the VDF/GEO export math: rotation remapped through the YZX
+    convention, scale baked into basis rows, translation swapped to
+    (x, z, y). Shared by VLOC binding and raw-matrix capture.
+    """
+    euler = mathutils.Euler((0.0, math.radians(45.0), 0.0), "YZX")
+    euler[:] = (
+        obj.rotation_euler.x,
+        obj.rotation_euler.z,
+        obj.rotation_euler.y,
+    )
+    rot_matrix = euler.to_matrix()
+    sx, sy, sz = obj.scale
+    scale_mat = mathutils.Matrix(
+        (
+            (sx, 0.0, 0.0),
+            (0.0, sy, 0.0),
+            (0.0, 0.0, sz),
+        )
+    )
+    thematrix = rot_matrix @ scale_mat
+    translation = obj.matrix_local.to_translation()
+    return [
+        thematrix[0][0],
+        thematrix[0][1],
+        thematrix[0][2],
+        thematrix[1][0],
+        thematrix[1][1],
+        thematrix[1][2],
+        thematrix[2][0],
+        thematrix[2][1],
+        thematrix[2][2],
+        translation.x,
+        translation.z,
+        translation.y,
+    ]

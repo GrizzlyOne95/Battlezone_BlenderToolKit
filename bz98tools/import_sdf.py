@@ -11,6 +11,8 @@ import bpy
 import importlib
 import os
 import bmesh
+import base64
+import struct
 import mathutils
 
 # For testing purposes. Always set to False if not running in script editor.
@@ -64,6 +66,40 @@ def _diagnostic_name(name):
         return "<blank>"
     cleaned = "".join(char if 32 <= ord(char) <= 126 else "?" for char in str(name))
     return cleaned or "<blank>"
+
+
+def _capture_unknown_tail(scene, fileContent, position):
+    """Preserve any unrecognized chunks after the known SDF sections."""
+    preserved_store = getattr(scene, "bz_preserved_chunks", None)
+    if preserved_store is None:
+        return
+    preserved_store.clear()
+    data = bytes(fileContent)
+    found_tags = []
+    while position + 8 <= len(data):
+        tag = data[position : position + 4]
+        try:
+            declared = struct.unpack_from("<i", data, position + 4)[0]
+        except Exception:
+            break
+        if declared >= 8 and position + declared <= len(data):
+            payload = data[position : position + declared]
+        else:
+            payload = data[position:]
+            declared = len(payload)
+        entry = preserved_store.add()
+        entry.tag = tag.decode("ascii", "ignore")
+        entry.payload_b64 = base64.b64encode(payload).decode("ascii")
+        found_tags.append(entry.tag)
+        position += max(8, declared)
+    if found_tags:
+        _add_import_diagnostic(
+            scene,
+            "INFO",
+            "Chunks",
+            ", ".join(found_tags[:6]),
+            f"{len(found_tags)} unrecognized chunk(s) after the SGEO/ANIM sections were preserved verbatim for round-trip safety.",
+        )
 
 
 def load(
@@ -181,6 +217,9 @@ def load(
                     "This file uses the niche Translation2 position track.",
                 )
             position = EXIT.Read(fileContent, position)
+
+        # Preserve anything we do not model after the known sections.
+        _capture_unknown_tail(scene, fileContent, position)
 
         if anim_found:
             scene.SDFVDFPropertyGroup.UseAdvancedAnimHeader = True
@@ -397,6 +436,11 @@ def load(
                 geoname = Model.geo.name
                 if geoname in ANIMorientations:
                     modelanim = ANIMorientations[geoname]
+                    # Preserve tagANIMOBJ_MESH.flags across round trips.
+                    if hasattr(Model.object.GEOPropertyGroup, "ANIMOrientationFlags"):
+                        Model.object.GEOPropertyGroup.ANIMOrientationFlags = int(
+                            getattr(modelanim, "unknown", 0)
+                        )
                     # Check for rotation animation data..
                     if modelanim.rotationcount > 0:
                         for index in range(
