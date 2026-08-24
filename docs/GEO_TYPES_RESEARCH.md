@@ -134,8 +134,8 @@ Two slightly different lists decide whether a part's `.geo` file is ever loaded
 | 1 HELICOPTER, 3 POWERUP, 6 VEHICLE | **Remapped through `<partname>.odf` lookup** (`Craft_GetClass` → `GameObjectClass::Find`). If the name matches no ODF/class, Find returns NULL and reading `->class_id` crashes. This is the engine mechanism behind the toolkit's "type 1/3 crash as VDF/SDF" warnings (6 likewise). | NewObj :341502; Find NULL paths :1889050 area (`TraceError("GameObject \"%s\" not found")`, `"uses unknown class label"`) |
 | 2 STRUCTURE1, 10 STRUCTURE2, 5 SIGN, 7 SCRAP | Gameplay-entity classes (`Building::Init`) in the world-object switch; as VDF/SDF *parts*: passive rendered, no part-level consumer. Entity collision default 0x3000 (structures) / 0x2000 (sign/scrap). | :181997, :129213 |
 | 4 PERSON | World-entity class (`Person::Init`); passive as a part. | :182003 |
-| 8 BRIDGE | Structure-like entity collision 0x3000; no unique part behavior beyond rendering. | :129206 |
-| 9 FLOOR | Floor faces collected for hover-height even when default collection is off (`class_id == CLASS_ID_FLOOR` condition in CollectFloorFaces call). | :130599 |
+| 8 BRIDGE | As an **entity/root class**: enables whole-model deck collection — every part's upward-facing collision polys become hover floor (§5.1); structure-grade default collision 0x3000; groups with structures in netcode/save switches; distinct explosion-class bucket when hit. | :129209, :130619, :187350, :349035 |
+| 9 FLOOR | Per-part drivable-floor opt-in on any entity (the only floor contributor unless the root is BRIDGE). Requires the part to have collision geometry. | :130599 |
 | 11 SCROUNGE | Camera-facing scrap/special. Runtime loader assigns class to children of terrain specials (`flags \|= 0x40`); excluded from bounding-sphere recompute (disk GeoCenter/SphereRadius kept); dedicated handlers `Init_/Delete_Scrounge_Object`, `Get_Scrounge_Pos`, `Scrounge_LOD`. | :293429–3434, :337614, function_index 004ed73b… |
 | 15 SPINNER | Continuous rotator. Rate/ddr seeded from the record's Target/ddr ints at load (`param_2->Class == 0xf` in NewObj); `CommTower::StartSpinners/StopSpinners` toggle the destroyed bit (0x200) on spinner parts; entity-level default collision 0x2000. | :341520, :152693, :152713, :129215 |
 | 38 HEADLIGHT_MASK | Invisible marker (excluded both loaders). Headlight cone attaches here (Redux visual system keys on the bone name). | :341661, :341788 |
@@ -197,7 +197,91 @@ constants); the rotor/nacelle/fin/flame/dust behaviors CONFIRMED at
 code; Redux-parity INFERRED but unverified (follow-up: diff the Redux binary's exclusion
 lists and gimbal code).
 
-## 5. Recommended toolkit updates (documentation-level; not implemented)
+## 5. Undocumented mechanics inventory
+
+Features found in the engine that the toolkit does not currently document or expose.
+
+### 5.1 BRIDGE(8) and FLOOR(9) are the drivable-surface controls
+
+The toolkit labels both "likely no extra behavior" — wrong. The hover-height system
+builds "floor decks" like this:
+
+```
+Floor_InitEntity(entity)                                                    :130615
+    isBridge = (entity ROOT part class == CLASS_ID_BRIDGE)
+    CollectObjFloor(root, entity, Identity, isBridge)                       :130600
+        walk every part (depth-first):
+            if part has collision geom AND (NOT isBridge OR part.class == FLOOR)
+                CollectFloorFaces(...)
+```
+
+- Root typed **BRIDGE(8)** ⇒ **every part's** collision polygons become candidate deck.
+- Otherwise, only parts individually typed **FLOOR(9)** contribute.
+- `CollectFloorFaces` (:130489) keeps only polygons whose world-space normal has
+  **y > 0.4** — i.e. within ≈66° of horizontal. Walls and steep ramps are never
+  drivable, even on a bridge.
+- Deck data is attached per entity; hover queries (`FindFloor`) sample these lists.
+
+Authoring consequences: mark a structure root as 8 to make the whole model traversable,
+or cherry-pick walkable sub-parts as 9; keep deck faces near-horizontal.
+
+### 5.2 Spinner(15) configuration lives in the record tail ints
+
+For class-15 parts `NewObj` seeds state from the record:
+
+```c
+if (param_2->Class == 0xf) {
+    Spinner_SetRate(p_Var4, param_2->Target);   // Target = VECTOR_3D @ +0x68
+    Spinner_SetDDR (p_Var4, param_2->ddr);      // ddr     = int      @ +0x64
+}
+```
+
+- `Spinner_SetRate` (004EE182) stores `2π · (x,y,z)` — **the record's Target vector is
+  revolutions per second about each local axis**. In SDF records this is precisely the
+  toolkit's `ddr`(int) + `x`,`y`,`z` float tail; the trailing "time" float is not
+  referenced by any spinner code.
+- `Spinner_SetDDR` (004EE10A) writes `ddr` into two state dwords (+0xC,+0x10 of
+  `class_ptr`).
+- `Spinner_Simulate` (004EE051, registered per frame) rotates the part by
+  `Spinner(transform, axisRadPerSec, TimeStepLocal())` **only while flags bit 0x200
+  (destroyed) is clear** — `CommTower::StartSpinners/StopSpinners` toggle exactly that
+  bit (:152693/:152713), so spinners halt when their building dies.
+- Caveat (UNKNOWN): VDF records are only 100 bytes — there are no Target/ddr bytes in
+  them, yet `NewObj` reads them unconditionally for class 15. How VDF spinners get sane
+  rates (or whether they read into the neighbouring record) should be settled
+  empirically before relying on VDF spinner tuning.
+
+### 5.3 Disk bounding spheres stay authoritative for SCROUNGE(11) and PARKING_LOT(81)
+
+`AddTerrainSpecial` (:337607) recomputes `bSphere` origin+radius from mesh geometry for
+every terrain special **except** classes 11 and 81, which keep the values authored in the
+record (`GeoCenter`/`SphereRadius`/box fields). For all other classes those record fields
+are placeholders overwritten at load.
+
+### 5.4 Engines self-heal missing effect parts
+
+- Craft without an eyepoint get one created automatically, named `"eyepoint"`,
+  class 40, positioned from ODF data (:152449–457).
+- A hover craft with nacelles but **no flame parts** gets a flame emitter auto-parented
+  under each nacelle (:193462–482); a missing dust emitter is likewise auto-created
+  (D3D-dependent) (:193493–497). Authors can omit them, but then cannot control their
+  placement/appearance.
+
+### 5.5 Class-driven presentation effects
+
+- **Radar:** `radar_object()` returns true only for classes 1 and 6 (:292411) — nothing
+  else ever blips, regardless of size.
+- **Moving-entity classification:** `dynamic_object()` = class ∈ {1,3,4,6} (:292398);
+  `Cache_Is_Moving_Obj` gates static/dynamic render-cache placement off a static class
+  list with a WEAPON_GEOMETRY(63) exception (:286374).
+- **HUD weapon rings:** icons are selected by hardpoint class in the inclusive range
+  70–74; out-of-range hardpoint classes fall back to the first ring entry (:269713).
+- **Impact explosions vary by victim class**: helicopters, bridge/structure2, and
+  everything else pull different `ExplosionClass` entries when hit (:349024–038).
+- **Friendly craft collisions are harmless**: same-team craft-vs-craft impacts zero out
+  their damage via the team nibble (:340862–868).
+
+## 6. Recommended toolkit updates (documentation-level; not implemented)
 
 1. Relabel `33 LGT` and `34 RADAR` as *"not an engine class — renders as normal geometry"*
    (constants.py `insertgeotypedata` entries), or drop them from the picker.
@@ -213,8 +297,14 @@ lists and gimbal code).
 7. Types 66/67/68 hints are engine-validated: rotors spin and fins roll with
    throttle/steering, nacelles pitch; a craft with nacelles but no flame parts gets flames
    auto-created under each nacelle (75).
+8. **Fix the 8/9 labels**: they are the drivable-floor controls (§5.1), not inert.
+9. Document spinner tuning via the SDF tail ints (§5.2) — including that values are
+   revolutions/second per axis and that spinners stop when destroyed; flag the VDF-record
+   caveat as untested.
+10. Optional validation info: steep faces (>≈66° from horizontal) never become hover floor;
+    scrounge/parking-lot parts keep their authored bounding spheres.
 
-## 6. Source index
+## 7. Source index
 
 - `functions/0052/0052594e_NewObj.c` — Class remap (1/3/6), ClassCreate call, spinner seed
 - `functions/004e/004e9b3d_ClassCreate.c`, `functions/004e/004e99a1_ClassIDtoIndex.c` —
@@ -231,3 +321,10 @@ lists and gimbal code).
 - `HoverCraft::UpdateGimbals` (0049D014 region, :193563+) — per-frame rotor/nacelle/fin gimbals + flame spin animation
 - `Cache_Is_Moving_Obj` (004E7CA1, :286371) — moving-object class list + WEAPON_GEOMETRY exception
 - HUD hardpoint ring icons: class range test 70–74 (:269713)
+- Floor system: `Floor_InitEntity` (00475AF3, :130615), `CollectObjFloor` (00475A6E,
+  :130596), `CollectFloorFaces` (004758B6, :130489; normal-y > 0.4 test)
+- Spinner: `Spinner_SetRate` (004EE182), `Spinner_SetDDR` (004EE10A),
+  `Spinner_Simulate` (004EE051); seed site in `NewObj` (:341520)
+- `AddTerrainSpecial` (00521833, :337607) — bounds recompute skip for classes 11/81
+- HELICOPTER/VEHICLE consumers: `IsCraft` (:11216), radar (:292411), dynamic_object
+  (:292398), same-team damage cancel (:340862), explosion-class selection (:349024)
