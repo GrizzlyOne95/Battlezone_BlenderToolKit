@@ -40,7 +40,16 @@ Key structural facts:
   rendered, and collidable like type 0 — it simply gets no special behavior.
 - Several behaviors live **outside** the table: craft/building/effect code explicitly scans
   hierarchies comparing `obj->class_id` (POV, turrets, nacelles, hardpoints, emitters,
-  spinners).
+  spinners, rotors, fins).
+
+> **Methodology note (important):** many of those out-of-table consumers compare the class
+> against **numeric immediates through temp locals** (`if (tmp == 0x42)`), so a grep for
+> `CLASS_ID_*` names alone under-reports usage. This report originally mislabeled rotor/
+> fin/nacelle/weapon-geometry as "defined only" on exactly that mistake; the table below
+> reflects a corrected sweep over hex immediates `0x2A`–`0x51` in comparison context
+> (filtering out DirectInput key maps, Lua format chars and loop bounds that share the
+> same constants). In raw-offset terms `_OBJ76.class_id` sits at +0xAC
+> (e.g. `*(int *)(obj + 0xac) == 0x3f`).
 
 ---
 
@@ -79,12 +88,12 @@ Key structural facts:
 | 60 | CLASS_ID_VEHICLE_GEOMETRY | yes (1 site) |
 | 61 | CLASS_ID_STRUCTURE_GEOMETRY | **defined only** |
 | 62 | *(gap)* | — |
-| 63 | CLASS_ID_WEAPON_GEOMETRY | **defined only** |
-| 64 | CLASS_ID_ORDNANCE_GEOMETRY | **defined only** |
+| 63 | CLASS_ID_WEAPON_GEOMETRY | yes (render-cache special case) |
+| 64 | CLASS_ID_ORDNANCE_GEOMETRY | maybe (static class list) |
 | 65 | CLASS_ID_TURRET_GEOMETRY | yes |
-| 66 | CLASS_ID_ROTOR_GEOMETRY | **defined only** |
-| 67 | CLASS_ID_NACELLE_GEOMETRY | yes (1 site) |
-| 68 | CLASS_ID_FIN_GEOMETRY | **defined only** |
+| 66 | CLASS_ID_ROTOR_GEOMETRY | yes (per-frame gimbal anim) |
+| 67 | CLASS_ID_NACELLE_GEOMETRY | yes (gimbal + auto-flame) |
+| 68 | CLASS_ID_FIN_GEOMETRY | yes (per-frame gimbal anim) |
 | 69 | CLASS_ID_COCKPIT_GEOMETRY | **defined only** |
 | 70 | CLASS_ID_WEAPON_HARDPOINT | yes |
 | 71 | CLASS_ID_CANNON_HARDPOINT | yes |
@@ -140,21 +149,21 @@ Two slightly different lists decide whether a part's `.geo` file is ever loaded
 | 55 NONCOLLIDABLE | Forces the collision nibble of `_OBJ76.flags` to 0x1000 (= no collision), same as flags bit 0x1 does. | :128994–996 |
 | 60 VEHICLE_GEOMETRY | Exemption in explosion-chunk generation: near-root vehicle-geometry parts are skipped when creating debris chunks. | :239244 |
 | 61 STRUCTURE_GEOMETRY | Defined only. | absent |
-| 63 WEAPON_GEOMETRY | Defined only. | absent |
-| 64 ORDNANCE_GEOMETRY | Defined only. | absent |
+| 63 WEAPON_GEOMETRY | Render-cache classification: `Cache_Is_Moving_Obj` special-cases class 63 — treated as *not* moving unless `_OBJ76.flags` bit 0x200000 is set. Likely also a member of the static 5-entry `Obj76_Moving_Objects_ID[]` list used by the same check. | :286374–383 (004E7CA1) |
+| 64 ORDNANCE_GEOMETRY | No direct branch found; plausibly one of the 5 classes in the `Obj76_Moving_Objects_ID[]` static list (values live in .data, not recoverable from this decomp). | :286374 |
 | 65 TURRET_GEOMETRY | `TurretCraft::FindTurret` scans the hierarchy: id ending `X`/`x` → yaw slot array, `Y`/`y` → pitch slot, anything else warns `Unusual turret id "%.8s" … assuming Y`. This is the tx#/ty# rotator mechanism. | :228887–900, :229944 |
-| 66 ROTOR_GEOMETRY | Defined only — no class-based consumer found. (If rotor steering visibly works on stock craft, it is driven by something else, e.g. name-keyed craft code or hardpoints.) | absent |
-| 67 NACELLE_GEOMETRY | Flame-emitter attachment check requires the parent chain to be a nacelle (`.\fun3d\HoverCraft.cpp`). | :193771 |
-| 68 FIN_GEOMETRY | Defined only. | absent |
+| 66 ROTOR_GEOMETRY | **Live per-frame behavior on hover craft:** `HoverCraft::UpdateGimbals` walks the part tree every frame and applies a roll matrix to each rotor part driven by forward speed and throttle (`(-front - k*throttle) * dt * 3.0`) — rotors visibly spin up with thrust/turn input. Numeric compare `== 0x42`. | :193638–661 |
+| 67 NACELLE_GEOMETRY | Two consumers: (a) `UpdateGimbals` pitches nacelles with throttle/steering, sign-aware of facing direction; (b) `HoverCraft::HoverCraft` collects nacelle parts at construction and, if no FLAME_EMITTER parts exist, parents an auto-created flame emitter under each nacelle. | :193659–688, :193458–482 |
+| 68 FIN_GEOMETRY | **Live per-frame behavior:** `UpdateGimbals` rolls steering fins proportional to yaw rate (`(-front - k*yawRate) * dt * 3.0`). Numeric compare `== 0x44`. | :193688–701 |
 | 69 COCKPIT_GEOMETRY | Defined only — cockpit handling in 1.5 is done via LOD naming and POV, not this class. | absent |
-| 70 WEAPON_HARDPOINT | Invisible attach point; found by name via `FindHardpoint` (suffixes gc/gr/gm/gs + digit); Carrier hardpoint slots; prod-unit smoke emitter role per toolkit docs. | :341661, function_index 004950ac |
+| 70 WEAPON_HARDPOINT | Invisible attach point; found by name via `FindHardpoint` (suffixes gc/gr/gm/gs + digit); Carrier hardpoint slots; prod-unit smoke emitter role per toolkit docs. HUD weapon-ring icons are keyed to classes 70–74 inclusive (`class_id` range test indexing RING_MAPS per type). | :341661, :269713, function_index 004950ac |
 | 71 CANNON_HARDPOINT | Same invisible attach-point treatment (cannon muzzle slots). | :341663 |
 | 72 ROCKET_HARDPOINT | Same (rocket pods). | :341663 |
 | 73 MORTAR_HARDPOINT | Same (mortar tubes). | :341664 |
 | 74 SPECIAL_HARDPOINT | Special/hitch point: `Carrier::SetHardpoint` marks the special index; `FindHitch` scans for it (tug carrying); Producer eject points for vehicles/powerups are created with this class. | :143368, :227982, :215930, :215969 |
-| 75 FLAME_EMITTER | Thruster flame. Excluded from geo load on VDFs; also created dynamically by HoverCraft when missing. Geometry itself invisible ⇒ toolkit lore confirmed. | :341665, :193478 |
+| 75 FLAME_EMITTER | **The jet-thruster effect.** Excluded from geo load on VDFs; also auto-created under nacelles when missing (see 67). `UpdateGimbals` collects flame parts each frame and, when `throttle > 0.1`, the craft isn't dead (`flags & 0x600` clear) and arcade mode is off, animates them as roll matrices spinning at ±5·time — the classic spinning flame quad. | :341665, :193478, :193702, :193740–760 |
 | 76 SMOKE_EMITTER | Smoke source; collected by scanning children for the class into smokeList. Excluded from VDF geo load. | :154472, :341666 |
-| 77 DUST_EMITTER | Hover dust source; created dynamically by HoverCraft (D3D-dependent flag). Excluded from VDF geo load. | :193496, :341666 |
+| 77 DUST_EMITTER | Hover dust source; collected by `UpdateGimbals` (when D3D flag `useD3D & 4`) and created dynamically by HoverCraft if missing. Excluded from VDF geo load. | :193496, :193465, :193707, :341666 |
 | 81 PARKING_LOT | Supply-pad/hangar effect center: excluded from bounding-sphere recompute so the disk-authored SphereRadius/GeoCenter from the VDF record stay authoritative. | :337614 |
 | 12–14, 16–37, 39, 41, 43–49, 56–59, 62, 80, 82+, **incl. toolkit phantoms 33 & 34** | Not in the enum. `ClassIDtoIndex` → 0 → no handler; not in any exclusion list ⇒ **rendered and collidable like an ordinary part**; nothing branches on them anywhere in the executable. | :288470–484 |
 
@@ -167,26 +176,33 @@ Two slightly different lists decide whether a part's `.geo` file is ever loaded
 - **Truly unknown values (anything not in §2):** no. They behave exactly like type 0 while
   remaining visible/collidable — the safest possible fallback. No validation, no warning,
   no crash.
-- **Defined-but-unreferenced values (42, 54, 61, 63, 64, 66, 68, 69):** also inert in
-  bzone.exe 1.5. They're real enum members but nothing in the shipped executable reads
-  them; several (ROTOR/FIN/NACELLE/COCKPIT/TURRET/…) look like hooks completed or removed
-  during development, or reserved for the Redux-era renderer.
+- **The craft-part animation classes are very much alive on VDFs** (user-reported and
+  engine-confirmed): rotor(66), nacelle(67) and fin(68) are animated every frame by
+  `HoverCraft::UpdateGimbals`, and flame(75)/dust(77) emitters drive the visible thruster
+  and hover-dust effects. These were initially missed because the comparisons compile to
+  numeric immediates (`== 0x42`/`0x43`/`0x44`/`0x4b`/`0x4d`) rather than symbolic names.
+- Remaining inert in bzone.exe 1.5: 42 COM, 54 SORT_OBJECT, 61 STRUCTURE_GEOMETRY,
+  69 COCKPIT_GEOMETRY (defined, no consumer found), with 64 ORDNANCE_GEOMETRY only
+  plausibly referenced via the static moving-objects class list. These render normally
+  and are safe to set, but nothing in the shipped executable branches on them.
 - **The dangerous values are 1, 3, 6:** they trigger an ODF-name remap whose failure mode
   is a NULL dereference — the long-standing "types 1/3 crash as VDF/SDF" lore, now
   precisely explained.
 
 Confidence labels: architecture and enum values CONFIRMED (decompiled code + PDB
-constants); "defined only" verdicts CONFIRMED for absence of references in this decomp
-(caveat: static data tables could theoretically reference them, but the only static
-dispatch structure, `funk[]`, is keyed by numeric id and bounded at 14 slots);
-Redux-parity INFERRED but unverified (follow-up: diff the Redux binary's exclusion lists).
+constants); the rotor/nacelle/fin/flame/dust behaviors CONFIRMED at
+`HoverCraft::HoverCraft` (0049CE34) and `HoverCraft::UpdateGimbals` (0049D01C region);
+"inert" verdicts carry the caveat that static .data tables (e.g. the 5-entry
+`Obj76_Moving_Objects_ID[]`) can reference class values without appearing in decompiled
+code; Redux-parity INFERRED but unverified (follow-up: diff the Redux binary's exclusion
+lists and gimbal code).
 
 ## 5. Recommended toolkit updates (documentation-level; not implemented)
 
 1. Relabel `33 LGT` and `34 RADAR` as *"not an engine class — renders as normal geometry"*
    (constants.py `insertgeotypedata` entries), or drop them from the picker.
-2. Annotate defined-but-inert values (42 COM, 54, 61, 63, 64, 66, 68, 69): safe to set,
-   but bzone.exe 1.5 gives them no behavior beyond normal rendering.
+2. Annotate defined-but-inert values (42 COM, 54, 61, 69): safe to set, but bzone.exe 1.5
+   gives them no behavior beyond normal rendering.
 3. Keep/expand the 1/3/6 crash warnings — now with the true cause (ODF-name remap NULL
    deref).
 4. Note the SDF/VDF emitter discrepancy: emitter-classed parts (75–77) keep their geometry
@@ -194,6 +210,9 @@ Redux-parity INFERRED but unverified (follow-up: diff the Redux binary's exclusi
 5. Type 81 hint can add: disk bounding sphere/center is preserved for this class.
 6. Type 65 hint is validated by source (X/x yaw, Y/y pitch, else assume-Y with a trace
    warning).
+7. Types 66/67/68 hints are engine-validated: rotors spin and fins roll with
+   throttle/steering, nacelles pitch; a craft with nacelles but no flame parts gets flames
+   auto-created under each nacelle (75).
 
 ## 6. Source index
 
@@ -208,3 +227,7 @@ Redux-parity INFERRED but unverified (follow-up: diff the Redux binary's exclusi
 - Enum values: `BZR-OpenShim/reverse_engineering/badlands/legacy_bz1_exact_full/
   pdb_reference/llvm/publics.txt` (S_CONSTANT, OBJECT_CLASS_T)
 - Consumer sites: see table in §3 (all_decompiled.c line numbers)
+- `HoverCraft::HoverCraft` (0049CE34, :193408+) — nacelle/flame/dust part scan & auto-emitter creation
+- `HoverCraft::UpdateGimbals` (0049D014 region, :193563+) — per-frame rotor/nacelle/fin gimbals + flame spin animation
+- `Cache_Is_Moving_Obj` (004E7CA1, :286371) — moving-object class list + WEAPON_GEOMETRY exception
+- HUD hardpoint ring icons: class range test 70–74 (:269713)
