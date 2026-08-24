@@ -225,6 +225,25 @@ Floor_InitEntity(entity)                                                    :130
 Authoring consequences: mark a structure root as 8 to make the whole model traversable,
 or cherry-pick walkable sub-parts as 9; keep deck faces near-horizontal.
 
+**AI pathing relationship:** the nav system never looks at part classes. Passability
+lives in a per-cell grid (`cellType[]`, decoded through `sMaterial[]`; material 5 =
+building, 5/6 = blocked) and is stamped at the **entity** level by
+`ProcessBuildings` (:17545): only ODF classes **2 (STRUCTURE1), 10 (STRUCTURE2)** and
+TURR-signature objects get full-footprint `BuildingCells` blocking (`cellType |= 0xB`),
+class **5 (SIGN)** gets a perimeter ring only, scrap-field/spawn-buoy/geizer-style
+signatures are excluded, and destroyed objects (`flags & 0x200`) stop blocking entirely.
+
+Consequences:
+
+- A BRIDGE-classed entity's footprint is **never stamped** — pathing treats those cells
+  as plain terrain. Bridges therefore "work" for AI through the combination of (a) no
+  path blocking and (b) deck floors feeding hover height; steering follows the deck even
+  though the path graph only knows flat ground.
+- FLOOR parts have **zero** pathing role; they exist purely in the hover-height system.
+- If you give a custom bridge an ODF whose class is 2/10 instead of 8, its full
+  footprint becomes blocked and AI will refuse to path onto it even though the physical
+  deck is drivable — path graph and floor sampling then disagree.
+
 ### 5.2 Spinner(15) configuration lives in the record tail ints
 
 For class-15 parts `NewObj` seeds state from the record:
