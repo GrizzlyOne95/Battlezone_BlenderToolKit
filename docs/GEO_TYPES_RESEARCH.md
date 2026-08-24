@@ -300,6 +300,26 @@ first dword and *creates new parts on the vehicle at load time*:
 | `42` | Copies two id/size pairs from the payload into craft state +0xE8/+0xF0. |
 | any other | Same generic path as 40 — an arbitrary new child part of arbitrary class with an authored matrix, injected into the hierarchy at load. |
 
+**Payload layouts** (payload = bytes after the chunk's 8-byte sub-header; MAT_3D_FILE =
+12 floats right/up/front/posit):
+
+| Value dword 0 | Rest of payload |
+|---|---|
+| `38` | dwords 1–12 = matrix for the synthetic `"hdlt_msk"` part |
+| `40` or any unmatched value | dword 0 doubles as the new part's **class id**; dwords 1–12 = its matrix |
+| `42` | dwords 6–9 = two `{IDType, size}` pairs copied into craft state |
+
+Additional mechanics worth noting before implementing:
+
+- The generic (non-38) path bypasses `NewObj`: no bounds seeding, and **no
+  `Spinner_SetRate`** — an injected class-15 node spins at rate zero (inert).
+- Injected emitters exist before `Craft::FindSmokeSource`/`Producer::FindSmokeSource`
+  run, so they count toward the 8-slot limits in §5.12.
+- The 38 part is registered via `AddTerrainSpecial`, so it renders through the
+  terrain-special list and gets fresh computed bounds (its class is 0, not 11/81).
+- Prerequisite: `root->class_ptr != NULL` — only classes with funk allocations have
+  craft state to write into.
+
 Stock corpus check: **zero VLOC chunks across all 99 stock VDFs**, and the toolkit has no
 VLOC support. This is a complete, engine-wired modding surface (inject lights, masks,
 POVs or extra parts via hex edits) that nothing documents. Caveats: the handler
