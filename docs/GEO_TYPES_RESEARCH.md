@@ -288,6 +288,29 @@ Consequences:
   tiles, or add a small shim/map-postprocess step that rewrites `cellType` bytes along a
   named SDF footprint after load.
 
+**What actually generates the blocked nibbles — resolved:** `BlockedCellInit` →
+`ProcessCliffs` (:87329 region, `00405427`) fills `cellType[]` from pure heightmap
+geometry plus a per-map lava marker:
+
+- `CellIsCliff(x,z)` (:9589) is **geometric only**: true when any cardinal neighbour's
+  terrain height differs by more than `0x65` (101 raw units). Cliff cells get
+  `cellType |= 3` → material 6 → blocked. This is the *only* natural impassable case;
+  water, slopes and steep grades all decode to materials 0–4 and remain routable.
+- `GetLavaMat()` returns `GetINIInt("NormalView","Lava",-1,missionName)` (:335561) —
+  each mission's INI designates which terrain *material* is lava. Lava cells and their
+  8-neighbours get `cellType |= 4`, producing nibbles 4–7/C–F — but never blocking on
+  their own (steep+lava = nibble 6 = material 3, still routable). Lava lethality is
+  therefore damage-side, not pathing-side.
+- Net: **the two blocked terrain nibbles {`0x3`,`0x7`} mean "cliff", optionally
+  lava-adjacent** — there are no impassable textures.
+
+Bridge take-away: an inert prop bridge is AI-crossable over water and rolling ground
+automatically; over canyon rims it fails because the rim cells are geometric cliffs, and
+no entity class can change that. The content-side fix is to smooth/ramp the `.trn`
+heights along the crossing corridor so no adjacent step exceeds the cliff threshold
+(hiding the ramp visually inside the bridge), which is very likely how stock
+AI-crossable bridges are built; the code-side fix remains a post-load `cellType` stamp.
+
 ### 5.2 Spinner(15) configuration lives in the record tail ints
 
 For class-15 parts `NewObj` seeds state from the record:
