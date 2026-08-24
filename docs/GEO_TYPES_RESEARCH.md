@@ -255,6 +255,39 @@ Consequences:
 Blocking only affects route planning; units physically pushed onto a blocked-footprint
 bridge still traverse it — worst case is AI refusing to plan across, not impassability.
 
+**Pathing material table (extracted from bzone.exe `.data`, verified byte-identical in
+the GOG Redux exe):**
+
+`sMaterial[16]` @ `0x5D9098` (legacy VA), indexed by `cellType & 0xF`;
+nav-graph edges (`LinkLeft/Top/Right/Bottom`) form only between strips whose material
+is **not 5 or 6**:
+
+| cellType nibble | material | routing |
+|---|---|---|
+| `0x0`, `0x1` | 0, 1 | routable (team-tagged via `CellTeam`) |
+| `0x2`, `0xA` | 2 | routable |
+| `0x4`–`0x6`, `0xC`–`0xE` | 3 | routable |
+| `0x8`, `0x9` | 4 | routable — **this is what SIGN perimeter rings produce** (`PerimeterBlock` ORs `0x8`) |
+| `0x3`, `0x7` | 6 | blocked (terrain void types) |
+| `0xB`, `0xF` | 5 | blocked (`BuildingBlock` ORs `0xB`; any nibble OR'd with `0xB` lands here) |
+
+Related: `sGoodScrapMaterial[7] @ 0x62652C` = `[1,1,0,0,1,0,0]` — scrap placement favors
+materials 0, 1 and 4.
+
+Consequences:
+
+- A SIGN-classed bridge is **not** an obstacle to route planning: its perimeter ring
+  decodes to material 4, which links like ordinary ground. The ring may matter to other
+  systems (it is marked good-scrap-ground) but never blocks.
+- An inert BRIDGE(8) prop works for AI **iff** the map's own tiles under the span are
+  not nibbles `0x3`/`0x7`. Which natural tile types encode those two nibbles is a
+  map-format question (check via WorldBuilder/BZN tooling or in-game `DrawPath`
+  observation), not visible from this binary.
+- Spans over genuine void tiles cannot be fixed by any entity class — nothing in the
+  engine stamps walkability. Options: repaint the corridor under the deck as passable
+  tiles, or add a small shim/map-postprocess step that rewrites `cellType` bytes along a
+  named SDF footprint after load.
+
 ### 5.2 Spinner(15) configuration lives in the record tail ints
 
 For class-15 parts `NewObj` seeds state from the record:
