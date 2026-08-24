@@ -244,6 +244,17 @@ Consequences:
   footprint becomes blocked and AI will refuse to path onto it even though the physical
   deck is drivable — path graph and floor sampling then disagree.
 
+**Deploying non-blocking drivable decks — option space:**
+
+| Approach | How | Cost/caveat |
+|---|---|---|
+| Non-blocking entity class | ODF/class ∉ {2,10,5}: **SCRAP (7)** keeps `Building::Init` gameplay (damageable structure) with zero nav stamping; **SIGN (5)** blocks only a perimeter ring so the deck interior stays pathable; raw **BRIDGE (8)** objects are props (absent from the `GameObject::Init` switch) whose root-typed deck still collects floors | Scrap-class may have death/scrap side effects; sign leaves an outline ring; verify per case |
+| Destroyed-bit seed | Set `ObjectFlags \|= 0x200` on the root record — `NewObj` copies it verbatim and `ProcessBuildings` skips destroyed objects | The whole engine believes it: `IsAlive()` false, targeting/threat queries skip it, mission liveness checks break. Unverified whether repair/netcode ever clears a seeded bit |
+| Flags bit 0x1 bbox exclusion | `Obj76_Bounding_Box` skips flagged nodes when accumulating the blocking rect — but the same bit forces those parts' collision class to non-collidable, stripping `clsnInfo` and therefore floor faces | **Not usable for drivable decks** — decoration only. Never flag every part: the accumulator initializes at ±1e7, yielding a map-sized rect |
+
+Blocking only affects route planning; units physically pushed onto a blocked-footprint
+bridge still traverse it — worst case is AI refusing to plan across, not impassability.
+
 ### 5.2 Spinner(15) configuration lives in the record tail ints
 
 For class-15 parts `NewObj` seeds state from the record:
