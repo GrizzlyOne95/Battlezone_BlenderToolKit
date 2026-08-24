@@ -419,6 +419,17 @@ bzone.exe 1.5 never selects anything except damage state 0. (Caveat: a vtable-di
 caller would be invisible to this decomp; none was found.) The extra weapon-parented rep
 at band index 3 (§3, class 50 row) is loaded under the same dead axis.
 
+**Lineage:** this axis is an Interstate '76 inheritance — the engine is transparently
+built on I'76 remains (`_OBJ76`, `File_Matrix_To_I76_Matrix`, `FindI76Instance`,
+`I76FatalError`, `CheckForI76CD` all survive as PDB symbols), and I'76's cumulative
+vehicle damage visuals map directly onto 7 damage reps × 4 LODs. Cross-check against the
+Redux binary: the symbol-transfer table locates both functions in battlezone98redux.exe,
+and in the best-effort decomp they form an isolated thunk cluster with no gameplay
+caller — Rebellion didn't wire it back up either. Practical consequence: authoring
+damage variants into bands 1–6 is harmless today and becomes a live feature the moment
+anything calls `ObjTree_SelectRep(root, state)` — e.g. a small BZR-OpenShim hook mapping
+healthRatio thresholds to damage states, or a future Rebellion patch.
+
 ### 5.12 Emitter collection can overflow — validation hazard
 
 `Craft::FindSmokeSource` (:154463) appends **every** class-76 part found anywhere in the
