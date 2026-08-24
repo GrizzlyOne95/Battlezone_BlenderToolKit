@@ -57,6 +57,7 @@ Versioned technical notes stay in the repository:
 
 - [Release notes](docs/)
 - [Advanced GEO/VDF semantic authoring](docs/ADVANCED_AUTHORING.md)
+- [Runtime test kit](docs/RUNTIME_TEST_KIT.md)
 - [Experimental binary fields](docs/EXPERIMENTAL_BINARY_FIELDS.md)
 - [Organic Redux Skin source walkthrough copy](docs/ORGANIC_REDUX_SKIN_WALKTHROUGH.md)
 
