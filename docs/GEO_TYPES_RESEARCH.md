@@ -247,11 +247,12 @@ if (param_2->Class == 0xf) {
   (destroyed) is clear** — `CommTower::StartSpinners/StopSpinners` toggle exactly that
   bit (:152693/:152713), so spinners halt when their building dies.
 - Caveat resolved: VDF records are only 100 bytes, so for a VDF spinner the engine reads
-  `ddr` from the **next record's bytes 0–3** (`GeometryFile` low half) and the Target
-  vector from that record's **bytes 4–15** (`GeometryFile` high half + `Parent`) reinterpreted
-  as three floats. This is precisely why the toolkit's spinner-helper convention places a
-  dummy/helper GEO *after* the target — the helper's name/parent bytes encode axis and
-  speed. Byte-exact mapping now confirmed from `NewObj` + record stride.
+  `ddr` from the **next record's name bytes 0–3** (as an int) and the Target vector from
+  **name bytes 4–7 plus the next record's first two matrix floats** (record layout:
+  name@0, matrix@8, parent@56, class@92, flags@96). This is precisely why the toolkit's
+  spinner-helper convention places a dummy/helper GEO *after* the target — the helper's
+  trailing name chars and leading matrix values encode axis and speed. Byte-exact mapping
+  confirmed from `NewObj` + the 100-byte VGEO stride.
 
 ### 5.3 Disk bounding spheres stay authoritative for SCROUNGE(11) and PARKING_LOT(81)
 
@@ -306,7 +307,49 @@ dereferences the root object's `class_ptr` (so the craft must already have funk 
 and payload layout beyond dword 0 / 12 dwords for value 38 follows the ObjectType record
 shape.
 
-### 5.7 Recognized-but-stub chunks
+**Runtime semantics — what each injection actually does:**
+
+- **38 renders something; 40 and generic values do not.** Only the 38 path calls
+  `GeoCache_AddRep` (the fixed `hdlv_msk.geo` mask quad at rep band (0,4)). The 40 and
+  generic paths call only `create_obj_ext` + `ClassCreate` + matrix assign — no .geo is
+  ever loaded, so injected parts are **invisible transform nodes**.
+- **40 (custom POV):** stores the node into craft state +0xF4, the same eyepoint slot
+  filled from a class-40 model part (:294202). Effect = first-person camera origin and
+  basis come from this transform (with `HoverCraft::UpdateEyepoint` applying its own math
+  on top). Note: if the VGEO hierarchy *already* contains a class-40 part,
+  `obj_find_class(EYEPOINT)` may resolve to that one instead depending on tree order —
+  treat injected POVs as "when the model has none" or verify in-game.
+- **Generic values with effect classes are the interesting case:** because flame(75) /
+  smoke(76) / dust(77) emitters are behavior-driven rather than mesh-driven, an injected
+  emitter-classed node should produce visible effects at an arbitrary authored spot with
+  no VGEO entry. Smoke collection scans children for class 76 (:154472), so injected
+  smoke sources qualify; flame has a nacelle-parent check on one of its paths (:193771)
+  and dust is gated by a D3D option — both need in-game verification. Injected
+  hardpoints are useless (weapon lookup is by name suffix, injected names are empty);
+  an injected spinner(15) would rotate invisibly.
+
+### 5.7 Part scale leaks straight into gameplay physics
+
+Part transforms are consumed as **general 3×3 matrices — basis-vector lengths are never
+renormalized**, so any scale baked into a hardpoint's record matrix (its own, or any
+ancestor's) multiplies derived velocities:
+
+- **Producer build throw-out — CONFIRMED.** `GetConstructionMatrix` (:216760) takes the
+  GS1/GS2 special-hardpoint's world matrix verbatim (`obj_rel_parent_matrix(eject…)`,
+  ancestors included); `FinishBuild` (:216866–876) then sets the new object's velocity to
+  `25 × front_row(that matrix)` (`ScaleVector(local_70, 25.0, front)` → `SetVelocity`).
+  A hardpoint scaled 2× along its front axis launches builds at ~50 u/s instead of 25.
+- **Weapon fire — same mechanism.** `Cannon::Simulate` (:349640) composes the muzzle as a
+  raw product of weapon/hardpoint transforms and passes it to `OrdnanceClass::Build`;
+  projectile spawn derives position/direction from that matrix's rows. Non-uniform
+  hardpoint scale therefore skews direction and scales exit speed/knockback exactly as
+  modding reports describe. (Per-projectile formulas vary by class; the un-normalized
+  matrix hand-off is the shared root cause.)
+- Practical upshot: keep hardpoints/emitters/eject slots at unit scale unless deliberately
+  tuning gameplay; the toolkit's "Raw transform scaling" experimental mode can produce
+  these effects on purpose.
+
+### 5.8 Recognized-but-stub chunks
 
 `Process_VTFC/VCST/VCFC/WEPN/SPEC/VCHK/WGEO/GGEO/OGEO/WDFC/GDFC/SCHK` are literal
 `return 1;` stubs — the loader traverses such chunks and discards their payloads.
@@ -316,7 +359,7 @@ model. `SPCS` has no dedicated processor in this build (payload ignored); the to
 already round-trips it under both spellings. SDF extras: `SOBJ` loads one inline .geo by
 chunk id straight into the structure context (`Geom_Load`, context+100).
 
-### 5.8 Exact name-magic rules
+### 5.9 Exact name-magic rules
 
 - **Hardpoints**: `FindHardpoint` matches **id chars 5–7** of the 8-char name,
   case-insensitive, recursively over the tree (:181894/:215829). The gc/gr/gm/gs
@@ -327,6 +370,60 @@ chunk id straight into the structure context (`Geom_Load`, context+100).
   (:341631–635); a `null` parent plus all-zero rotation rows gets the identity matrix
   substituted (:341495–502).
 - **Spinner byte aliasing**: see §5.2 — exact byte map of the dummy-helper trick.
+- **Part scale → gameplay**: see §5.7 — hardpoint/ancestor scale multiplies producer
+  throw speed (25 × front row) and skews weapon muzzle matrices.
+
+### 5.10 Authored bounding volumes become authoritative with ObjectFlags bit 0x1
+
+`SetObjBbox` (:128036) recomputes each part's `bBox`/`bSphere` from LOD0 vertices **only
+when `(flags & 1) == 0`**. With bit 0x1 seeded from the record's ObjectFlags, the values
+authored in the VDF/SDF record (`GeoCenter`, `SphereRadius`, `BoxHalfHeightX/Y/Z`) are
+kept verbatim and never touched again. Those volumes then feed:
+
+- collision broadphase (sphere tests use `bSphere.radius` directly, :127299),
+- car-sphere setup for entity classes 1/3/4 (`SetCarSphere`),
+- AI approach/aim sphere queries and target-sphere math,
+- the bbox used by explosion/region logic.
+
+So *record bounds + flags bit 0x1* = a deliberate hitbox/broadphase override lever.
+Stock assets ship flags=0, i.e. always recomputed — nobody uses this.
+
+### 5.11 The VGEO damage axis is loaded but dead in 1.5
+
+The 28 VGEO bands per part are **7 damage states × 4 LODs**: the cache key is
+`repNum = (damage << 16) | lod`; `GeoCache_SelectLOD` pokes the low half (rendering does
+this continuously), while `GeoCache_SelectRep`/`ObjTree_SelectRep` — which poke the high
+half — have **no callers** in the executable. Consequence: an author may supply up to 7
+progressively damaged variants of each part and the loader will happily cache them, but
+bzone.exe 1.5 never selects anything except damage state 0. (Caveat: a vtable-dispatched
+caller would be invisible to this decomp; none was found.) The extra weapon-parented rep
+at band index 3 (§3, class 50 row) is loaded under the same dead axis.
+
+### 5.12 Emitter collection can overflow — validation hazard
+
+`Craft::FindSmokeSource` (:154463) appends **every** class-76 part found anywhere in the
+hierarchy into a fixed `smokeList[8]` with an unchecked `smokeCount++`;
+`Producer::FindSmokeSource` (:215847) does exactly the same for class-70 hardpoints.
+A vehicle with more than 8 smoke emitters, or a producer with more than 8 weapon
+hardpoints, writes part pointers past the array into adjacent craft-state fields —
+silent memory corruption, crash, or weirder. Export validation should flag counts > 8.
+
+### 5.13 Eyepoint transform drives the cockpit camera feel
+
+`HoverCraft::UpdateEyepoint` (0049D8C7) reads the eyepoint node's transform basis rows
+and multiplies them by 25.0 into the view-offset/shake integration. Position, rotation
+*and scale* of the POV part therefore change first-person framing and head-bob response
+(active only for the user craft with internal view + cockpit detail enabled). Combined
+with §5.6's VLOC value-40 injector, both a model-authored POV and a chunk-injected POV
+land in the same slot (+0xF4).
+
+### 5.14 Collision hull composition
+
+`Cgeom_Create` (00474CC6) builds collision polygons from **every face with
+vertex_count > 2**, regardless of ShadeType/TextureType/XluscentType — there is no
+material-based ghost-wall trick. Planes are stored negated (inward-facing convention);
+degenerate faces (≤2 verts) are skipped from collision but still render. Vertex welding
+dedupes identical positions (< 0.0001² distance).
 
 ## 6. Recommended toolkit updates (documentation-level; not implemented)
 
@@ -354,7 +451,19 @@ chunk id straight into the structure context (`Geom_Load`, context+100).
     headlight masks, custom eyepoints or extra parts with no stock-file precedent. Needs
     in-game testing before exposure; at minimum document its existence for hex editors.
 12. Validation could relax hardpoint-name checks: the engine only compares chars 5–7,
-    case-insensitively (§5.8).
+    case-insensitively (§5.9).
+13. Document the scale caveat (§5.7) next to the raw-transform experimental mode: scaling
+    hardpoints/eject slots changes throw speeds and muzzle behavior — feature, not bug,
+    but it should be stated where users are invited to try it.
+14. VLOC writer (§5.6): if pursued, value-38 gives day/night headlight masks without
+    authoring hdlt_msk parts per LOD; value-40 gives model-free POV overrides; emitter
+    classes give effect points without VGEO slots. All need in-game verification first.
+15. **Validation: warn when a craft has >8 smoke-emitter (76) parts or a producer >8
+    weapon-hardpoint (70) parts** — the engine's fixed `smokeList[8]` overflows
+    silently beyond that (§5.12).
+16. Document ObjectFlags bit 0x1 as "keep authored bounds" next to the existing
+    ObjectFlags advanced field (§5.10) — it is the only way record GeoCenter/SphereRadius
+    have any effect on non-terrain-special objects.
 
 ## 7. Source index
 
@@ -386,3 +495,10 @@ chunk id straight into the structure context (`Geom_Load`, context+100).
   `(…, SDFChunkDefs, 7 …)` :341322
 - Stock chunk census: 99 VDFs → {VDFC,VGEO,EXIT}×99, {COLP,SPCS}×77, no VLOC/XGEO/WGEO;
   scanner script in temp workspace (`chunk_tags.py`)
+- Bounds lifecycle: `SetObjBbox` (:128036, flags&1 gate), broadphase sphere use (:127299)
+- Rep cache key: `GeoCache_SelectRep` (0049B0A3, damage<<16|lod), `GeoCache_SelectLOD`
+  (0049B10A), dead `ObjTree_SelectRep` (0049B17A, no callers)
+- Emitter overflow: `Craft::FindSmokeSource` (00485DD6), `Producer::FindSmokeSource`
+  (004AA4FB) — unchecked `smokeList[count++]` vs fixed array of 8
+- Eyepoint camera math: `HoverCraft::UpdateEyepoint` (0049D8C7, transform rows ×25)
+- Collision hull: `Cgeom_Create` (00474CC6 — all faces >2 verts, negated planes)
