@@ -470,6 +470,30 @@ healthRatio thresholds to damage states, or a future Rebellion patch.
   content (recycler → wreck, building → rubble) are ODF/mission-level entity
   replacements, unrelated to this axis.
 
+**Concrete implementation recipe (if/when a driver exists):**
+
+1. **Content (VDF only).** Take a vehicle whose d0l0 block defines parts `hull` +
+   `turr`. In blocks d1…d6 (all four LOD copies each), set the hull record's name field
+   to `hulldN.geo`; leave turr's name unchanged for "no visual change". Ship the variant
+   `.geo` files alongside. Other fields in non-d0l0 records are ignored filler. Always
+   fill every state's LOD-0 slot: the runtime fallback retries only LOD 0, and skips the
+   retry entirely when the current LOD index is 1, so an unfilled state can blank the
+   part mid-game.
+2. **Hard limit — vehicles only.** The SDF path (`AddStructReps`) registers
+   `part->id` (the d0l0 name) for *every* band and never reads the later blocks' name
+   fields, so structures cannot carry per-state variants. Fits the I'76 lineage: cars,
+   not buildings.
+3. **Driver (missing in both engines).** Nothing calls `SelectRep` in 1.5 or Redux, so
+   authored states are inert until something drives them — unlike rotors/fins, which
+   work because `HoverCraft::UpdateGimbals` runs every frame. Sketch for
+   BZR-OpenShim: resolve `ObjTree_SelectRep` via the resolves table (with identity
+   notes per repo policy), tick per craft, map `healthRatio` through thresholds with
+   hysteresis, call `ObjTree_SelectRep(root_obj76, state)` only on state change.
+   MP-safe (cache/render-local). Pin the state on death.
+4. **Redux caveat.** Redux renders through Ogre while legacy GEO feeds
+   physics/collision; a driven swap may therefore affect collision hulls and hover
+   decks before (or instead of) pixels. One in-game test settles it.
+
 ### 5.12 Emitter collection can overflow — validation hazard
 
 `Craft::FindSmokeSource` (:154463) appends **every** class-76 part found anywhere in the
