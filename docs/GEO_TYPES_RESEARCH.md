@@ -181,10 +181,13 @@ Two slightly different lists decide whether a part's `.geo` file is ever loaded
   `HoverCraft::UpdateGimbals`, and flame(75)/dust(77) emitters drive the visible thruster
   and hover-dust effects. These were initially missed because the comparisons compile to
   numeric immediates (`== 0x42`/`0x43`/`0x44`/`0x4b`/`0x4d`) rather than symbolic names.
-- Remaining inert in bzone.exe 1.5: 42 COM, 54 SORT_OBJECT, 61 STRUCTURE_GEOMETRY,
-  69 COCKPIT_GEOMETRY (defined, no consumer found), with 64 ORDNANCE_GEOMETRY only
-  plausibly referenced via the static moving-objects class list. These render normally
-  and are safe to set, but nothing in the shipped executable branches on them.
+- **No effect observed (static analysis scope):** 42 COM, 54 SORT_OBJECT,
+  61 STRUCTURE_GEOMETRY, 69 COCKPIT_GEOMETRY — defined enum members with no consumer
+  found in the bzone.exe 1.5 binary; 64 ORDNANCE_GEOMETRY is only plausibly referenced
+  via the static moving-objects class list. These render normally and are safe to set;
+  wording deliberately stops short of "ignored" — runtime confirmation follows the
+  RUNTIME_SEMANTIC_VERIFICATION protocol (PR #7), and a vtable-dispatched or
+  data-table-referenced consumer could exist outside decompiled code.
 - **The dangerous values are 1, 3, 6:** they trigger an ODF-name remap whose failure mode
   is a NULL dereference — the long-standing "types 1/3 crash as VDF/SDF" lore, now
   precisely explained.
@@ -192,10 +195,12 @@ Two slightly different lists decide whether a part's `.geo` file is ever loaded
 Confidence labels: architecture and enum values CONFIRMED (decompiled code + PDB
 constants); the rotor/nacelle/fin/flame/dust behaviors CONFIRMED at
 `HoverCraft::HoverCraft` (0049CE34) and `HoverCraft::UpdateGimbals` (0049D01C region);
-"inert" verdicts carry the caveat that static .data tables (e.g. the 5-entry
-`Obj76_Moving_Objects_ID[]`) can reference class values without appearing in decompiled
-code; Redux-parity INFERRED but unverified (follow-up: diff the Redux binary's exclusion
-lists and gimbal code).
+"no effect observed" verdicts carry the caveat that static .data tables (e.g. the 5-entry
+`Obj76_Moving_Objects_ID[]`) and vtable dispatch can reference class values without
+appearing in decompiled code — they are scoped static-analysis observations, not
+behavioral proofs; runtime labels follow the RUNTIME_SEMANTIC_VERIFICATION protocol
+(PR #7 / `RUNTIME_TEST_KIT.md`). Redux-parity INFERRED but unverified (follow-up: diff
+the Redux binary's exclusion lists and gimbal code).
 
 ## 5. Undocumented mechanics inventory
 
