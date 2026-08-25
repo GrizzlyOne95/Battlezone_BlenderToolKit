@@ -27,37 +27,16 @@ def check(name, condition, detail=""):
 # ---------------------------------------------------------------------------
 # 1. Register the addon from the repo tree.
 #
-# NOTE: Blender 4.5.4 converts only annotation-only declarations; the addon
-# house style is `Prop: Any = bpy.props.XxxProperty(...)` (deferred lands in
-# the class dict instead of __annotations__), so RNA skips every property.
-# This is pre-existing on main and addon-wide. The harness mirrors the
-# deferred descriptors into __annotations__ before registering so the logic
-# below can be integration-tested. No repo code is changed.
+# All property declarations across the addon use the annotation-only form
+# (`Prop: bpy.props.XxxProperty(...)`), which Blender converts natively on
+# every supported version. The suite also asserts no deferred descriptors
+# survive registration below.
 # ---------------------------------------------------------------------------
 try:
     import bpy
 
-    def _fix_prop_annotations(module):
-        for objname in dir(module):
-            obj = getattr(module, objname)
-            if isinstance(obj, type) and issubclass(obj, bpy.types.PropertyGroup):
-                annotations = getattr(obj, "__annotations__", None)
-                if annotations is None:
-                    annotations = {}
-                    setattr(obj, "__annotations__", annotations)
-                for name, value in list(vars(obj).items()):
-                    if type(value).__name__ == "_PropertyDeferred":
-                        annotations[name] = value
-
     import bz98tools
 
-    _fix_prop_annotations(bz98tools)
-    try:
-        from bz98tools import map_io as _map_io
-
-        _fix_prop_annotations(_map_io)
-    except Exception:
-        pass
     bz98tools.register()
     check("addon registers cleanly", True)
 except Exception as exc:  # pragma: no cover
@@ -66,6 +45,24 @@ except Exception as exc:  # pragma: no cover
     traceback.print_exc()
     check("addon registers cleanly", False, str(exc))
     sys.exit(1)
+
+# RNA conversion sanity: no property group may keep a _PropertyDeferred in
+# its class dict after register_class (symptom of a dead declaration style).
+try:
+    _deferred = []
+    for _modname in ("bz98tools",):
+        _module = sys.modules[_modname]
+        for _name in dir(_module):
+            _obj = getattr(_module, _name)
+            if isinstance(_obj, type) and issubclass(
+                _obj, getattr(bpy.types, "PropertyGroup", object)
+            ):
+                for _pname, _pval in list(vars(_obj).items()):
+                    if type(_pval).__name__ == "_PropertyDeferred":
+                        _deferred.append(f"{_obj.__name__}.{_pname}")
+    check("all properties converted by RNA", not _deferred, ", ".join(_deferred[:4]))
+except Exception as exc:
+    check("all properties converted by RNA", False, str(exc))
 
 from bz98tools import export_vdf, import_vdf, validation, semantics, vdf_file  # noqa: E402
 from bz98tools import vdf_classes  # noqa: E402

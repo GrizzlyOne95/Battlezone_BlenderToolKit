@@ -282,7 +282,7 @@ class bzmapimport(Operator, ImportHelper):
     # ImportHelper mixin class uses this
     filename_ext = "*.hg2"
 
-    filter_glob: Any = StringProperty(
+    filter_glob: StringProperty(
         default="*.hg2",
         options={"HIDDEN"},
         maxlen=255,  # Max internal buffer length, longer would be clamped.
@@ -5887,43 +5887,43 @@ class bzbutton_exportmat(bpy.types.Operator):
 
 # All checkboxes and text fields go here
 class BZMapIO_Toggles(PropertyGroup):
-    ImportBZN: Any = BoolProperty(
+    ImportBZN: BoolProperty(
         name="Import Objects (.BZN)",
         description=" The BZN file contains objects such as scrap, tanks, spawnpoints, etc. Enables or disables IMPORT of these elements.",
         default=True,
     )
 
-    ExportBZN: Any = BoolProperty(
+    ExportBZN: BoolProperty(
         name="Export Objects (.BZN)",
         description=" The BZN file contains objects such as scrap, tanks, spawnpoints, etc. Enables or disables export of these elements.",
         default=True,
     )
 
-    RespawnTime: Any = StringProperty(
+    RespawnTime: StringProperty(
         name="", description=" How many seconds before respawn?", default="20"
     )
 
     # TEXTURE TOOLS OPTIONS #
 
-    RandomizeSolidRotation: Any = BoolProperty(
+    RandomizeSolidRotation: BoolProperty(
         name="Randomize Solid Rotation on Export",
         description=" During export, randomly mirror and rotate solid tiles. You will need to reload the map textures to see changes made by this option.",
         default=True,
     )
 
-    EnableSolids: Any = BoolProperty(
+    EnableSolids: BoolProperty(
         name="Apply Solid",
         description=" Enable/disable painting of solid tiles.",
         default=True,
     )
 
-    EnableDiagonals: Any = BoolProperty(
+    EnableDiagonals: BoolProperty(
         name="Apply Diagonals",
         description=" Enable/disable painting of diagonal tiles.",
         default=True,
     )
 
-    EnableCaps: Any = BoolProperty(
+    EnableCaps: BoolProperty(
         name="Apply Caps",
         description=" Enable/disable painting of cap tiles.",
         default=True,
@@ -5935,7 +5935,7 @@ class BZMAPIO_OT_import_custom_world(Operator):
     bl_label = "Import Custom World"
     bl_description = "Load a custom world folder containing a .trn, *_detail_atlas.csv, material, and atlas texture"
 
-    filepath: Any = StringProperty(
+    filepath: StringProperty(
         name="World Folder",
         subtype="DIR_PATH",
         default="",
@@ -6003,7 +6003,7 @@ class BZMAPIO_OT_open_template(bpy.types.Operator):
         return {"FINISHED"}
 
 
-mystr: Any = StringProperty(name="Enter something:")
+mystr: StringProperty(name="Enter something:")
 
 
 class BZMAPIO_PT_map_import(Panel):

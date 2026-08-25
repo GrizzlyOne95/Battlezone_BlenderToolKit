@@ -475,7 +475,7 @@ GEOPropertyGroup - The properties of a GEO that will be avaliable for editing/st
 
 
 class AnimationPropertyGroup(bpy.types.PropertyGroup):
-    Index: Any = bpy.props.IntProperty(
+    Index: bpy.props.IntProperty(
         name="Index",
         description="Animation index that decides what the animation is for",
         default=0,
@@ -483,7 +483,7 @@ class AnimationPropertyGroup(bpy.types.PropertyGroup):
         max=1000,
     )
 
-    Start: Any = bpy.props.IntProperty(
+    Start: bpy.props.IntProperty(
         name="Start",
         description="First frame of the animation",
         default=0,
@@ -491,7 +491,7 @@ class AnimationPropertyGroup(bpy.types.PropertyGroup):
         max=999999,
     )
 
-    Length: Any = bpy.props.IntProperty(
+    Length: bpy.props.IntProperty(
         name="Length",
         description="Amount of frames we run and can be negative",
         default=0,
@@ -499,7 +499,7 @@ class AnimationPropertyGroup(bpy.types.PropertyGroup):
         max=999999,
     )
 
-    Loop: Any = bpy.props.IntProperty(
+    Loop: bpy.props.IntProperty(
         name="Loop Count",
         description="How many times will the animation loop?",
         default=1,
@@ -507,7 +507,7 @@ class AnimationPropertyGroup(bpy.types.PropertyGroup):
         max=100,
     )
 
-    Speed: Any = bpy.props.FloatProperty(
+    Speed: bpy.props.FloatProperty(
         name="Speed",
         description="Speed the animation plays at",
         default=15.0,
@@ -515,13 +515,13 @@ class AnimationPropertyGroup(bpy.types.PropertyGroup):
         max=999999.0,
     )
 
-    UseCustomUnknownGeoMask: Any = bpy.props.BoolProperty(
+    UseCustomUnknownGeoMask: bpy.props.BoolProperty(
         name="Use Custom Mesh Slot Mask",
         description="Use a custom ANIM meshIndex[32] slot mask instead of automatic defaults",
         default=False,
     )
 
-    UnknownGeoMask: Any = bpy.props.IntVectorProperty(
+    UnknownGeoMask: bpy.props.IntVectorProperty(
         name="Mesh Slot Mask",
         description="Raw ANIM element meshIndex[32] values; stock files use 0/1 to mark affected GEO mesh slots",
         size=32,
@@ -531,7 +531,7 @@ class AnimationPropertyGroup(bpy.types.PropertyGroup):
 
 class SDFVDFPropertyGroup(bpy.types.PropertyGroup):
     # Shared Properties.
-    Name: Any = bpy.props.StringProperty(
+    Name: bpy.props.StringProperty(
         name="Name",
         description="The name inside the file. Kinda unimportant",
         default="New Thing",
@@ -539,7 +539,7 @@ class SDFVDFPropertyGroup(bpy.types.PropertyGroup):
     )
 
     # VDF Properties
-    VehicleSize: Any = bpy.props.IntProperty(
+    VehicleSize: bpy.props.IntProperty(
         name="Vehicle Size",
         description="Legacy VDF vehicle size/class field. Stock vehicles normally use 2; pilots, powerups, camera/repair helpers, and similar small objects commonly use 1.",
         default=2,
@@ -547,7 +547,7 @@ class SDFVDFPropertyGroup(bpy.types.PropertyGroup):
         max=10,
     )
 
-    VehicleType: Any = bpy.props.IntProperty(
+    VehicleType: bpy.props.IntProperty(
         name="Vehicle Type",
         description="Legacy VDF vehicle type field. Stock assets examined so far use 1; preserve imported values for compatibility.",
         default=1,
@@ -555,7 +555,7 @@ class SDFVDFPropertyGroup(bpy.types.PropertyGroup):
         max=10,
     )
 
-    Mass: Any = bpy.props.FloatProperty(
+    Mass: bpy.props.FloatProperty(
         name="Mass",
         description="Set how heavy the object is(Default: 1750.0 on many VDFs)",
         default=1750.0,
@@ -563,7 +563,7 @@ class SDFVDFPropertyGroup(bpy.types.PropertyGroup):
         max=34028234.0,
     )
 
-    CollMult: Any = bpy.props.FloatProperty(
+    CollMult: bpy.props.FloatProperty(
         name="Collision Multiplier(?)",
         description="Unknown(Default: 1.0)",
         default=1.0,
@@ -571,7 +571,7 @@ class SDFVDFPropertyGroup(bpy.types.PropertyGroup):
         max=34028234.0,
     )
 
-    DragCoefficient: Any = bpy.props.FloatProperty(
+    DragCoefficient: bpy.props.FloatProperty(
         name="Drag Coefficient",
         description="Aerodynamics(?)(Default: 0.0008)",
         default=0.0008,
@@ -579,7 +579,7 @@ class SDFVDFPropertyGroup(bpy.types.PropertyGroup):
         max=34028234.0,
     )
 
-    StructureType: Any = bpy.props.IntProperty(
+    StructureType: bpy.props.IntProperty(
         name="Structure Type",
         description="Legacy SDF structure type field. Stock assets examined so far use 1; preserve imported values for compatibility.",
         default=1,
@@ -588,7 +588,7 @@ class SDFVDFPropertyGroup(bpy.types.PropertyGroup):
     )
 
     # SDF Properties here!
-    Defensive: Any = bpy.props.IntProperty(
+    Defensive: bpy.props.IntProperty(
         name="SDFC DDR",
         description="Raw SDFC DDR integer after the LOD distances. Stock structures commonly use 500000; mine/powerup-like SDFs commonly use smaller values such as 200.",
         default=500000,
@@ -596,14 +596,14 @@ class SDFVDFPropertyGroup(bpy.types.PropertyGroup):
         max=2147483647,
     )
 
-    DeathExplosion: Any = bpy.props.StringProperty(
+    DeathExplosion: bpy.props.StringProperty(
         name="",
         description="The .xdf explosion type the building uses",
         default="xbldx1.xdf",
         maxlen=13,
     )
 
-    DeathSound: Any = bpy.props.StringProperty(
+    DeathSound: bpy.props.StringProperty(
         name="",
         description="The sound the building plays when destroyed",
         default="null",
@@ -611,7 +611,7 @@ class SDFVDFPropertyGroup(bpy.types.PropertyGroup):
     )
 
     # LOD Properties
-    LOD1: Any = bpy.props.FloatProperty(
+    LOD1: bpy.props.FloatProperty(
         name="LOD1 Distance",
         description="The distance that this LOD(Level of Detail) will load",
         default=5.0,
@@ -619,7 +619,7 @@ class SDFVDFPropertyGroup(bpy.types.PropertyGroup):
         max=3.40282e38,
     )
 
-    LOD2: Any = bpy.props.FloatProperty(
+    LOD2: bpy.props.FloatProperty(
         name="LOD2 Distance",
         description="The distance that this LOD(Level of Detail) will load",
         default=3.40282e38,
@@ -627,7 +627,7 @@ class SDFVDFPropertyGroup(bpy.types.PropertyGroup):
         max=3.40282e38,
     )
 
-    LOD3: Any = bpy.props.FloatProperty(
+    LOD3: bpy.props.FloatProperty(
         name="LOD3 Distance",
         description="The distance that this LOD(Level of Detail) will load",
         default=3.40282e38,
@@ -635,7 +635,7 @@ class SDFVDFPropertyGroup(bpy.types.PropertyGroup):
         max=3.40282e38,
     )
 
-    LOD4: Any = bpy.props.FloatProperty(
+    LOD4: bpy.props.FloatProperty(
         name="LOD4 Distance",
         description="The distance that this LOD(Level of Detail) will load",
         default=3.40282e38,
@@ -643,7 +643,7 @@ class SDFVDFPropertyGroup(bpy.types.PropertyGroup):
         max=3.40282e38,
     )
 
-    LOD5: Any = bpy.props.FloatProperty(
+    LOD5: bpy.props.FloatProperty(
         name="LOD5 Distance",
         description="The distance that this LOD(Level of Detail) will load",
         default=3.40282e38,
@@ -651,13 +651,13 @@ class SDFVDFPropertyGroup(bpy.types.PropertyGroup):
         max=3.40282e38,
     )
 
-    UseAdvancedAnimHeader: Any = bpy.props.BoolProperty(
+    UseAdvancedAnimHeader: bpy.props.BoolProperty(
         name="Use Advanced ANIM Header",
         description="Use custom raw ANIM pointer-placeholder fields; stock exported files normally leave these as zero",
         default=False,
     )
 
-    AnimNull2: Any = bpy.props.IntProperty(
+    AnimNull2: bpy.props.IntProperty(
         name="ANIM animPtr Placeholder",
         description="Raw legacy ANIM header animPtr placeholder; stock disk files normally store 0",
         default=0,
@@ -665,7 +665,7 @@ class SDFVDFPropertyGroup(bpy.types.PropertyGroup):
         max=2147483647,
     )
 
-    AnimUnknown2: Any = bpy.props.IntProperty(
+    AnimUnknown2: bpy.props.IntProperty(
         name="ANIM meshPtr Placeholder",
         description="Raw legacy ANIM header meshPtr placeholder; stock disk files normally store 0",
         default=0,
@@ -673,33 +673,33 @@ class SDFVDFPropertyGroup(bpy.types.PropertyGroup):
         max=2147483647,
     )
 
-    AnimReserved: Any = bpy.props.IntVectorProperty(
+    AnimReserved: bpy.props.IntVectorProperty(
         name="ANIM Key/Object Placeholders",
         description="Raw legacy ANIM rotKey/sclKey/posKey/object/entity pointer placeholders",
         size=5,
         default=(0, 0, 0, 0, 0),
     )
 
-    UseTranslation2Track: Any = bpy.props.BoolProperty(
+    UseTranslation2Track: bpy.props.BoolProperty(
         name="Export Scale Keys to SCLKEY",
         description="Write object scale animation into the legacy ANIM SCLKEY/Translation2 slot used by a few stock assets; location keys remain in POSKEY",
         default=False,
     )
 
-    UseCustomSCPS: Any = bpy.props.BoolProperty(
+    UseCustomSCPS: bpy.props.BoolProperty(
         name="Use Custom SPCS/SCPS",
         description="Write custom raw VDF SPCS/SCPS compatibility ints; most stock VDFs omit this chunk",
         default=False,
     )
 
-    SCPSData: Any = bpy.props.IntVectorProperty(
+    SCPSData: bpy.props.IntVectorProperty(
         name="SPCS/SCPS Data",
         description="Three raw compatibility ints for the optional VDF shell/SCPS chunk path",
         size=3,
         default=(0, 0, 0),
     )
 
-    VDFCRawNull: Any = bpy.props.IntProperty(
+    VDFCRawNull: bpy.props.IntProperty(
         name="VDFC Trailing Raw Int",
         description="Raw trailing int of the imported VDFC record; preserved verbatim on export (stock files store 0)",
         default=0,
@@ -1470,13 +1470,13 @@ def _collision_class_items(self, context):
 
 
 class GEOPropertyGroup(bpy.types.PropertyGroup):
-    GenerateCollision: Any = bpy.props.BoolProperty(
+    GenerateCollision: bpy.props.BoolProperty(
         name="Auto Generate SDF Collision Data",
         description="Generate GEO center, projectile box, and sphere radius for SDF/building collision data. This does not create VDF inner_col/outer_col vehicle collision helpers.",
         default=True,
     )
 
-    GeoCenterX: Any = bpy.props.FloatProperty(
+    GeoCenterX: bpy.props.FloatProperty(
         name="",
         description="Sets where the center of the GEO is. Used by projectile collision box in SDF",
         default=0.0,
@@ -1484,7 +1484,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
         max=50000.0,
     )
 
-    GeoCenterY: Any = bpy.props.FloatProperty(
+    GeoCenterY: bpy.props.FloatProperty(
         name="",
         description="Sets where the center of the GEO is. Used by projectile collision box in SDF",
         default=0.0,
@@ -1492,7 +1492,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
         max=50000.0,
     )
 
-    GeoCenterZ: Any = bpy.props.FloatProperty(
+    GeoCenterZ: bpy.props.FloatProperty(
         name="",
         description="Sets where the center of the GEO is. Used by projectile collision box in SDF",
         default=0.0,
@@ -1500,7 +1500,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
         max=50000.0,
     )
 
-    SphereRadius: Any = bpy.props.FloatProperty(
+    SphereRadius: bpy.props.FloatProperty(
         name="GEO Sphere Radius",
         description="If set to 0.0 GEO gibs don't even appear. Used in structures as well for deciding what faces you run into. If a GEO face is inside the sphere radius you will likely collide with it",
         default=3.0,
@@ -1508,7 +1508,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
         max=50000.0,
     )
 
-    BoxHalfHeightX: Any = bpy.props.FloatProperty(
+    BoxHalfHeightX: bpy.props.FloatProperty(
         name="",
         description="Sets the width/length of the projectile collision box for structures",
         default=0.0,
@@ -1516,7 +1516,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
         max=50000.0,
     )
 
-    BoxHalfHeightY: Any = bpy.props.FloatProperty(
+    BoxHalfHeightY: bpy.props.FloatProperty(
         name="",
         description="Sets the height of the projectile collision box for structures",
         default=0.0,
@@ -1524,7 +1524,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
         max=50000.0,
     )
 
-    BoxHalfHeightZ: Any = bpy.props.FloatProperty(
+    BoxHalfHeightZ: bpy.props.FloatProperty(
         name="",
         description="Sets the width/length of the projectile collision box for structures",
         default=0.0,
@@ -1532,7 +1532,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
         max=50000.0,
     )
 
-    GEOType: Any = bpy.props.IntProperty(
+    GEOType: bpy.props.IntProperty(
         name="GEO Type",
         description="What kind of GEO is this? Very important to set to what you want",
         default=60,
@@ -1540,7 +1540,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
         max=100,
     )
 
-    GEOTypeEnum: Any = bpy.props.EnumProperty(
+    GEOTypeEnum: bpy.props.EnumProperty(
         name="GEO Type",
         description="Named GEO type selector for common Battlezone roles. Unknown imported values are preserved exactly and listed as 'Unknown (0xNN)'.",
         items=_geotype_enum_items,
@@ -1548,7 +1548,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
         set=_set_geotype_enum_value,
     )
 
-    GEOFlags: Any = bpy.props.IntProperty(
+    GEOFlags: bpy.props.IntProperty(
         name="Object Flags (raw)",
         description="Raw VDF/SDF ObjectFlags field seeding the engine _OBJ76.flags state bitfield. Unknown bits are preserved when known checkboxes change. Stock assets ship 0.",
         default=0,
@@ -1556,7 +1556,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
         max=2147483647,
     )
 
-    BoundsMode: Any = bpy.props.EnumProperty(
+    BoundsMode: bpy.props.EnumProperty(
         name="Bounds Mode",
         description="How this part's GeoCenter/SphereRadius/BoxHalfHeight are produced on export. Imported parts default to Preserve so authored bounds survive round trips",
         items=(
@@ -1579,52 +1579,52 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
         default="AUTO",
     )
 
-    HasAuthoredBounds: Any = bpy.props.BoolProperty(
+    HasAuthoredBounds: bpy.props.BoolProperty(
         name="Has Authored Bounds",
         description="Set on import when the file carried explicit bound values for this part",
         default=False,
     )
 
-    IsPOVHelper: Any = bpy.props.BoolProperty(
+    IsPOVHelper: bpy.props.BoolProperty(
         name="Eyepoint Helper",
         description="This empty represents a class-40 eyepoint/POV part whose .geo is intentionally absent",
         default=False,
     )
 
-    ANIMOrientationFlags: Any = bpy.props.IntProperty(
+    ANIMOrientationFlags: bpy.props.IntProperty(
         name="ANIM Orientation Flags (raw)",
         description="Raw tagANIMOBJ_MESH.flags value captured from imported animations; stock assets store 0",
         default=0,
     )
 
-    HasDamageVariants: Any = bpy.props.BoolProperty(
+    HasDamageVariants: bpy.props.BoolProperty(
         name="Has Damage Variants",
         description="This part carries damage-state mesh swap names in the VGEO variant bands",
         default=False,
     )
 
-    DamageGeo1: Any = bpy.props.StringProperty(
+    DamageGeo1: bpy.props.StringProperty(
         name="Damaged 1 Mesh",
         description="8-char geo name swapped in for this part at damage state 1. Stock engines never select states above 0 until an external driver calls ObjTree_SelectRep",
         default="",
         maxlen=8,
     )
 
-    DamageGeo2: Any = bpy.props.StringProperty(
+    DamageGeo2: bpy.props.StringProperty(
         name="Heavily Damaged Mesh",
         description="8-char geo name swapped in for this part at damage state 2",
         default="",
         maxlen=8,
     )
 
-    DamageGeo3: Any = bpy.props.StringProperty(
+    DamageGeo3: bpy.props.StringProperty(
         name="Wreck Mesh",
         description="8-char geo name swapped in for this part at damage state 3",
         default="",
         maxlen=8,
     )
 
-    FlagKeepBounds: Any = bpy.props.BoolProperty(
+    FlagKeepBounds: bpy.props.BoolProperty(
         name="Keep Authored Bounds (0x1)",
         description="CONFIRMED: SetObjBbox keeps the record's GeoCenter/SphereRadius/BoxHalfHeight verbatim instead of recomputing them; those volumes then drive broadphase/hitbox queries. Also makes the part non-collidable via the collision nibble",
         get=lambda self: bool(self.GEOFlags & bz_semantics.OBJFLAG_KEEP_BOUNDS),
@@ -1637,7 +1637,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
         ),
     )
 
-    FlagViewRender: Any = bpy.props.BoolProperty(
+    FlagViewRender: bpy.props.BoolProperty(
         name="View Render Test (0x10)",
         description="CONFIRMED: tested inside AnimSprite::Render view logic. Rarely meaningful on static parts",
         get=lambda self: bool(self.GEOFlags & bz_semantics.OBJFLAG_VIEW_RENDER),
@@ -1650,7 +1650,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
         ),
     )
 
-    FlagDestroyedSeed: Any = bpy.props.BoolProperty(
+    FlagDestroyedSeed: bpy.props.BoolProperty(
         name="Spawn Destroyed (0x200)",
         description="CONFIRMED: engine treats the object as dead from creation (IsAlive false, path blocking skipped, spinners halt). Seeding this breaks mission liveness checks - advanced use only",
         get=lambda self: bool(self.GEOFlags & bz_semantics.OBJFLAG_DESTROYED),
@@ -1663,7 +1663,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
         ),
     )
 
-    FlagLightAttached: Any = bpy.props.BoolProperty(
+    FlagLightAttached: bpy.props.BoolProperty(
         name="Light Attached (0x800)",
         description="CONFIRMED: set at runtime by LOBJ chunk handlers and consumed by Building::Explode",
         get=lambda self: bool(self.GEOFlags & bz_semantics.OBJFLAG_LIGHT_ATTACHED),
@@ -1676,7 +1676,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
         ),
     )
 
-    CollisionClass: Any = bpy.props.EnumProperty(
+    CollisionClass: bpy.props.EnumProperty(
         name="Collision Class",
         description="CONFIRMED: high nibble of ObjectFlags consumed by obj_get/set_collision. NONCOLLIDABLE class forces 0x1000 at load",
         items=_collision_class_items,
@@ -1689,7 +1689,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
         ),
     )
 
-    ObjFlagTeam: Any = bpy.props.IntProperty(
+    ObjFlagTeam: bpy.props.IntProperty(
         name="Team Seed",
         description="CONFIRMED: bits 16-19 seed the object team id read by get_obj_team",
         min=0,
@@ -1703,7 +1703,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
         ),
     )
 
-    FlagsUnknownHex: Any = bpy.props.StringProperty(
+    FlagsUnknownHex: bpy.props.StringProperty(
         name="Unknown Bits",
         description="ObjectFlags bits outside the decoded set, preserved exactly through edits and round trips",
         get=lambda self: bz_semantics.format_hex(
@@ -1711,27 +1711,27 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
         ),
     )
 
-    IsSpinnerHelper: Any = bpy.props.BoolProperty(
+    IsSpinnerHelper: bpy.props.BoolProperty(
         name="Spinner Helper",
         description="Treat this GEO as a spinner controller helper for VDF export",
         default=False,
     )
 
-    SpinnerTarget: Any = bpy.props.StringProperty(
+    SpinnerTarget: bpy.props.StringProperty(
         name="Spinner Target",
         description="Object name this spinner helper should be written after in VDF",
         default="",
         maxlen=64,
     )
 
-    SpinnerAxis: Any = bpy.props.FloatVectorProperty(
+    SpinnerAxis: bpy.props.FloatVectorProperty(
         name="Spinner Axis",
         description="Spinner axis vector in VDF coordinates; direction = axis, magnitude = radians/sec when speed is 1",
         size=3,
         default=(1.0, 0.0, 0.0),
     )
 
-    SpinnerSpeed: Any = bpy.props.FloatProperty(
+    SpinnerSpeed: bpy.props.FloatProperty(
         name="Spinner Speed",
         description="Multiplier applied to Spinner Axis when exporting",
         default=1.0,
@@ -1739,13 +1739,13 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
         max=100000.0,
     )
 
-    UseRawVDFMatrix: Any = bpy.props.BoolProperty(
+    UseRawVDFMatrix: bpy.props.BoolProperty(
         name="Use Raw VDF Matrix",
         description="Write the raw 12-float VDF transform matrix directly instead of using Blender transform decomposition",
         default=False,
     )
 
-    RawVDFMatrix: Any = bpy.props.FloatVectorProperty(
+    RawVDFMatrix: bpy.props.FloatVectorProperty(
         name="Raw VDF Matrix",
         description="12 floats in order: right_x right_y right_z, up_x up_y up_z, front_x front_y front_z, pos_x pos_y pos_z",
         size=12,
@@ -1765,7 +1765,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
         ),
     )
 
-    SDFDDR: Any = bpy.props.IntProperty(
+    SDFDDR: bpy.props.IntProperty(
         name="DDR / Draw Distance",
         description="Raw StructObjectType ddr field. Stock structures commonly use 500000; some mine/powerup SDFs use smaller values such as 200.",
         default=50000,
@@ -1773,7 +1773,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
         max=5000000,
     )
 
-    SDFX: Any = bpy.props.FloatProperty(
+    SDFX: bpy.props.FloatProperty(
         name="Target X",
         description="Raw StructObjectType Target vector X. Used by some special structure helpers.",
         default=0,
@@ -1781,7 +1781,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
         max=500000.0,
     )
 
-    SDFY: Any = bpy.props.FloatProperty(
+    SDFY: bpy.props.FloatProperty(
         name="Target Y / Spin Speed",
         description="Raw StructObjectType Target vector Y. Stock type-15 structure spinners commonly use this as spin speed, such as 0.1 or 0.2.",
         default=0,
@@ -1789,7 +1789,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
         max=500000.0,
     )
 
-    SDFZ: Any = bpy.props.FloatProperty(
+    SDFZ: bpy.props.FloatProperty(
         name="Target Z",
         description="Raw StructObjectType Target vector Z. Used by some special structure helpers.",
         default=0,
@@ -1797,7 +1797,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
         max=500000.0,
     )
 
-    SDFTime: Any = bpy.props.FloatProperty(
+    SDFTime: bpy.props.FloatProperty(
         name="Target Time / Value",
         description="Raw StructObjectType Time field. Most stock structures leave this at 0; some mine/powerup-like SDFs use nonzero values.",
         default=0.0,
@@ -1805,7 +1805,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
         max=500000.0,
     )
 
-    GEOHeaderUnknown: Any = bpy.props.IntProperty(
+    GEOHeaderUnknown: bpy.props.IntProperty(
         name="GEO Header Checksum",
         description="Raw second GEO header int. Stock values behave like a legacy checksum/signature; preserve imported values because generated meaning is still unconfirmed.",
         default=69,
@@ -1813,7 +1813,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
         max=2147483647,
     )
 
-    GEOHeaderUnknown2: Any = bpy.props.IntProperty(
+    GEOHeaderUnknown2: bpy.props.IntProperty(
         name="GEO Header Flags",
         description="Raw trailing GEO header int. Legacy editor references treat this as render flags; stock Redux assets are normally 0.",
         default=0,
@@ -1821,7 +1821,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
         max=2147483647,
     )
 
-    GEOFaceUnknownDefault: Any = bpy.props.IntProperty(
+    GEOFaceUnknownDefault: bpy.props.IntProperty(
         name="Face Reserved Raw",
         description="Default raw face reserved int used when per-face attributes are missing; stock assets normally store 0",
         default=0,
@@ -1829,7 +1829,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
         max=2147483647,
     )
 
-    GEOFaceShadeTypeDefault: Any = bpy.props.IntProperty(
+    GEOFaceShadeTypeDefault: bpy.props.IntProperty(
         name="Face Shade Type",
         description="Default face shade byte: 4 is flat shaded, 5 is Gouraud shaded. Gouraud opaque faces commonly use bytes 05 01 00.",
         default=4,
@@ -1837,7 +1837,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
         max=255,
     )
 
-    GEOFaceTextureTypeDefault: Any = bpy.props.IntProperty(
+    GEOFaceTextureTypeDefault: bpy.props.IntProperty(
         name="Face Texture Type",
         description="Default face texture flags byte. Stock opaque perspective faces commonly use 1 as the middle byte.",
         default=0,
@@ -1845,7 +1845,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
         max=255,
     )
 
-    GEOFaceXluscentTypeDefault: Any = bpy.props.IntProperty(
+    GEOFaceXluscentTypeDefault: bpy.props.IntProperty(
         name="Face Xluscent Type",
         description="Default face translucency byte: 0 opaque, 1 one-third translucent, 2 two-thirds translucent.",
         default=0,
@@ -1853,7 +1853,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
         max=255,
     )
 
-    GEOFaceParentDefault: Any = bpy.props.IntProperty(
+    GEOFaceParentDefault: bpy.props.IntProperty(
         name="Face Parent",
         description="Default face parent index when per-face attributes are missing",
         default=0,
@@ -1861,7 +1861,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
         max=2147483647,
     )
 
-    GEOFaceNodeDefault: Any = bpy.props.IntProperty(
+    GEOFaceNodeDefault: bpy.props.IntProperty(
         name="Face Node",
         description="Default face node/tree-branch int when per-face attributes are missing",
         default=0,
@@ -1871,7 +1871,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
 
 
 class MaterialPropertyGroup(bpy.types.PropertyGroup):
-    MapTexture: Any = bpy.props.StringProperty(
+    MapTexture: bpy.props.StringProperty(
         name="Texture",
         description="The name of the .map texture that this material will represent. Do not include .map extension name.",
         default="",
@@ -1880,29 +1880,29 @@ class MaterialPropertyGroup(bpy.types.PropertyGroup):
 
 
 class ValidationIssuePropertyGroup(bpy.types.PropertyGroup):
-    severity: Any = bpy.props.StringProperty(name="Severity")
-    scope: Any = bpy.props.StringProperty(name="Scope")
-    target: Any = bpy.props.StringProperty(name="Target")
-    message: Any = bpy.props.StringProperty(name="Message")
-    export_modes: Any = bpy.props.StringProperty(name="Export Modes")
-    object_name: Any = bpy.props.StringProperty(name="Object Name")
-    action: Any = bpy.props.StringProperty(name="Action")
+    severity: bpy.props.StringProperty(name="Severity")
+    scope: bpy.props.StringProperty(name="Scope")
+    target: bpy.props.StringProperty(name="Target")
+    message: bpy.props.StringProperty(name="Message")
+    export_modes: bpy.props.StringProperty(name="Export Modes")
+    object_name: bpy.props.StringProperty(name="Object Name")
+    action: bpy.props.StringProperty(name="Action")
 
 
 class ImportDiagnosticPropertyGroup(bpy.types.PropertyGroup):
-    severity: Any = bpy.props.StringProperty(name="Severity")
-    scope: Any = bpy.props.StringProperty(name="Scope")
-    target: Any = bpy.props.StringProperty(name="Target")
-    message: Any = bpy.props.StringProperty(name="Message")
+    severity: bpy.props.StringProperty(name="Severity")
+    scope: bpy.props.StringProperty(name="Scope")
+    target: bpy.props.StringProperty(name="Target")
+    message: bpy.props.StringProperty(name="Message")
 
 
 class BZVLOCChunkEntry(bpy.types.PropertyGroup):
     """One VLOC part-injection entry (vehicle-load chunk)."""
 
-    name: Any = bpy.props.StringProperty(name="Entry")
-    label: Any = bpy.props.StringProperty(name="Kind")
+    name: bpy.props.StringProperty(name="Entry")
+    label: bpy.props.StringProperty(name="Kind")
 
-    kind: Any = bpy.props.EnumProperty(
+    kind: bpy.props.EnumProperty(
         name="Injection Kind",
         description="CONFIRMED payload dispatch of Process_VLOC_Chunk. GENERIC uses the first payload dword as the new part's class id",
         items=(
@@ -1930,7 +1930,7 @@ class BZVLOCChunkEntry(bpy.types.PropertyGroup):
         default="POV",
     )
 
-    class_id: Any = bpy.props.IntProperty(
+    class_id: bpy.props.IntProperty(
         name="Class Id",
         description="Raw payload dword 0. For GENERIC injections this doubles as the new part's engine class id",
         default=40,
@@ -1938,26 +1938,26 @@ class BZVLOCChunkEntry(bpy.types.PropertyGroup):
         max=2147483647,
     )
 
-    matrix: Any = bpy.props.FloatVectorProperty(
+    matrix: bpy.props.FloatVectorProperty(
         name="Matrix",
         description="Engine-space MAT_3D_FILE (right/up/front/posit rows). Bind a Blender object to fill this from its local transform",
         size=12,
         default=(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0),
     )
 
-    target_object: Any = bpy.props.StringProperty(
+    target_object: bpy.props.StringProperty(
         name="Bound Object",
         description="Blender object whose local transform feeds this injection matrix",
         default="",
     )
 
-    preserve_raw: Any = bpy.props.BoolProperty(
+    preserve_raw: bpy.props.BoolProperty(
         name="Preserve Original Payload",
         description="Re-emit captured bytes unchanged until you bind an object or edit fields explicitly",
         default=True,
     )
 
-    payload_b64: Any = bpy.props.StringProperty(
+    payload_b64: bpy.props.StringProperty(
         name="Raw Payload",
         description="Original VLOC payload bytes (base64) kept for exact round trips",
         default="",
@@ -1967,19 +1967,19 @@ class BZVLOCChunkEntry(bpy.types.PropertyGroup):
 class BZPreservedChunkEntry(bpy.types.PropertyGroup):
     """An unrecognized VDF/SDF chunk preserved byte-for-byte."""
 
-    tag: Any = bpy.props.StringProperty(name="Tag")
-    payload_b64: Any = bpy.props.StringProperty(name="Payload")
+    tag: bpy.props.StringProperty(name="Tag")
+    payload_b64: bpy.props.StringProperty(name="Payload")
 
 
 class BZDamageBandRecordEntry(bpy.types.PropertyGroup):
     """A raw VGEO variant-band record preserved opaquely."""
 
-    part_name: Any = bpy.props.StringProperty(
+    part_name: bpy.props.StringProperty(
         name="Part", description="d0 record name this slot maps to (empty = unknown slot)"
     )
-    slot: Any = bpy.props.IntProperty(name="Slot", default=0)
-    band: Any = bpy.props.IntProperty(name="Band", default=0)
-    payload_b64: Any = bpy.props.StringProperty(name="Record")
+    slot: bpy.props.IntProperty(name="Slot", default=0)
+    band: bpy.props.IntProperty(name="Band", default=0)
+    payload_b64: bpy.props.StringProperty(name="Record")
 
 
 def _add_import_diagnostic(scene, severity, scope, target, message):
@@ -2833,7 +2833,7 @@ class BZ98TOOLS_OT_validate_scene(bpy.types.Operator):
     bl_idname = "bz.validate_scene"
     bl_label = "Validate Battlezone Scene"
 
-    preset: Any = EnumProperty(
+    preset: EnumProperty(
         name="Preset",
         description="Validation focus for animation and vehicle workflow checks",
         items=VALIDATION_PRESET_ITEMS,
@@ -2871,7 +2871,7 @@ class BZ98TOOLS_OT_select_validation_target(bpy.types.Operator):
         "Select and activate the object referenced by this validation issue"
     )
 
-    object_name: Any = StringProperty(name="Object Name", default="")
+    object_name: StringProperty(name="Object Name", default="")
 
     def execute(self, context):
         if not self.object_name:
@@ -2896,7 +2896,7 @@ class BZ98TOOLS_OT_fix_validation_name(bpy.types.Operator):
     bl_label = "Fix Legacy Name"
     bl_description = "Rename this object to a valid legacy Battlezone export name"
 
-    object_name: Any = StringProperty(name="Object Name", default="")
+    object_name: StringProperty(name="Object Name", default="")
 
     def execute(self, context):
         if not self.object_name:
@@ -2951,7 +2951,7 @@ class BZ98TOOLS_OT_select_by_object_type(bpy.types.Operator):
     bl_description = "Select all mesh or non-mesh objects in the active scene"
     bl_options = {"REGISTER", "UNDO"}
 
-    selection_mode: Any = EnumProperty(
+    selection_mode: EnumProperty(
         name="Selection Mode",
         items=(
             ("MESH", "Mesh Objects", "Select only mesh objects"),
@@ -3000,7 +3000,7 @@ class BZ98TOOLS_OT_quick_normals_fix(bpy.types.Operator):
     bl_description = "Recalculate selected mesh normals for common Ogre import cleanup"
     bl_options = {"REGISTER", "UNDO"}
 
-    normal_mode: Any = EnumProperty(
+    normal_mode: EnumProperty(
         name="Mode",
         items=(
             (
@@ -3088,7 +3088,7 @@ class BZ98TOOLS_OT_create_organic_redux_skin(bpy.types.Operator):
     bl_description = "Create a Redux armature and starter mesh weights from legacy GEO control pivots"
     bl_options = {"REGISTER", "UNDO"}
 
-    control_source: Any = EnumProperty(
+    control_source: EnumProperty(
         name="Control Source",
         items=(
             (
@@ -3105,13 +3105,13 @@ class BZ98TOOLS_OT_create_organic_redux_skin(bpy.types.Operator):
         default="SELECTED",
     )
 
-    keep_controls_visible: Any = BoolProperty(
+    keep_controls_visible: BoolProperty(
         name="Keep GEO Controls Visible",
         description="Leave legacy GEO control objects visible after creating the Redux rig",
         default=False,
     )
 
-    weight_mode: Any = EnumProperty(
+    weight_mode: EnumProperty(
         name="Weight Mode",
         items=(
             (
@@ -3128,7 +3128,7 @@ class BZ98TOOLS_OT_create_organic_redux_skin(bpy.types.Operator):
         default="BLENDS",
     )
 
-    blend_radius: Any = FloatProperty(
+    blend_radius: FloatProperty(
         name="Blend Radius",
         description="Distance around parent/child control segments where starter blend weights are added",
         default=0.35,
@@ -3136,7 +3136,7 @@ class BZ98TOOLS_OT_create_organic_redux_skin(bpy.types.Operator):
         soft_max=10.0,
     )
 
-    max_influences: Any = IntProperty(
+    max_influences: IntProperty(
         name="Max Influences",
         description="Maximum weighted bones per vertex; Redux native export keeps at most three",
         default=3,
@@ -3144,7 +3144,7 @@ class BZ98TOOLS_OT_create_organic_redux_skin(bpy.types.Operator):
         max=3,
     )
 
-    replace_existing: Any = BoolProperty(
+    replace_existing: BoolProperty(
         name="Replace Existing Rig Data",
         description="Clear matching generated vertex groups and the generated armature modifier before rebinding",
         default=True,
@@ -3219,20 +3219,20 @@ class BZ98TOOLS_OT_create_vehicle_geo_set(bpy.types.Operator):
     bl_description = "Create a movable starter set of tiny standard vehicle GEO cubes"
     bl_options = {"REGISTER", "UNDO"}
 
-    base_prefix: Any = StringProperty(
+    base_prefix: StringProperty(
         name="3-Character Prefix",
         description="First three characters for generated legacy GEO names",
         default="",
         maxlen=3,
     )
 
-    parent_to_body: Any = BoolProperty(
+    parent_to_body: BoolProperty(
         name="Parent To Body",
         description="Parent generated helper GEOs to the body cube",
         default=True,
     )
 
-    select_created: Any = BoolProperty(
+    select_created: BoolProperty(
         name="Select Created",
         description="Select all generated GEO cubes when complete",
         default=True,
@@ -3897,7 +3897,7 @@ class BZ_OT_vloc_add(bpy.types.Operator):
     bl_idname = "bz.vloc_add"
     bl_label = "Add VLOC Injection"
 
-    kind: Any = bpy.props.EnumProperty(
+    kind: bpy.props.EnumProperty(
         name="Kind",
         items=(
             ("HEADLIGHT", "Headlight Mask (38)", "Night-only headlight mask injection"),
@@ -3941,7 +3941,7 @@ class BZ_OT_vloc_remove(bpy.types.Operator):
     bl_idname = "bz.vloc_remove"
     bl_label = "Remove Selected VLOC Entry"
 
-    index: Any = bpy.props.IntProperty(default=-1)
+    index: bpy.props.IntProperty(default=-1)
 
     def execute(self, context):
         store = getattr(context.scene, "bz_vloc_chunks", None)
@@ -3959,7 +3959,7 @@ class BZ_OT_vloc_bind_selected(bpy.types.Operator):
     bl_idname = "bz.vloc_bind_selected"
     bl_label = "Bind Selected Object"
 
-    index: Any = bpy.props.IntProperty(default=-1)
+    index: bpy.props.IntProperty(default=-1)
 
     def execute(self, context):
         store = getattr(context.scene, "bz_vloc_chunks", None)
@@ -4333,7 +4333,7 @@ class OPMoveElement(bpy.types.Operator):
     bl_label = "Move Element"
     bl_description = "Move the selected animation element up or down"
 
-    direction: Any = EnumProperty(
+    direction: EnumProperty(
         name="Direction",
         items=(
             ("UP", "Up", "Move the animation element up"),
@@ -4368,7 +4368,7 @@ class OPApplyAnimationPreset(bpy.types.Operator):
     bl_label = "Add Animation Preset"
     bl_description = "Append a preset set of animation slots as a starting point"
 
-    preset: Any = EnumProperty(
+    preset: EnumProperty(
         name="Preset",
         items=ANIMATION_PRESET_ITEMS,
         default="DEPLOY_PAIR",
@@ -4394,6 +4394,18 @@ class OPApplyAnimationPreset(bpy.types.Operator):
         return {"FINISHED"}
 
 
+def _resolve_scene_object(context, name):
+    """Look up a scene object by exact (case-insensitive) name for operator
+    name-based selectors."""
+    needle = str(name or "").strip()
+    if not needle:
+        return None
+    for obj in getattr(context.scene, "objects", []):
+        if obj.name.lower() == needle.lower():
+            return obj
+    return None
+
+
 class BZ98TOOLS_OT_mirror_legacy_animation_keys(bpy.types.Operator):
     bl_idname = "bz.mirror_legacy_animation_keys"
     bl_label = "Mirror Legacy Animation Keys"
@@ -4402,31 +4414,35 @@ class BZ98TOOLS_OT_mirror_legacy_animation_keys(bpy.types.Operator):
     )
     bl_options = {"REGISTER", "UNDO"}
 
-    mirror_from: Any = bpy.props.PointerProperty(
+    # Operators cannot own data-block PointerProperties, so the explicit pair
+    # is authored by object NAME and resolved against the scene at run time.
+    mirror_from: bpy.props.StringProperty(
         name="Mirror From",
-        description="Optional explicit source GEO object. When both selectors are set, name-token matching is skipped.",
-        type=bpy.types.Object,
+        description="Optional source GEO object name. When both selectors are set, name-token matching is skipped.",
+        default="",
+        maxlen=64,
     )
 
-    mirror_to: Any = bpy.props.PointerProperty(
+    mirror_to: bpy.props.StringProperty(
         name="Mirror To",
-        description="Optional explicit target GEO object. When both selectors are set, name-token matching is skipped.",
-        type=bpy.types.Object,
+        description="Optional target GEO object name. When both selectors are set, name-token matching is skipped.",
+        default="",
+        maxlen=64,
     )
 
-    source_token: Any = StringProperty(
+    source_token: StringProperty(
         name="Source Token",
         description="Text in source object names to replace when finding the target side",
         default=".L",
     )
 
-    target_token: Any = StringProperty(
+    target_token: StringProperty(
         name="Target Token",
         description="Replacement text used to find matching target object names",
         default=".R",
     )
 
-    source_scope: Any = EnumProperty(
+    source_scope: EnumProperty(
         name="Scope",
         description="Objects to scan for source-side animation",
         items=(
@@ -4436,7 +4452,7 @@ class BZ98TOOLS_OT_mirror_legacy_animation_keys(bpy.types.Operator):
         default="SELECTED",
     )
 
-    mirror_axis: Any = EnumProperty(
+    mirror_axis: EnumProperty(
         name="Mirror Axis",
         description="Local legacy axis to mirror across",
         items=(
@@ -4447,13 +4463,13 @@ class BZ98TOOLS_OT_mirror_legacy_animation_keys(bpy.types.Operator):
         default="X",
     )
 
-    use_scene_range: Any = BoolProperty(
+    use_scene_range: BoolProperty(
         name="Use Scene Frame Range",
         description="Limit copied keys to the current scene frame range",
         default=True,
     )
 
-    frame_start: Any = IntProperty(
+    frame_start: IntProperty(
         name="Start",
         description="First frame to copy when scene range is disabled",
         default=0,
@@ -4461,7 +4477,7 @@ class BZ98TOOLS_OT_mirror_legacy_animation_keys(bpy.types.Operator):
         max=999999,
     )
 
-    frame_end: Any = IntProperty(
+    frame_end: IntProperty(
         name="End",
         description="Last frame to copy when scene range is disabled",
         default=9999,
@@ -4469,7 +4485,7 @@ class BZ98TOOLS_OT_mirror_legacy_animation_keys(bpy.types.Operator):
         max=999999,
     )
 
-    rest_frame: Any = IntProperty(
+    rest_frame: IntProperty(
         name="Rest Frame",
         description="Frame used as the source and target rest pose before mirrored motion is applied",
         default=0,
@@ -4477,31 +4493,31 @@ class BZ98TOOLS_OT_mirror_legacy_animation_keys(bpy.types.Operator):
         max=999999,
     )
 
-    include_descendants: Any = BoolProperty(
+    include_descendants: BoolProperty(
         name="Include Descendants",
         description="When using selected sources, also scan their child objects",
         default=True,
     )
 
-    include_location: Any = BoolProperty(
+    include_location: BoolProperty(
         name="Location",
         description="Copy mirrored location keys",
         default=True,
     )
 
-    include_rotation: Any = BoolProperty(
+    include_rotation: BoolProperty(
         name="Rotation",
         description="Copy mirrored rotation keys",
         default=True,
     )
 
-    include_scale: Any = BoolProperty(
+    include_scale: BoolProperty(
         name="Scale",
         description="Copy scale keys too; legacy VDF/SDF export normally ignores object scale animation",
         default=False,
     )
 
-    overwrite_target_keys: Any = BoolProperty(
+    overwrite_target_keys: BoolProperty(
         name="Overwrite Target Keys",
         description="Remove existing target transform keys in the copied frame range before inserting mirrored keys",
         default=True,
@@ -4524,10 +4540,24 @@ class BZ98TOOLS_OT_mirror_legacy_animation_keys(bpy.types.Operator):
         explicit.label(text="Explicit Pair")
         explicit.prop(self, "mirror_from")
         explicit.prop(self, "mirror_to")
-        if self.mirror_from is not None and self.mirror_to is not None:
-            warning = _legacy_mirror_similarity_warning(
-                self.mirror_from, self.mirror_to
+        from_obj = _resolve_scene_object(context, self.mirror_from)
+        to_obj = _resolve_scene_object(context, self.mirror_to)
+        if self.mirror_from.strip() and from_obj is None:
+            _draw_wrapped_label(
+                explicit,
+                f"'{self.mirror_from.strip()}' is not in the current scene.",
+                icon="ERROR",
+                width=62,
             )
+        if self.mirror_to.strip() and to_obj is None:
+            _draw_wrapped_label(
+                explicit,
+                f"'{self.mirror_to.strip()}' is not in the current scene.",
+                icon="ERROR",
+                width=62,
+            )
+        if from_obj is not None and to_obj is not None:
+            warning = _legacy_mirror_similarity_warning(from_obj, to_obj)
             if warning:
                 _draw_wrapped_label(explicit, warning, icon="WARNING", width=62)
             else:
@@ -4541,7 +4571,7 @@ class BZ98TOOLS_OT_mirror_legacy_animation_keys(bpy.types.Operator):
         naming = layout.box()
         naming.label(text="Matching")
         naming.enabled = not (
-            self.mirror_from is not None and self.mirror_to is not None
+            bool(self.mirror_from.strip()) and bool(self.mirror_to.strip())
         )
         row = naming.row(align=True)
         row.prop(self, "source_token")
@@ -4568,13 +4598,24 @@ class BZ98TOOLS_OT_mirror_legacy_animation_keys(bpy.types.Operator):
         mirror.prop(self, "overwrite_target_keys")
 
     def execute(self, context):
-        explicit_pair = self.mirror_from is not None or self.mirror_to is not None
-        if explicit_pair and (self.mirror_from is None or self.mirror_to is None):
+        from_name = self.mirror_from.strip()
+        to_name = self.mirror_to.strip()
+        explicit_pair = bool(from_name) or bool(to_name)
+        if explicit_pair and (not from_name or not to_name):
             self.report(
                 {"ERROR"},
                 "Set both Mirror From and Mirror To, or leave both blank for token matching.",
             )
             return {"CANCELLED"}
+
+        scene = context.scene
+        from_obj = _resolve_scene_object(context, from_name)
+        to_obj = _resolve_scene_object(context, to_name)
+        if explicit_pair and (from_obj is None or to_obj is None):
+            missing = from_name if from_obj is None else to_name
+            self.report({"ERROR"}, f"Object '{missing}' was not found in the scene.")
+            return {"CANCELLED"}
+
         if not explicit_pair and not self.source_token:
             self.report({"ERROR"}, "Source token cannot be blank.")
             return {"CANCELLED"}
@@ -4582,7 +4623,6 @@ class BZ98TOOLS_OT_mirror_legacy_animation_keys(bpy.types.Operator):
             self.report({"ERROR"}, "Enable at least one transform channel.")
             return {"CANCELLED"}
 
-        scene = context.scene
         if self.use_scene_range:
             frame_start = int(scene.frame_start)
             frame_end = int(scene.frame_end)
@@ -4594,7 +4634,7 @@ class BZ98TOOLS_OT_mirror_legacy_animation_keys(bpy.types.Operator):
             return {"CANCELLED"}
 
         if explicit_pair:
-            candidates = [self.mirror_from]
+            candidates = [from_obj]
         elif self.source_scope == "SCENE":
             candidates = list(scene.objects)
         else:
@@ -4611,7 +4651,7 @@ class BZ98TOOLS_OT_mirror_legacy_animation_keys(bpy.types.Operator):
         missing_targets = 0
         for source in candidates:
             if explicit_pair:
-                target = self.mirror_to
+                target = to_obj
             else:
                 target_name = _replace_name_token(
                     source.name, self.source_token, self.target_token
@@ -4801,7 +4841,7 @@ class OPGenerateVDFCollisionMeshes(bpy.types.Operator):
         "(SDF collision is calculated differently and does not use these)"
     )
 
-    inner_scale: Any = bpy.props.FloatProperty(
+    inner_scale: bpy.props.FloatProperty(
         name="Inner Scale",
         description="Overall multiplier for the stock inner collision profile; 1.0 matches stock VDF side insets",
         default=1.0,
@@ -4809,7 +4849,7 @@ class OPGenerateVDFCollisionMeshes(bpy.types.Operator):
         max=1.0,
     )
 
-    outer_margin: Any = bpy.props.FloatProperty(
+    outer_margin: bpy.props.FloatProperty(
         name="Outer Box Margin",
         description="Extra padding added to the outer collision box (fraction of box size)",
         default=0.0,
@@ -4817,7 +4857,7 @@ class OPGenerateVDFCollisionMeshes(bpy.types.Operator):
         max=1.0,
     )
 
-    profile: Any = bpy.props.EnumProperty(
+    profile: bpy.props.EnumProperty(
         name="COL Profile",
         description="Shape used for generated VDF inner/outer collision helpers",
         items=(
@@ -5162,7 +5202,7 @@ class OPGenerateCockpitGeometry(bpy.types.Operator):
     )
     bl_options = {"REGISTER", "UNDO"}
 
-    source_lod: Any = bpy.props.EnumProperty(
+    source_lod: bpy.props.EnumProperty(
         name="Source LOD",
         description="Redux uses LOD1 for primary geometry and LOD2 for cockpit geometry",
         items=(
@@ -5172,7 +5212,7 @@ class OPGenerateCockpitGeometry(bpy.types.Operator):
         default="1",
     )
 
-    target_lod: Any = bpy.props.EnumProperty(
+    target_lod: bpy.props.EnumProperty(
         name="Target LOD",
         description="Redux uses LOD1 for primary geometry and LOD2 for cockpit geometry",
         items=(
@@ -5182,13 +5222,13 @@ class OPGenerateCockpitGeometry(bpy.types.Operator):
         default="2",
     )
 
-    replace_existing: Any = bpy.props.BoolProperty(
+    replace_existing: bpy.props.BoolProperty(
         name="Replace Existing Targets",
         description="Replace existing generated target objects with the same names",
         default=True,
     )
 
-    select_created: Any = bpy.props.BoolProperty(
+    select_created: bpy.props.BoolProperty(
         name="Select Created Objects",
         description="Select the generated cockpit objects when done",
         default=True,
@@ -5594,9 +5634,9 @@ class BZ98TOOLS_OT_apply_export_preset(bpy.types.Operator):
         "Apply a built-in or saved export preset to the active export dialog"
     )
 
-    export_kind: Any = StringProperty(name="Export Kind", default="")
-    preset_key: Any = StringProperty(name="Preset Key", default="")
-    custom_label: Any = StringProperty(name="Custom Label", default="")
+    export_kind: StringProperty(name="Export Kind", default="")
+    preset_key: StringProperty(name="Preset Key", default="")
+    custom_label: StringProperty(name="Custom Label", default="")
 
     def execute(self, context):
         operator = _get_active_export_operator(context, self.export_kind)
@@ -5625,8 +5665,8 @@ class BZ98TOOLS_OT_save_export_preset(bpy.types.Operator):
     bl_label = "Save Export Preset"
     bl_description = "Save the current export settings as a reusable preset"
 
-    export_kind: Any = StringProperty(name="Export Kind", default="")
-    preset_name: Any = StringProperty(name="Preset Name", default="")
+    export_kind: StringProperty(name="Export Kind", default="")
+    preset_name: StringProperty(name="Preset Name", default="")
 
     def invoke(self, context, event):
         if not self.preset_name:
@@ -5668,8 +5708,8 @@ class BZ98TOOLS_OT_delete_export_preset(bpy.types.Operator):
     bl_label = "Delete Export Preset"
     bl_description = "Delete a saved export preset"
 
-    export_kind: Any = StringProperty(name="Export Kind", default="")
-    custom_label: Any = StringProperty(name="Custom Label", default="")
+    export_kind: StringProperty(name="Export Kind", default="")
+    custom_label: StringProperty(name="Custom Label", default="")
 
     def execute(self, context):
         custom_label = (self.custom_label or "").strip()
@@ -5771,30 +5811,30 @@ class ImportGEO(bpy.types.Operator, ImportHelper):
     bl_description = "Import a Battlezone .GEO file"
     bl_options = {"PRESET", "UNDO"}
     filename_ext = ".geo"
-    filter_glob: Any = StringProperty(
+    filter_glob: StringProperty(
         default="*.geo",
         options={"HIDDEN"},
     )
 
-    PreserveFaceColors: Any = BoolProperty(
+    PreserveFaceColors: BoolProperty(
         name="Preserve Face Colors",
         description="Preserves all colors from the GEOs by making a material for every single face! Each face material will preserve the original GEO color.",
         default=True,
     )
 
-    ImportMapTextures: Any = BoolProperty(
+    ImportMapTextures: BoolProperty(
         name="Auto-load .map textures",
         description="Automatically load matching .map files for materials and hook them up as image textures.",
         default=True,
     )
 
-    MapTextureDirectory: Any = StringProperty(
+    MapTextureDirectory: StringProperty(
         name=".MAP Texture Folder",
         description="Optional folder path to search for referenced .map textures when importing. Paste the path here; Blender cannot open a nested folder picker inside the import dialog.",
         default="",
     )
 
-    MapTextureZFS: Any = StringProperty(
+    MapTextureZFS: StringProperty(
         name=".MAP Texture ZFS",
         description="Optional stock ZFS archive path to extract missing referenced .map textures from during import. Paste the path here; Blender cannot open a nested file picker inside the import dialog.",
         default="",
@@ -5825,36 +5865,36 @@ class ImportVDF(bpy.types.Operator, ImportHelper):
     bl_description = "Import a Battlezone .VDF file"
     bl_options = {"PRESET", "UNDO"}
     filename_ext = ".vdf"
-    filter_glob: Any = StringProperty(
+    filter_glob: StringProperty(
         default="*.vdf",
         options={"HIDDEN"},
     )
 
-    ImportAnimations: Any = BoolProperty(
+    ImportAnimations: BoolProperty(
         name="Import Animations",
         description="Import Animations for the VDF",
         default=True,
     )
 
-    PreserveFaceColors: Any = BoolProperty(
+    PreserveFaceColors: BoolProperty(
         name="Preserve Face Colors",
         description="Preserves all colors from the GEOs by making a material for every single face! Each face material will preserve the original GEO color",
         default=True,
     )
 
-    ImportMapTextures: Any = BoolProperty(
+    ImportMapTextures: BoolProperty(
         name="Auto-load .map textures",
         description="Automatically load matching .map files for materials and hook them up as image textures.",
         default=True,
     )
 
-    MapTextureDirectory: Any = StringProperty(
+    MapTextureDirectory: StringProperty(
         name=".MAP Texture Folder",
         description="Optional folder path to search for referenced .map textures when importing. Paste the path here; Blender cannot open a nested folder picker inside the import dialog.",
         default="",
     )
 
-    MapTextureZFS: Any = StringProperty(
+    MapTextureZFS: StringProperty(
         name=".MAP Texture ZFS",
         description="Optional stock ZFS archive path to extract missing referenced .map textures from during import. Paste the path here; Blender cannot open a nested file picker inside the import dialog.",
         default="",
@@ -5884,36 +5924,36 @@ class ImportSDF(bpy.types.Operator, ImportHelper):
     bl_description = "Import a Battlezone .SDF file"
     bl_options = {"PRESET", "UNDO"}
     filename_ext = ".sdf"
-    filter_glob: Any = StringProperty(
+    filter_glob: StringProperty(
         default="*.sdf",
         options={"HIDDEN"},
     )
 
-    ImportAnimations: Any = BoolProperty(
+    ImportAnimations: BoolProperty(
         name="Import Animations",
         description="Import Animations for the VDF",
         default=True,
     )
 
-    PreserveFaceColors: Any = BoolProperty(
+    PreserveFaceColors: BoolProperty(
         name="Preserve Face Colors",
         description="Preserves all colors from the GEOs by making a material for every single face! Each face material will preserve the original GEO color",
         default=True,
     )
 
-    ImportMapTextures: Any = BoolProperty(
+    ImportMapTextures: BoolProperty(
         name="Auto-load .map textures",
         description="Automatically load matching .map files for materials and hook them up as image textures.",
         default=True,
     )
 
-    MapTextureDirectory: Any = StringProperty(
+    MapTextureDirectory: StringProperty(
         name=".MAP Texture Folder",
         description="Optional folder path to search for referenced .map textures when importing. Paste the path here; Blender cannot open a nested folder picker inside the import dialog.",
         default="",
     )
 
-    MapTextureZFS: Any = StringProperty(
+    MapTextureZFS: StringProperty(
         name=".MAP Texture ZFS",
         description="Optional stock ZFS archive path to extract missing referenced .map textures from during import. Paste the path here; Blender cannot open a nested file picker inside the import dialog.",
         default="",
@@ -5945,12 +5985,12 @@ class ExportGEO(bpy.types.Operator, ExportHelper):
 
     filename_ext = ".geo"
 
-    filter_glob: Any = StringProperty(
+    filter_glob: StringProperty(
         default="*.geo",
         options={"HIDDEN"},
     )
 
-    face_plane_mode: Any = EnumProperty(
+    face_plane_mode: EnumProperty(
         name="Face Plane Export",
         description="Experimental handling for the four per-face GEO plane floats",
         items=GEO_FACE_PLANE_MODE_ITEMS,
@@ -5958,7 +5998,7 @@ class ExportGEO(bpy.types.Operator, ExportHelper):
     )
 
     # Ogre auto-port toggle
-    auto_port_ogre: Any = BoolProperty(
+    auto_port_ogre: BoolProperty(
         name="Also Create Redux Files",
         description=(
             "After exporting legacy files, also generate Redux .mesh/.skeleton/.material/.dds files."
@@ -5968,32 +6008,32 @@ class ExportGEO(bpy.types.Operator, ExportHelper):
 
     # ---------- OGRE shared options ----------
 
-    ogre_name: Any = StringProperty(
+    ogre_name: StringProperty(
         name="Model Name",
         description="Porter --name. Name to give the final Redux model files; leave blank to use the source name.",
         default="",
     )
 
-    ogre_suffix: Any = StringProperty(
+    ogre_suffix: StringProperty(
         name="Material Suffix",
         description="Porter --suffix. Suffix appended to material file names.",
         default="_port",
     )
 
-    ogre_flat_colors: Any = BoolProperty(
+    ogre_flat_colors: BoolProperty(
         name="Flat Colors",
         description="Porter --flatcolors. Force flat per-face color texturing.",
         default=False,
     )
 
-    ogre_normal_mode: Any = EnumProperty(
+    ogre_normal_mode: EnumProperty(
         name="Normal Porter Mode",
         description="Porter --normalmode. Specifies how to handle normals.",
         items=NORMAL_MODE_ITEMS,
         default="CORRECT",
     )
 
-    ogre_bounds_mult: Any = FloatVectorProperty(
+    ogre_bounds_mult: FloatVectorProperty(
         name="Bounds Scale",
         description="Porter --boundsmult. Scale factors for the mesh bounds (X, Y, Z).",
         size=3,
@@ -6001,33 +6041,33 @@ class ExportGEO(bpy.types.Operator, ExportHelper):
         subtype="XYZ",
     )
 
-    ogre_act_path: Any = StringProperty(
+    ogre_act_path: StringProperty(
         name="ACT Palette",
         description="Porter --act. Optional .act palette file for indexed .map textures.",
         default="",
         # subtype='FILE_PATH',
     )
 
-    ogre_config_path: Any = StringProperty(
+    ogre_config_path: StringProperty(
         name="Config File",
         description="Porter --config. Optional config file that defines default paths for the porter.",
         default="",
         # subtype='FILE_PATH',
     )
 
-    ogre_only_once: Any = BoolProperty(
+    ogre_only_once: BoolProperty(
         name="Skip Existing",
         description="Porter --onlyonce. Do not port files when the mesh is already in the target directory.",
         default=False,
     )
 
-    ogre_nowrite: Any = BoolProperty(
+    ogre_nowrite: BoolProperty(
         name="Dry Run",
         description="Porter --nowrite. Suppress file writing for testing.",
         default=False,
     )
 
-    ogre_skip_unchanged: Any = BoolProperty(
+    ogre_skip_unchanged: BoolProperty(
         name="Skip Unchanged Outputs",
         description=(
             "Compare generated Redux .dds/.material/.mesh/.skeleton data with existing files "
@@ -6036,13 +6076,13 @@ class ExportGEO(bpy.types.Operator, ExportHelper):
         default=True,
     )
 
-    ogre_profile_export: Any = BoolProperty(
+    ogre_profile_export: BoolProperty(
         name="Profile Redux Export",
         description="Print Redux export timing, resource cache, and output write statistics to the console.",
         default=False,
     )
 
-    ogre_dest_dir: Any = StringProperty(
+    ogre_dest_dir: StringProperty(
         name="Output Folder",
         description="Porter --dest. Destination directory for Redux files; leave blank to use export folder.",
         default="",
@@ -6155,24 +6195,24 @@ class ExportVDF(bpy.types.Operator, ExportHelper):
 
     filename_ext = ".vdf"
 
-    filter_glob: Any = StringProperty(
+    filter_glob: StringProperty(
         default="*.vdf",
         options={"HIDDEN"},
     )
 
-    ExportAnimations: Any = BoolProperty(
+    ExportAnimations: BoolProperty(
         name="Export Animations",
         description="Export legacy VDF object rotation/location keys only; armatures, skin weights, shape keys, and mesh deformation are not supported",
         default=True,
     )
 
-    ExportVDFOnly: Any = BoolProperty(
+    ExportVDFOnly: BoolProperty(
         name="Skip GEO File Export",
         description="Only write the VDF container and keep existing referenced GEO files.",
         default=False,
     )
 
-    face_plane_mode: Any = EnumProperty(
+    face_plane_mode: EnumProperty(
         name="Face Plane Export",
         description="Experimental handling for referenced GEO files written by this VDF export",
         items=GEO_FACE_PLANE_MODE_ITEMS,
@@ -6180,7 +6220,7 @@ class ExportVDF(bpy.types.Operator, ExportHelper):
     )
 
     # NEW: Ogre auto-port checkbox
-    auto_port_ogre: Any = BoolProperty(
+    auto_port_ogre: BoolProperty(
         name="Also Create Redux Files",
         description=(
             "After exporting legacy files, also generate Redux .mesh/.skeleton/.material/.dds files."
@@ -6188,25 +6228,25 @@ class ExportVDF(bpy.types.Operator, ExportHelper):
         default=False,
     )
 
-    ogre_name: Any = StringProperty(
+    ogre_name: StringProperty(
         name="Model Name",
         description="Porter --name. Name to give the final Redux model files; leave blank to use the source name.",
         default="",
     )
 
-    ogre_suffix: Any = StringProperty(
+    ogre_suffix: StringProperty(
         name="Material Suffix",
         description="Porter --suffix. Suffix appended to material file names.",
         default="_port",
     )
 
-    ogre_flat_colors: Any = BoolProperty(
+    ogre_flat_colors: BoolProperty(
         name="Flat Colors",
         description="Porter --flatcolors. Force flat per-face color texturing.",
         default=False,
     )
 
-    ogre_bounds_mult: Any = FloatVectorProperty(
+    ogre_bounds_mult: FloatVectorProperty(
         name="Bounds Scale",
         description="Porter --boundsmult. Scale factors for the mesh bounds (X, Y, Z).",
         size=3,
@@ -6214,33 +6254,33 @@ class ExportVDF(bpy.types.Operator, ExportHelper):
         subtype="XYZ",
     )
 
-    ogre_act_path: Any = StringProperty(
+    ogre_act_path: StringProperty(
         name="ACT Palette",
         description="Porter --act. Optional .act palette file for indexed .map textures.",
         default="",
         # subtype='FILE_PATH',
     )
 
-    ogre_config_path: Any = StringProperty(
+    ogre_config_path: StringProperty(
         name="Config File",
         description="Porter --config. Optional config file that defines default paths for the porter.",
         default="",
         # subtype='FILE_PATH',
     )
 
-    ogre_only_once: Any = BoolProperty(
+    ogre_only_once: BoolProperty(
         name="Skip Existing",
         description="Porter --onlyonce. Do not port files when the mesh is already in the target directory.",
         default=False,
     )
 
-    ogre_nowrite: Any = BoolProperty(
+    ogre_nowrite: BoolProperty(
         name="Dry Run",
         description="Porter --nowrite. Suppress file writing for testing.",
         default=False,
     )
 
-    ogre_skip_unchanged: Any = BoolProperty(
+    ogre_skip_unchanged: BoolProperty(
         name="Skip Unchanged Outputs",
         description=(
             "Compare generated Redux .dds/.material/.mesh/.skeleton data with existing files "
@@ -6249,13 +6289,13 @@ class ExportVDF(bpy.types.Operator, ExportHelper):
         default=True,
     )
 
-    ogre_profile_export: Any = BoolProperty(
+    ogre_profile_export: BoolProperty(
         name="Profile Redux Export",
         description="Print Redux export timing, resource cache, and output write statistics to the console.",
         default=False,
     )
 
-    ogre_dest_dir: Any = StringProperty(
+    ogre_dest_dir: StringProperty(
         name="Output Folder",
         description="Porter --dest. Destination directory for Redux files; leave blank to use export folder.",
         default="",
@@ -6264,48 +6304,48 @@ class ExportVDF(bpy.types.Operator, ExportHelper):
 
     # ---------- VDF-only OGRE options ----------
 
-    ogre_headlights: Any = BoolProperty(
+    ogre_headlights: BoolProperty(
         name="Headlights",
         description="Porter --headlights. Enable automatic creation of headlights.",
         default=False,
     )
 
-    ogre_person_mode: Any = EnumProperty(
+    ogre_person_mode: EnumProperty(
         name="Person Mode",
         description="Porter --person. Force this object to be flagged as a person.",
         items=TERNARY_ITEMS,
         default="AUTO",
     )
 
-    ogre_turret_mode: Any = EnumProperty(
+    ogre_turret_mode: EnumProperty(
         name="Turret Mode",
         description="Porter --turret. Force this object to be flagged as a turret.",
         items=TERNARY_ITEMS,
         default="AUTO",
     )
 
-    ogre_cockpit_mode: Any = EnumProperty(
+    ogre_cockpit_mode: EnumProperty(
         name="Cockpit Mode",
         description="Porter --cockpit. Force creation or suppression of separate cockpit model files.",
         items=TERNARY_ITEMS,
         default="AUTO",
     )
 
-    ogre_skeletalanims_mode: Any = EnumProperty(
+    ogre_skeletalanims_mode: EnumProperty(
         name="Skeletal Animations",
         description="Porter --skeletalanims. Force creation or suppression of skeletal person animations.",
         items=TERNARY_ITEMS,
         default="AUTO",
     )
 
-    ogre_scope_mode: Any = EnumProperty(
+    ogre_scope_mode: EnumProperty(
         name="Scope",
         description="Porter --scope. Force creation or suppression of a person sniper scope.",
         items=TERNARY_ITEMS,
         default="AUTO",
     )
 
-    ogre_scope_type: Any = EnumProperty(
+    ogre_scope_type: EnumProperty(
         name="Scope Type",
         description="Porter --scopetype. Sniper scope type.",
         items=[
@@ -6317,45 +6357,45 @@ class ExportVDF(bpy.types.Operator, ExportHelper):
         default="AUTO",
     )
 
-    ogre_scope_nation: Any = StringProperty(
+    ogre_scope_nation: StringProperty(
         name="Scope Nation",
         description="Porter --scopenation. Nation string for fixed scope placement, such as 'soviet'.",
         default="",
     )
 
-    ogre_scope_screen: Any = FloatVectorProperty(
+    ogre_scope_screen: FloatVectorProperty(
         name="Scope Screen",
         description="Porter --scopescreen. Camera-relative X, Y, Z, size, and behind-distance for fixed scope.",
         size=5,
         default=(0.0, 0.0, 0.0, 1.0, 0.0),
     )
 
-    ogre_scope_gun: Any = StringProperty(
+    ogre_scope_gun: StringProperty(
         name="Scope Gun",
         description="Porter --scopegun. Gun GEO name to attach scope to when using attached scope type.",
         default="",
     )
 
-    ogre_scope_transform: Any = FloatVectorProperty(
+    ogre_scope_transform: FloatVectorProperty(
         name="Scope Transform",
         description="Porter --scopetransform. Gun-relative transform: right, up, front, position.",
         size=12,
         default=(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
     )
 
-    ogre_scope_texture: Any = StringProperty(
+    ogre_scope_texture: StringProperty(
         name="Scope Texture",
         description="Porter --scopetexture. Texture name to replace with scope material when using geometry scope.",
         default="__scope",
     )
 
-    ogre_no_pov_rots: Any = BoolProperty(
+    ogre_no_pov_rots: BoolProperty(
         name="No POV Rotations",
         description="Porter --nopovrots. Remove POV rotation keys from directional movement animations.",
         default=False,
     )
 
-    ogre_stabilize_walker_cockpit: Any = BoolProperty(
+    ogre_stabilize_walker_cockpit: BoolProperty(
         name="Experimental Walker Cockpit Stabilizer",
         description=(
             "Porter --stabilizewalkercockpit. In separate cockpit Redux output, "
@@ -6526,25 +6566,25 @@ class ExportSDF(bpy.types.Operator, ExportHelper):
 
     filename_ext = ".sdf"
 
-    filter_glob: Any = StringProperty(
+    filter_glob: StringProperty(
         default="*.sdf",
         options={"HIDDEN"},
         maxlen=255,
     )
 
-    ExportAnimations: Any = BoolProperty(
+    ExportAnimations: BoolProperty(
         name="Export Animations",
         description="Export legacy SDF object rotation/location keys only; armatures, skin weights, shape keys, and mesh deformation are not supported",
         default=True,
     )
 
-    ExportSDFOnly: Any = BoolProperty(
+    ExportSDFOnly: BoolProperty(
         name="Skip GEO File Export",
         description="Only write the SDF container and keep existing referenced GEO files.",
         default=False,
     )
 
-    face_plane_mode: Any = EnumProperty(
+    face_plane_mode: EnumProperty(
         name="Face Plane Export",
         description="Experimental handling for referenced GEO files written by this SDF export",
         items=GEO_FACE_PLANE_MODE_ITEMS,
@@ -6552,7 +6592,7 @@ class ExportSDF(bpy.types.Operator, ExportHelper):
     )
 
     # NEW: Ogre auto-port toggle
-    auto_port_ogre: Any = BoolProperty(
+    auto_port_ogre: BoolProperty(
         name="Also Create Redux Files",
         description=(
             "After exporting legacy files, also generate Redux .mesh/.skeleton/.material/.dds files."
@@ -6560,25 +6600,25 @@ class ExportSDF(bpy.types.Operator, ExportHelper):
         default=False,
     )
 
-    ogre_name: Any = StringProperty(
+    ogre_name: StringProperty(
         name="Model Name",
         description="Porter --name. Name to give the final Redux model files; leave blank to use the source name.",
         default="",
     )
 
-    ogre_suffix: Any = StringProperty(
+    ogre_suffix: StringProperty(
         name="Material Suffix",
         description="Porter --suffix. Suffix appended to material file names.",
         default="_port",
     )
 
-    ogre_flat_colors: Any = BoolProperty(
+    ogre_flat_colors: BoolProperty(
         name="Flat Colors",
         description="Porter --flatcolors. Force flat per-face color texturing.",
         default=False,
     )
 
-    ogre_bounds_mult: Any = FloatVectorProperty(
+    ogre_bounds_mult: FloatVectorProperty(
         name="Bounds Scale",
         description="Porter --boundsmult. Scale factors for the mesh bounds (X, Y, Z).",
         size=3,
@@ -6586,33 +6626,33 @@ class ExportSDF(bpy.types.Operator, ExportHelper):
         subtype="XYZ",
     )
 
-    ogre_act_path: Any = StringProperty(
+    ogre_act_path: StringProperty(
         name="ACT Palette",
         description="Porter --act. Optional .act palette file for indexed .map textures.",
         default="",
         # subtype='FILE_PATH',
     )
 
-    ogre_config_path: Any = StringProperty(
+    ogre_config_path: StringProperty(
         name="Config File",
         description="Porter --config. Optional config file that defines default paths for the porter.",
         default="",
         # subtype='FILE_PATH',
     )
 
-    ogre_only_once: Any = BoolProperty(
+    ogre_only_once: BoolProperty(
         name="Skip Existing",
         description="Porter --onlyonce. Do not port files when the mesh is already in the target directory.",
         default=False,
     )
 
-    ogre_nowrite: Any = BoolProperty(
+    ogre_nowrite: BoolProperty(
         name="Dry Run",
         description="Porter --nowrite. Suppress file writing for testing.",
         default=False,
     )
 
-    ogre_skip_unchanged: Any = BoolProperty(
+    ogre_skip_unchanged: BoolProperty(
         name="Skip Unchanged Outputs",
         description=(
             "Compare generated Redux .dds/.material/.mesh/.skeleton data with existing files "
@@ -6621,13 +6661,13 @@ class ExportSDF(bpy.types.Operator, ExportHelper):
         default=True,
     )
 
-    ogre_profile_export: Any = BoolProperty(
+    ogre_profile_export: BoolProperty(
         name="Profile Redux Export",
         description="Print Redux export timing, resource cache, and output write statistics to the console.",
         default=False,
     )
 
-    ogre_dest_dir: Any = StringProperty(
+    ogre_dest_dir: StringProperty(
         name="Output Folder",
         description="Porter --dest. Destination directory for Redux files; leave blank to use export folder.",
         default="",
@@ -6757,30 +6797,30 @@ class BZ98TOOLS_OT_import_bzr_mesh(bpy.types.Operator, ImportHelper):
     bl_options = {"UNDO"}
 
     filename_ext = ".mesh"
-    filter_glob: Any = StringProperty(
+    filter_glob: StringProperty(
         default="*.mesh",
         options={"HIDDEN"},
     )
 
-    xml_converter: Any = StringProperty(
+    xml_converter: StringProperty(
         name="XML Converter",
         description="Path to OgreXMLConverter.exe",
         default=get_default_ogre_xml_converter(),
         # subtype='FILE_PATH',
     )
 
-    keep_xml: Any = BoolProperty(
+    keep_xml: BoolProperty(
         name="Keep XML files",
         description="Keep intermediate .xml files instead of deleting them",
         default=False,
     )
 
-    import_normals: Any = BoolProperty(
+    import_normals: BoolProperty(
         name="Import Normals",
         default=True,
     )
 
-    normal_mode: Any = EnumProperty(
+    normal_mode: EnumProperty(
         name="Normal Import Mode",
         items=(
             ("custom", "Custom", "Use custom split normals if possible"),
@@ -6789,29 +6829,29 @@ class BZ98TOOLS_OT_import_bzr_mesh(bpy.types.Operator, ImportHelper):
         default="custom",
     )
 
-    import_shapekeys: Any = BoolProperty(
+    import_shapekeys: BoolProperty(
         name="Import Shape Keys",
         default=True,
     )
 
-    import_animations: Any = BoolProperty(
+    import_animations: BoolProperty(
         name="Import Animations",
         default=False,
     )
 
-    round_frames: Any = BoolProperty(
+    round_frames: BoolProperty(
         name="Round Animation Frames",
         description="Round animation frames to whole frames and set scene FPS",
         default=True,
     )
 
-    use_selected_skeleton: Any = BoolProperty(
+    use_selected_skeleton: BoolProperty(
         name="Use Selected Armature as Skeleton",
         description="If an armature is selected, map mesh weights to it",
         default=False,
     )
 
-    import_materials: Any = BoolProperty(
+    import_materials: BoolProperty(
         name="Import Materials",
         default=True,
     )
@@ -6874,96 +6914,96 @@ class BZ98TOOLS_OT_export_bzr_mesh(bpy.types.Operator, ExportHelper):
     bl_options = {"UNDO"}
 
     filename_ext = ".mesh"
-    filter_glob: Any = StringProperty(
+    filter_glob: StringProperty(
         default="*.mesh",
         options={"HIDDEN"},
     )
 
-    xml_converter: Any = StringProperty(
+    xml_converter: StringProperty(
         name="XML Converter",
         description="Path to OgreXMLConverter.exe",
         default=get_default_ogre_xml_converter(),
         subtype="FILE_PATH",
     )
 
-    keep_xml: Any = BoolProperty(
+    keep_xml: BoolProperty(
         name="Keep XML files",
         description="Keep intermediate .xml instead of deleting them",
         default=False,
     )
 
-    export_tangents: Any = BoolProperty(
+    export_tangents: BoolProperty(
         name="Export Tangents",
         default=True,
     )
 
-    export_binormals: Any = BoolProperty(
+    export_binormals: BoolProperty(
         name="Export Binormals",
         default=True,
     )
 
-    zero_tangents_binormals: Any = BoolProperty(
+    zero_tangents_binormals: BoolProperty(
         name="Zero Tangents",
         description="Force tangents/binormals to zero (e.g. for black building meshes)",
         default=False,
     )
 
-    export_colour: Any = BoolProperty(
+    export_colour: BoolProperty(
         name="Export Vertex Colours",
         default=True,
     )
 
-    tangent_parity: Any = BoolProperty(
+    tangent_parity: BoolProperty(
         name="Export Tangent Parity",
         default=True,
     )
 
-    apply_transform: Any = BoolProperty(
+    apply_transform: BoolProperty(
         name="Apply Object Transforms",
         default=True,
     )
 
-    apply_modifiers: Any = BoolProperty(
+    apply_modifiers: BoolProperty(
         name="Apply Modifiers",
         default=True,
     )
 
-    export_materials: Any = BoolProperty(
+    export_materials: BoolProperty(
         name="Export Materials",
         default=True,
     )
 
-    overwrite_material: Any = BoolProperty(
+    overwrite_material: BoolProperty(
         name="Overwrite Materials",
         default=False,
     )
 
-    copy_textures: Any = BoolProperty(
+    copy_textures: BoolProperty(
         name="Copy Textures",
         default=False,
     )
 
-    export_skeleton: Any = BoolProperty(
+    export_skeleton: BoolProperty(
         name="Export Skeleton",
         default=True,
     )
 
-    export_poses: Any = BoolProperty(
+    export_poses: BoolProperty(
         name="Shape Keys as Poses",
         default=True,
     )
 
-    export_animation: Any = BoolProperty(
+    export_animation: BoolProperty(
         name="Export Animations",
         default=False,
     )
 
-    renormalize_weights: Any = BoolProperty(
+    renormalize_weights: BoolProperty(
         name="Renormalize Weights",
         default=True,
     )
 
-    batch_export: Any = BoolProperty(
+    batch_export: BoolProperty(
         name="Batch Selected",
         description="Export each selected object as its own .mesh file",
         default=False,
@@ -7137,9 +7177,9 @@ Properties = [
 
 
 class ZFSFileEntry(bpy.types.PropertyGroup):
-    name: Any = bpy.props.StringProperty(name="Name")
-    ext: Any = bpy.props.StringProperty(name="Extension")
-    is_model: Any = bpy.props.BoolProperty(name="Is Model", default=False)
+    name: bpy.props.StringProperty(name="Name")
+    ext: bpy.props.StringProperty(name="Extension")
+    is_model: bpy.props.BoolProperty(name="Is Model", default=False)
 
 
 def find_zfs_dependencies(reader, filename, extracted_files, temp_dir):
@@ -7238,7 +7278,7 @@ class BZ98TOOLS_OT_open_zfs(bpy.types.Operator, ImportHelper):
     bl_idname = "bz.open_zfs"
     bl_label = "Open ZFS Archive"
     filename_ext = ".zfs"
-    filter_glob: Any = bpy.props.StringProperty(default="*.zfs", options={"HIDDEN"})
+    filter_glob: bpy.props.StringProperty(default="*.zfs", options={"HIDDEN"})
 
     def execute(self, context):
         from .zfs_reader import ZFSReader
@@ -7284,7 +7324,7 @@ class BZ98TOOLS_OT_open_zfs_cache_folder(bpy.types.Operator):
     bl_idname = "bz.open_zfs_cache_folder"
     bl_label = "Open ZFS Cache Folder"
 
-    scope: Any = EnumProperty(
+    scope: EnumProperty(
         name="Scope",
         items=(
             ("ROOT", "Root Cache", "Open the root ZFS cache folder"),
@@ -7397,7 +7437,7 @@ class BZ98TOOLS_OT_import_from_zfs(bpy.types.Operator):
     bl_idname = "bz.import_from_zfs"
     bl_label = "Import from ZFS"
 
-    filename: Any = bpy.props.StringProperty()
+    filename: bpy.props.StringProperty()
 
     def execute(self, context):
         from .zfs_reader import ZFSReader
