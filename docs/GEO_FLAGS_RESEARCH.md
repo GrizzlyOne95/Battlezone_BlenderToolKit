@@ -26,7 +26,7 @@ be conflated:
 |---|---|---|---|
 | **A. GEO header trailing int** (`@0x20`) | `.GEO` file header | **Never read. Skipped by a hardcoded offset. Dead format member.** | CONFIRMED |
 | **B. VDF/SDF object final int** (`ObjectFlags`) | last int of each 100-byte object record | **Read, stored into `_OBJ76.flags`, heavily branched on at runtime** (death/collision/team/light/bbox bits). Disk value is only an initial seed; stock assets ship 0. | CONFIRMED |
-| **C. ANIM element dwords 1–32** (`unknowngeoflag`) | each 148-byte `tagANIMOBJ_ANIM` element | **Toolkit's interpretation is wrong.** Dwords 1–4 are actually `frameRate/startFrame/frameCount/loopCount` (consumed by `AnimObj_Start`). Remaining tail is unread. No slot mask is consumed anywhere. | CONFIRMED (engine read), UNKNOWN (tail semantics) |
+| **C. ANIM element dwords 1–32** (`unknowngeoflag` / `meshIndex[32]`) | each 148-byte `tagANIMOBJ_ANIM` element | **Toolkit's interpretation is correct** (verified against machine code in two binaries): layout is `animIndex, meshIndex[32], startFrame, frameCount, loopCount, frameRate(float)`. The engine consumes only `animIndex` and the four timing scalars (dwords 33–36); the slot mask itself has no reader in either engine tree. | CONFIRMED (two-binary machine-code offsets + 374-element stock reinterpretation) |
 
 Headline answers:
 
@@ -40,13 +40,23 @@ Headline answers:
 > It is genuinely consumed — but as collision-class/team/death-style state bits, not render
 > modes.
 >
-> **C)** The toolkit's ANIM export heuristic writes `[1,1,1,1,…]` into what the engine
-> parses as `frameRate=1, startFrame=1, frameCount=1, loopCount=1`. It happens to produce a
-> valid (if degenerate) one-shot animation, but the "slot mask" model behind it does not
-> exist in the 1.5 executable.
+> **C)** The toolkit's ANIM parse was right all along: dwords 1–32 are a genuine
+> `meshIndex[32]` slot-mask convention (stock files use contiguous 0/1 prefixes), and the
+> trailing scalars are `startFrame/frameCount/loopCount/frameRate`. The engine consumes
+> those four timing scalars plus `animIndex`; the mask array itself is preserved but never
+> read by either engine binary. The `[1]*32` export heuristic therefore writes a real
+> "affects all slots" mask — legitimate semantics, not an accident.
 
 Empirical bit-flip testing (Phase 9) was **not needed**: source analysis fully resolved
-fields A and B, and field C was resolved by code plus stock-data cross-checks.
+fields A and B, and field C was resolved by machine-code offsets in two independent
+binaries plus stock-data reinterpretation (see §4 and commit `96611bb`).
+
+> **Evidence scoping:** negatives in this report are *absence-of-consumer* findings from
+> static analysis of specific builds (`bzone.exe 1.5`, GOG Redux), not behavioral proofs.
+> Runtime verdicts are governed by `RUNTIME_TEST_KIT.md` and the
+> RUNTIME_SEMANTIC_VERIFICATION protocol (PR #7): pinned environment, hashed assets,
+> bidirectional threshold tests, and `NO EFFECT OBSERVED under <contexts>` wording for any
+> negative result.
 
 ---
 
@@ -264,71 +274,65 @@ any flag-like fields) are entirely ignored (:342818, :342878, :342902).
 
 ---
 
-## 4. Field C — ANIM element: corrected layout
+## 4. Field C — ANIM element layout (corrected twice; final = machine-code verified)
 
-### 4.1 What the engine says
+> **Correction history:** this section originally claimed the toolkit's ordering was
+> wrong and that the timing scalars sat at dwords 1–4. That inference treated the PDB
+> member names as offset-authoritative without checking the struct layout. The
+> verification gate (commit `96611bb`, executing `GEO_FLAGS_RESEARCH_REVIEW.md` §3)
+> established offsets from **machine code in two independent binaries** — unsymbolized
+> Redux `FUN_0062a270` and symbolized 1.5 `AnimObj_Start` read identical offsets — and
+> reinterpreted 75 stock files / 374 elements coherently. Final layout below supersedes
+> everything earlier in this section's history.
 
-Element table stride `0x94` = 148 bytes (`AnimObj_Add`, `functions/004e/004e71aa_AnimObj_Add.c:20,33,36`).
-`AnimObj_Start` (`functions/004e/004e731c_AnimObj_Start.c:41–67`) reads, via **PDB-named
-struct members**:
+### 4.1 Verified element layout (stride 0x94 = 148 bytes)
 
 ```c
-ptVar3->animIndex    // +0x00
-ptVar3->frameRate    // +0x04
-ptVar3->startFrame   // +0x08
-ptVar3->frameCount   // +0x0C
-ptVar3->loopCount    // +0x10
++0x00  int   animIndex          // matched against AnimObj_Start's requested anim
++0x04  int   meshIndex[32]      // genuine slot-mask convention; stock uses contiguous
+                                // 0/1 prefixes. COPIED but never read by either engine.
++0x84  int   startFrame         \
++0x88  int   frameCount         //  negative frameCount = reverse clip
++0x8C  int   loopCount          //  these four are the ONLY tail fields consumed,
++0x90  float frameRate          //  by AnimObj_Start (sole consumer of tagANIMOBJ_ANIM)
 ```
 
-These are the **only** members of `tagANIMOBJ_ANIM` referenced anywhere in bzone.exe 1.5
-(grep over merged source: sole consumer `AnimObj_Start`; `AnimObj_Simulate` operates on the
-separate active-list entries). The remaining 32 dwords (+0x14…+0x93) are copied verbatim
-and never looked at.
+Element table size `animCount * 0x94` (`AnimObj_Add`,
+`functions/004e/004e71aa_AnimObj_Add.c:20,33,36`); sub-table pointers and the
+register-guard quirk described below are unchanged.
 
-Mesh-slot selection during playback does **not** use the element tail at all:
-`TraverseObjTree` (`functions/004e/004e78f5_TraverseObjTree.c`, :286042+) matches
-`tagANIMOBJ_MESH` records (stride 0x84) by 8-byte object-id against `_OBJ76.id`, then
-`AnimateMeshTransform` (`functions/004e/004e7747_AnimateMeshTransform.c:42–121`) pulls
-static matrix (+0x3C…0x5C), static scale (+0x60…0x68), rotation-key start/count
-(+0x6C/+0x70) and scale-key start/count (+0x7C/+0x80) **from the MESH record**, sampling
-key tables via the anim header's `rotKeyPtr`/`sclKeyPtr`.
+Mesh-slot targeting during playback runs through the MESH table (stride `0x84`),
+matched by 8-byte object id in `TraverseObjTree`, with static matrix/scale and key
+start/count pairs read from the **MESH record** by `AnimateMeshTransform` — the element
+never participates in slot selection.
 
 Adjacent confirmed quirk: `AnimObj_Add:25–27` only registers an ANIM block if
 `rotKeyCount != 0 || scaleKeyCount != 0 || meshCount*elemCount < posKeyCount` — an ANIM
 chunk carrying only static orientations and no key tables is silently dropped by 1.5.
 
-### 4.2 Stock-data cross-check (retail SDFs, `Battlezone_Install/stock/*.sdf`)
+### 4.2 Stock-data cross-check, reinterpreted
 
-First elements dump as `[idx, 1, start, count, loop, …]`, e.g. `abcomm.sdf` elem0 =
-`0,1,1,1,1,1,1,0…0` — perfectly coherent as rate=1 fps, startFrame=1, frameCount=1,
-loopCount=1 (+ poskey idx/count), and incoherent as a "slots 0–5 selected" mask followed by
-a mask of zeros.
+The same retail dumps used earlier now read correctly under the verified layout:
+trailing dwords like `121/1/15.0f`, `120/-121/…` and `31/-31/…` are
+frame lengths (including reverse clips via negative counts) plus a 15 fps rate;
+leading `1,1,1,…` runs are contiguous slot-mask prefixes ("affects slots 0–N"). Both
+patterns were previously misread as animation parameters.
 
 ### 4.3 Consequence for the toolkit
 
-The legacy parse `"=i32iiiif"` maps:
+None needed — the legacy parse `"=i32iiiif"`
+(`index / unknowngeoflag[32] / start / length / loop / speed`) is exactly right: its
+four trailing scalars land on `startFrame/frameCount/loopCount/frameRate`, and its
+32-int middle array is the real `meshIndex[32]`. The export heuristic
+(`export_vdf.py:526–541`, `export_sdf.py:357–372`) writing `[1]*32` for elements 0–1 is
+a legitimate "affects all slots" mask under stock convention. Optional future nicety:
+expose the timing scalars by their verified names instead of positional labels.
 
-| Toolkit name | Dwords | Actual 1.5 meaning |
-|---|---|---|
-| `index` | 0 | `animIndex` ✔ |
-| `unknowngeoflag[0]` | 1 | **`frameRate`** |
-| `unknowngeoflag[1]` | 2 | **`startFrame`** |
-| `unknowngeoflag[2]` | 3 | **`frameCount`** |
-| `unknowngeoflag[3]` | 4 | **`loopCount`** |
-| `unknowngeoflag[4..31]` | 5–32 | unread tail |
-| `start`,`length`,`loop`,`speed` | 33–36 | unread tail |
-
-So the export heuristic (`export_vdf.py:526–541`, `export_sdf.py:357–372`):
-`if item.Index in [0,1]: newelement.unknowngeoflag = [1]*32 else [0]*32`
-writes `frameRate=1, startFrame=1, frameCount=1, loopCount=1` — a degenerate but valid
-one-shot animation — and zeros for everything else. Round-trips of stock files are
-byte-safe because everything is preserved verbatim; only *authored* values built from the
-mask model encode wrong semantics.
-
-Where did `meshIndex[32]` come from? Most plausibly the **mismatching** Redux PDB labeling
-the opaque dword array region (see `EXPERIMENTAL_BINARY_FIELDS.md:26`). Nothing in 1.5
-corroborates a per-element slot mask; slot targeting lives in the MESH table keyed by
-object ID. Tail semantics beyond "unread": UNKNOWN.
+Where did the earlier confusion come from? The mismatching-Redux-PDB-derived docs
+(`EXPERIMENTAL_BINARY_FIELDS.md:26`) had the right name (`meshIndex[32]`), and the
+decompiler's PDB member names were offset-correct too — the error in this report was
+assuming those members lived at the front of the struct without checking. Machine code
+settles it.
 
 ---
 
@@ -355,8 +359,8 @@ Both lines of evidence now agree.
   appears there either.
 - Redux `NewObj` equivalent seeds `obj+0x14` from record+0x60 (`FUN_00825650:17`) — same
   ObjectFlags behavior preserved.
-- The "meshIndex[32]" naming traces only to the mismatching Redux PDB reference noted in
-  the toolkit docs; 1.5 symbols contradict the mask interpretation (§4).
+- The `meshIndex[32]` naming is genuine PDB nomenclature; machine-code verification (§4)
+  fixed the array's position and showed neither engine reads it.
 - No `GEODATA` symbol exists in any local symbol corpus (it's a toolkit-side class name).
 
 ## 7. 1.4 vs 1.5 (Phase 7)
@@ -390,7 +394,7 @@ difference" for field A.
 | Naming for @0x20 | keep neutral | Do **not** rename to `GEOFlags`/`RenderFlags`/`ObjectFlags` — none are source-backed (the 1.5 binary contains no named GEO-header struct; PDB covers runtime types only). `Unknown2`/"reserved raw" is closer to the truth than the porter's semantic-sounding `Geo.flags`. |
 | GEO checksum @0x04 | F — preserve exactly | Never validated by engine (§2.1). Toolkit default 69 matches few stock files; harmless, but arbitrary. |
 | VDF/SDF `geoflags` | **B/C — Advanced/experimental; preserve imported raw; force 0 on new** | Rename display semantics: it is `StructObjectType.ObjectFlags` seeding `_OBJ76.flags` (collision-class nibble 0xF000, team bits 16–19, death 0x200, light 0x800, bbox 0x1, view 0x10). It is *consumed*, so preserve user values, but warn that nonzero values pre-seed live state bits stock content never uses. Consider removing the main-panel exposure at `__init__.py:3043` (keep advanced panel). |
-| ANIM element dwords | **rename semantics** | Stop presenting dwords 1–32 as a slot mask. Minimum: relabel dwords 1–4 as `frameRate/startFrame/frameCount/loopCount` (CONFIRMED engine fields) and treat 5–36 as unknown-reserved (preserve). Re-evaluate the `[1]*32` authoring heuristic — under engine semantics it means "rate 1 fps, start 1, count 1, loop 1". |
+| ANIM element dwords | **no change (verified correct)** | The toolkit's `index / unknowngeoflag[32] / start / length / loop / speed` mapping matches the machine-code-verified layout (§4): dwords 1–32 are the genuine `meshIndex[32]` slot mask, and the trailing scalars are `startFrame/frameCount/loopCount/frameRate`. The `[1]*32` heuristic writes a real full-slot mask. Optional polish: relabel `unknowngeoflag` → `meshIndex` and expose the four timing scalars under verified names. |
 | ANIMOrientation.unknown | unchanged | `tagANIMOBJ_MESH.flags`, stock 0 — out of scope, prior doc stands. |
 
 ## 10. Incorrect names currently in the toolkit
@@ -398,8 +402,8 @@ difference" for field A.
 1. `bzrmodelporter.bzgeo.Geo.flags` — implies consumed semantics; field is engine-ignored. Misleading.
 2. `bz98tools` RNA description "GEO Header Flags" (`__init__.py:1545`) — implies render-flag semantics; engine never reads it.
 3. `GEOData.geoflags` / RNA label grouping under GEO panels — the field is `ObjectFlags`, an object-system state seed, not a GEO property.
-4. `ANIMElement.unknowngeoflag` / `UnknownGeoMask` / "mesh slot mask" wording — contradicts engine layout; dwords 1–4 are animation parameters.
-5. Docs claim "stock files use it as a 0/1 per-mesh-slot mask" (`EXPERIMENTAL_BINARY_FIELDS.md:26`) — should be corrected to the §4 layout.
+4. ~~`ANIMElement.unknowngeoflag` / `UnknownGeoMask` / "mesh slot mask" wording~~ — **retracted**: the slot-mask model is correct (§4). Optional rename to `meshIndex` for PDB fidelity only.
+5. ~~Docs claim "stock files use it as a 0/1 per-mesh-slot mask"~~ — **retracted**: that claim is correct per the verified layout; no correction needed.
 
 ## 11. Proposed follow-ups (documented only; not implemented here)
 
@@ -409,7 +413,7 @@ Trivial/safe:
 - Move `GEOFlags` out of the main GEO panel.
 
 Larger (needs design):
-- ANIM editor UI rebuild around the real element layout (rate/start/count/loop + reserved tail), including whether to keep byte-exact preservation for the tail.
+- ~~ANIM editor UI rebuild around the real element layout~~ — **withdrawn**: the toolkit layout was verified correct; only optional naming polish remains.
 - Optional validation warning when exporting nonzero VDF/SDF ObjectFlags (advanced users only).
 - Optional: verify empirically whether transform-only ANIM chunks (no rot/scale keys) are dropped by the engine as `AnimObj_Add:25–27` implies, and whether the toolkit needs a "dummy key table" workaround.
 
