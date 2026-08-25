@@ -20,6 +20,76 @@ Only promote a behavior from inferred/research-backed to runtime-verified when t
 - Do not use PDB names as sole proof of runtime behavior.
 - Do not weaken byte-exact preservation guarantees established in PR #6.
 
+## Experimental controls (normative)
+
+Every runtime session governed by this document MUST apply the following
+controls. A result recorded without them is INCONCLUSIVE by definition, not
+"probably verified".
+
+### Session identity controls
+
+1. Record the exact Redux executable used: version string, file size, and
+   SHA-256 of `battlezone98redux.exe` (and of `OgreMain.dll` when renderer
+   behavior is under test). Sessions on different hashes never share a row.
+2. Record the active renderer/backend (DX9/DX11, full-screen/windowed,
+   resolution) alongside every observation; visual semantics may be
+   backend-dependent.
+3. Record the relevant DLL/mod inventory present in the install folder
+   (winmm.dll shim + version, EXU, campaign/mod folders mounted) before the
+   session. An inventory change invalidates comparison with earlier rows.
+4. Record the mission/test-map revision: map filename + SHA-256 of the map
+   and any referenced custom assets. Regenerated maps get a new revision id.
+5. The canonical baseline is UNMODIFIED Redux loading stock content. Any
+   patched runtime (OpenShim debug build, instrumentation driver) is labeled
+   separately in its own rows and its results never upgrade a claim beyond
+   what an unpatched run confirms.
+
+### Asset integrity controls
+
+6. Every generated test asset is recorded by SHA-256 in the session manifest;
+   the manifest hash must match the bytes the game actually loaded (re-hash
+   the deployed copy after copying).
+7. Unique-filename/restart discipline: each experiment gets a fresh asset
+   filename; changing an existing asset's content requires either renaming or
+   a full game restart, because caches may persist across menu reloads. Never
+   overwrite a deployed asset between two observations intended to differ.
+8. Strict BZ runtime filename limit: directly referenced asset names (ODF,
+   WAV, TRN, GEO/VDF part names, texture basenames, BZNe entries) must remain
+   8 characters or fewer. Generators must enforce this at build time and fail
+   closed rather than truncate silently.
+
+### Transform-experiment controls
+
+9. VLOC translation tests must include signed values, fractional values, and
+   deliberately non-round values (e.g. `-2.75`, `0.85`, `1.137`) so sign
+   handling and unit scaling cannot be masked by round numbers.
+10. Rotation tests must include at least one NON-90-degree rotation per
+    axis; orthogonal-only matrices can hide transpose/inverse conventions.
+11. At least one case combines translation AND rotation in one matrix;
+    decomposition-order mistakes only appear in combined transforms.
+12. At least one case uses a NON-IDENTITY parent transform so parent-chain
+    composition (or its absence) is observable.
+
+### Damage-band controls
+
+13. Thresholds must be bracketed in BOTH directions while controlling health
+    and view distance independently: approach each candidate boundary from
+    above and below, at fixed distance for health sweeps and at fixed health
+    for LOD-distance sweeps. A transition observed crossing in one direction
+    only is not a threshold measurement.
+
+### Scope-of-conclusion controls
+
+14. ObjectFlags/team conclusions are scoped per asset class: a bit's behavior
+    observed on ordinary parts is not asserted for BRIDGE/FLOOR roots,
+    damage-band variants, or helper-class records until tested there too.
+15. AI pathing evidence is kept DISTINCT from direct player traversal
+    evidence; one never substitutes for the other, and rows record which was
+    exercised.
+16. Where runtime variance (frame timing, LOD hysteresis, nondeterministic
+    damage ticks) prevents proof, the verdict is INCONCLUSIVE with the
+    variance described - never VERIFIED-by-default.
+
 ## Test asset policy
 
 Use synthetic/minimal authored assets where practical. Do not commit copyrighted stock assets. If a stock asset is needed as a local baseline, document only the filename, field values required for comparison, and observed behavior.
