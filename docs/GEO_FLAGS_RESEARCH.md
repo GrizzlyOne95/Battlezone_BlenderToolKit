@@ -9,6 +9,12 @@ Redux decompile, Nielk1's `bz1-geo-editor`, toolkit sources.
 
 **Investigated 2026-08-24. All line numbers verified against the trees cited.**
 
+> **Correction gate:** read alongside `GEO_FLAGS_RESEARCH_REVIEW.md`, which fixes
+> the 100-byte record layout below (name @0x00, matrix @0x08, parent @0x38), the
+> 13-byte GEO texture-name field, and the ANIM tail interpretation. The
+> implemented toolkit follows the corrected layouts and preserves all tail
+> bytes verbatim (`docs/ADVANCED_AUTHORING.md`).
+
 ---
 
 ## 0. Executive summary
@@ -406,6 +412,31 @@ Larger (needs design):
 - ANIM editor UI rebuild around the real element layout (rate/start/count/loop + reserved tail), including whether to keep byte-exact preservation for the tail.
 - Optional validation warning when exporting nonzero VDF/SDF ObjectFlags (advanced users only).
 - Optional: verify empirically whether transform-only ANIM chunks (no rot/scale keys) are dropped by the engine as `AnimObj_Add:25–27` implies, and whether the toolkit needs a "dummy key table" workaround.
+
+## 13. Addendum (verification gate closed): ANIM element layout corrected
+
+Section 4 above states that `frameRate/startFrame/frameCount/loopCount` occupy
+element dwords 1-4. That placement was **wrong**; it came from reading the
+symbolized 1.5 decomp without cross-checking raw offsets. The verified layout
+(PDB advisory-only; established from unsymbolized Redux decomp offsets,
+matching symbolized 1.5 offsets, header-offset agreement across both binaries,
+and coherent stock timing values on dwords 33-36) is:
+
+```
+dword   0   animIndex
+dword 1-32 meshIndex[32]   <- the toolkit's unknowngeoflag[]; unread by both engines
+dword  33   startFrame
+dword  34   frameCount      negative = reverse playback
+dword  35   loopCount
+dword  36   frameRate (float)
+```
+
+The original toolkit field mapping (`index`, `unknowngeoflag[32]`,
+`start`, `length`, `loop`, `speed`) is therefore exactly right. Section 9's
+guidance row for "ANIM element dwords" should be read with this correction:
+the export heuristic `[1]*32` writes a full mesh-slot mask, not animation
+timing. Full evidence chain in `EXPERIMENTAL_BINARY_FIELDS.md` ("ANIM element
+layout - VERIFIED").
 
 ## 12. Source reference index
 

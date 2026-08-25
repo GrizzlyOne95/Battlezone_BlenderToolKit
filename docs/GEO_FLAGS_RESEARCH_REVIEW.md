@@ -161,3 +161,39 @@ Before an implementation PR changes exporter behavior, update `GEO_FLAGS_RESEARC
 4. the confirmed-vs-inferred confidence wording for the legacy GEO header field.
 
 This review intentionally does not change exporter behavior.
+
+## 6. Gate closure addendum (2026-08): required ANIM verification performed
+
+The section-3 verification steps have been executed. Result: **the section-3
+guess was wrong about ordering; the original toolkit mapping was right.**
+
+Verified layout of the 148-byte element (PDB treated as advisory naming only;
+offsets established from machine code):
+
+```
++0x00 animIndex            +0x84 startFrame
++0x04 meshIndex[32]        +0x88 frameCount  (negative = reverse)
+                           +0x8c loopCount
+                           +0x90 frameRate (float)
+```
+
+1. **PDB type definitions inspected**: `tagANIMOBJ_ANIM [sizeof=148]` from
+   `pdb_reference/llvm/pretty_classes.txt` (bzint.pdb). Members/offsets
+   recorded above.
+2. **Tail confirmed as `meshIndex[32]`** - but at dwords 1-32, NOT after the
+   timing fields. The section-3 proposed struct had the order inverted.
+3. **1.5 consumption**: `AnimObj_Start` reads animIndex + the four timing
+   fields only. Zero `meshIndex` references anywhere in the tree.
+4. **Redux consumption**: unsymbolized `FUN_0062a270` walks elements at
+   stride 0x94 and reads only dwords [0],[0x21],[0x22],[0x23],[0x24].
+   Zero meshIndex references in the Redux tree either.
+5. **Stock reinterpretation**: 75 files / 374 elements reinterpreted cleanly -
+   timing tuples (`(0,31,1,15.0)`, reversed `(30,-31,1,15.0)`) land on dwords
+   33-36; dwords 1-32 hold 0/1 values in contiguous prefixes (all-32-set most
+   common), supporting mask semantics for the advisory name.
+6. **Toolkit redesign**: none needed - the shipped field mapping was already
+   correct. Tooltips and docs updated to the verified layout instead; export
+   behavior unchanged.
+
+Evidence chain recorded in full in `EXPERIMENTAL_BINARY_FIELDS.md`
+("ANIM element layout - VERIFIED").

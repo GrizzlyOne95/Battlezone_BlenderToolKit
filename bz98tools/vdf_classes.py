@@ -14,6 +14,7 @@ This contains all classes used by the Addon.
 """
 
 import struct
+import io
 import os
 
 
@@ -22,6 +23,14 @@ def safe_decode_ascii(raw):
     if isinstance(raw, bytes):
         return raw.decode("ascii", errors="ignore").strip("\0")
     return str(raw).strip("\0")
+
+
+def serialize_section(instance):
+    """Render any section class with a Write(fileHandle, position) method into
+    bytes without touching the filesystem (used by the pure vdf_file layer)."""
+    buffer = io.BytesIO()
+    instance.Write(buffer, 0)
+    return buffer.getvalue()
 
 
 class VDFHeader:
@@ -51,6 +60,9 @@ class VDFCHeader:
     def __init__(self):
         self.binstring = "=4si16sii5ffffi"
         self.binlength = 68
+        # Captured from imported files; stock assets store 0. Preserved on
+        # export so round trips do not silently zero this trailing int.
+        self.null = 0
 
     def Read(self, fileContent, position):
         array = struct.unpack(
@@ -91,7 +103,7 @@ class VDFCHeader:
             self.mass,
             self.multiplyer,
             self.drag,
-            0,
+            int(getattr(self, "null", 0)),
         )
         fileHandle.write(buffer)
         return self.binlength + position
@@ -271,6 +283,9 @@ class ANIMOrientation:
     def __init__(self):
         self.binstring = "=8si12f12f6i"
         self.binlength = 132
+        # tagANIMOBJ_MESH.flags per PDB; stock assets store 0. Preserved on
+        # export so imported values survive round trips.
+        self.unknown = 0
 
     def Read(self, fileContent, position):
         array = struct.unpack(
@@ -295,7 +310,7 @@ class ANIMOrientation:
             buffer,
             0,
             bytes(self.name, "ascii", errors="ignore"),
-            0,
+            int(getattr(self, "unknown", 0)),
             *self.matrix1,
             *self.matrix2,
             self.rotationindex,
@@ -416,6 +431,8 @@ class SCPSSection:
         self.binstring = "=4s4i"
         self.binlength = 20
         self.headername = "SPCS"
+        # Original chunk spelling ("SPCS" or legacy "SCPS") preserved on export.
+        self.tag = b"SPCS"
         self.sectionlength = self.binlength
         self.data = [0, 0, 0]
 
@@ -437,7 +454,7 @@ class SCPSSection:
             self.binstring,
             buffer,
             0,
-            b"SPCS",
+            bytes(getattr(self, "tag", b"SPCS")),
             self.binlength,
             int(d[0]),
             int(d[1]),

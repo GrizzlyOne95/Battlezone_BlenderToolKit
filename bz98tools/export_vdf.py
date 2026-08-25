@@ -12,12 +12,18 @@ import importlib
 import math
 import mathutils
 import os
+import base64
+import struct
 
 from . import vdf_classes
+from . import vdf_file
+from . import semantics
 from . import export_geo
 
 # Reload it just in case something changed!
 importlib.reload(vdf_classes)
+importlib.reload(vdf_file)
+importlib.reload(semantics)
 importlib.reload(export_geo)
 
 
@@ -49,64 +55,38 @@ def _iter_action_fcurves(action):
 def GenerateGEOCollisions(object):
     # Get the active object.
     obj = object
-    # Get ready...
-    minx, miny, minz, maxx, maxy, maxz, maxoverall = [0.0] * 7
+    minx, miny, minz, maxx, maxy, maxz = None, None, None, None, None, None
+    maxoverall = 0.0
     for vert in obj.data.vertices:
-        if vert.co.x < minx:
-            minx = vert.co.x
-        if vert.co.x > maxx:
-            maxx = vert.co.x
-        if vert.co.y < minz:
-            minz = vert.co.y
-        if vert.co.y > maxz:
-            maxz = vert.co.y
-        if vert.co.z < miny:
-            miny = vert.co.z
-        if vert.co.z > maxy:
-            maxy = vert.co.z
+        x, y, z = vert.co.x, vert.co.y, vert.co.z
+        minx = x if minx is None or x < minx else minx
+        maxx = x if maxx is None or x > maxx else maxx
+        miny = y if miny is None or y < miny else miny
+        maxy = y if maxy is None or y > maxy else maxy
+        minz = z if minz is None or z < minz else minz
+        maxz = z if maxz is None or z > maxz else maxz
         # Get maximum vertice distance to generate sphere radius.
-        for value in vert.co:
+        for value in (x, y, z):
             if abs(value) > maxoverall:
                 maxoverall = abs(value)
 
+    cx = (minx + maxx) / 2 if minx is not None else 0.0
+    cy = (miny + maxy) / 2 if miny is not None else 0.0
+    cz = (minz + maxz) / 2 if minz is not None else 0.0
+
     obj.GEOPropertyGroup.SphereRadius = maxoverall
+    obj.GEOPropertyGroup.GeoCenterX = cx
+    obj.GEOPropertyGroup.GeoCenterY = cy
+    obj.GEOPropertyGroup.GeoCenterZ = cz
 
-    obj.GEOPropertyGroup.GeoCenterX = (minx + maxx) / 2
-    obj.GEOPropertyGroup.GeoCenterY = (miny + maxy) / 2
-    obj.GEOPropertyGroup.GeoCenterZ = (minz + maxz) / 2
+    def _half(lo, hi, center):
+        if lo is None or hi is None:
+            return 0.0
+        return abs(lo - center) if abs(lo - center) >= abs(hi - center) else abs(hi - center)
 
-    if abs(minx - obj.GEOPropertyGroup.GeoCenterX) >= abs(
-        maxx - obj.GEOPropertyGroup.GeoCenterX
-    ):
-        obj.GEOPropertyGroup.BoxHalfHeightX = abs(
-            minx - obj.GEOPropertyGroup.GeoCenterX
-        )
-    else:
-        obj.GEOPropertyGroup.BoxHalfHeightX = abs(
-            maxx - obj.GEOPropertyGroup.GeoCenterX
-        )
-
-    if abs(miny - obj.GEOPropertyGroup.GeoCenterY) >= abs(
-        maxy - obj.GEOPropertyGroup.GeoCenterY
-    ):
-        obj.GEOPropertyGroup.BoxHalfHeightY = abs(
-            miny - obj.GEOPropertyGroup.GeoCenterY
-        )
-    else:
-        obj.GEOPropertyGroup.BoxHalfHeightY = abs(
-            maxy - obj.GEOPropertyGroup.GeoCenterY
-        )
-
-    if abs(minz - obj.GEOPropertyGroup.GeoCenterZ) >= abs(
-        maxz - obj.GEOPropertyGroup.GeoCenterZ
-    ):
-        obj.GEOPropertyGroup.BoxHalfHeightZ = abs(
-            minz - obj.GEOPropertyGroup.GeoCenterZ
-        )
-    else:
-        obj.GEOPropertyGroup.BoxHalfHeightZ = abs(
-            maxz - obj.GEOPropertyGroup.GeoCenterZ
-        )
+    obj.GEOPropertyGroup.BoxHalfHeightX = _half(minx, maxx, cx)
+    obj.GEOPropertyGroup.BoxHalfHeightY = _half(miny, maxy, cy)
+    obj.GEOPropertyGroup.BoxHalfHeightZ = _half(minz, maxz, cz)
 
 
 def _is_null_blender_object(blender_object):
@@ -221,15 +201,38 @@ def export(
     We are going to use a bunch of classes to write data and encapsulate it.
     First we'll initialize a bunch of them here.
     """
-    EXIT = (
-        vdf_classes.EXITSection()
-    )  # We going to be using this class to read through exit sections.
     VDFHeader = vdf_classes.VDFHeader()
-    VDFC = vdf_classes.VDFCHeader()
-    VGEO = vdf_classes.VGEOHeader()
-    ANIM = vdf_classes.ANIMHeader()
-    COLP = vdf_classes.COLPSection()
-    SCPS = vdf_classes.SCPSSection()
+    scene = context.scene
+    scene_props = scene.SDFVDFPropertyGroup
+
+    model = vdf_file.ParsedVDF()
+    model.plan = list(vdf_file.new_empty_plan())
+
+    # Imported section layout wins so untouched scenes round-trip exactly.
+    plan_store = getattr(scene, "bz_vdf_section_plan", None)
+    imported_plan = ""
+    if plan_store is not None:
+        try:
+            imported_plan = str(plan_store or "")
+        except Exception:
+            imported_plan = ""
+    if imported_plan:
+        kinds = [k.strip() for k in imported_plan.split(",") if k.strip()]
+        valid = {"vdfc", "exit", "vgeo", "anim", "colp", "scps", "vloc", "raw"}
+        if kinds and set(kinds).issubset(valid):
+            rebuilt_plan = []
+            vloc_index = 0
+            raw_index = 0
+            for kind in kinds:
+                if kind == "vloc":
+                    rebuilt_plan.append(("vloc", vloc_index))
+                    vloc_index += 1
+                elif kind == "raw":
+                    rebuilt_plan.append(("raw", raw_index))
+                    raw_index += 1
+                else:
+                    rebuilt_plan.append((kind, None))
+            model.plan = rebuilt_plan
 
     NULLGEO = vdf_classes.GEOData()
     NULLGEO.name = "NULL"
@@ -240,51 +243,45 @@ def export(
     NULLGEO.boxhalfheight = [0] * 3
     NULLGEO.type = 0
     NULLGEO.geoflags = 0
+    NULL_RECORD = vdf_classes.serialize_section(NULLGEO)
 
     """
     Variables to keep track of.
     """
-    # Throw special classes designed to keep track of ALL THIS CRAP in a list!
     blenderobjects = {}
-    # Inner and Outer collision objects we'll detect later.
     collisioninner = None
     collisionouter = None
-    # Animation data that we will read later.
     ANIMElements = []
     ANIMOrientations = []
     ANIMRotations = []
     ANIMTranslations = []
     ANIMPositions = []
-    # Counters
     rot_index = 0
     trans2_index = 0
     pos_index = 0
-    # What is the amount of geo slots needed per LOD? We'll calculate this later.
     lodcount = 0
-    use_translation2 = bool(
-        getattr(context.scene.SDFVDFPropertyGroup, "UseTranslation2Track", False)
-    )
+    use_translation2 = bool(getattr(scene_props, "UseTranslation2Track", False))
 
     """
     Create/Load VDFC information.
-    Will be used in the write process later.
     """
-    # Set VDFC information.
-    VDFC.name = context.scene.SDFVDFPropertyGroup.Name
-    VDFC.vehicletype = context.scene.SDFVDFPropertyGroup.VehicleType
-    VDFC.vehiclesize = context.scene.SDFVDFPropertyGroup.VehicleSize
-    VDFC.lod1dist = context.scene.SDFVDFPropertyGroup.LOD1
-    VDFC.lod2dist = context.scene.SDFVDFPropertyGroup.LOD2
-    VDFC.lod3dist = context.scene.SDFVDFPropertyGroup.LOD3
-    VDFC.lod4dist = context.scene.SDFVDFPropertyGroup.LOD4
-    VDFC.lod5dist = context.scene.SDFVDFPropertyGroup.LOD5
-    VDFC.mass = context.scene.SDFVDFPropertyGroup.Mass
-    VDFC.multiplyer = context.scene.SDFVDFPropertyGroup.CollMult
-    VDFC.drag = context.scene.SDFVDFPropertyGroup.DragCoefficient
+    model.vdfc_name = scene_props.Name
+    model.vdfc_vehicletype = scene_props.VehicleType
+    model.vdfc_vehiclesize = scene_props.VehicleSize
+    model.vdfc_lod_dists = [
+        scene_props.LOD1,
+        scene_props.LOD2,
+        scene_props.LOD3,
+        scene_props.LOD4,
+        scene_props.LOD5,
+    ]
+    model.vdfc_mass = scene_props.Mass
+    model.vdfc_multiplyer = scene_props.CollMult
+    model.vdfc_drag = scene_props.DragCoefficient
+    model.vdfc_null = int(getattr(scene_props, "VDFCRawNull", 0) or 0)
 
     """
-    Find collisions
-    Find objects and determine/create their data that will be relevant to BZ.
+    Find collisions; find objects and build their GEOData records.
     """
     Matrix = mathutils.Matrix
     Vector = mathutils.Vector
@@ -362,7 +359,6 @@ def export(
                     else:
                         GEO.parent = "WORLD"
                 else:
-                    # Discard the object. It has less than 5 characters and is incorrectly named.
                     GEO.parent = "WORLD"
             else:
                 GEO.parent = "WORLD"
@@ -402,7 +398,6 @@ def export(
                 )
                 rot_matrix = euler.to_matrix()  # 3x3
 
-                # Make an explicit 3x3 diagonal scale matrix
                 sx, sy, sz = object.scale
                 scale_mat = mathutils.Matrix(
                     (
@@ -433,8 +428,21 @@ def export(
                 GEO.matrix[1] = float(axis[1]) * speed
                 GEO.matrix[2] = float(axis[2]) * speed
 
-            if object.GEOPropertyGroup.GenerateCollision and is_mesh_object:
+            bounds_mode = str(
+                getattr(object.GEOPropertyGroup, "BoundsMode", "AUTO")
+            )
+
+            if bounds_mode == "RECALC" and is_mesh_object:
                 GenerateGEOCollisions(object)
+            elif bounds_mode == "AUTO" and object.GEOPropertyGroup.GenerateCollision and is_mesh_object:
+                GenerateGEOCollisions(object)
+            elif bounds_mode == "PRESERVE" and not getattr(
+                object.GEOPropertyGroup, "HasAuthoredBounds", False
+            ):
+                # No imported values to preserve; fall back to generation so
+                # freshly authored parts still get sane collision defaults.
+                if is_mesh_object:
+                    GenerateGEOCollisions(object)
 
             GEO.geocenter = [
                 object.GEOPropertyGroup.GeoCenterX,
@@ -449,18 +457,15 @@ def export(
             ]
 
             # Increase the counter on how many objects are in the current LOD.
-            # NOTE: Used later to determine the count of geos in VGEO. Which is used to determine the max slots per LOD.
             if GEO.lod == 1:
                 lodcount = lodcount + 1
             if not ExportVDFOnly and is_mesh_object and not spinner_helper:
-                # Go ahead and write the .geo.
                 export_geo.geoexport(
                     context,
                     os.path.dirname(filepath) + "/" + GEO.name + ".geo",
                     object,
                     face_plane_mode=face_plane_mode,
                 )
-            # Special class(BlenderObject) I made for putting object and geo in one nice package to keep track of both.
             BlenderObject = vdf_classes.BlenderObject(object, GEO)
             blenderobjects.update({GEO.name: BlenderObject})
 
@@ -470,30 +475,24 @@ def export(
     for object in blenderobjects.values():
         blobject = object.object
         anim = blobject.animation_data
-        # Is there animation data at all?
         if anim is not None and anim.action is not None:
             quat_anim = {}
             has_euler_keys = False
-            # Prefer quaternion curves if the object is actually in quaternion mode.
             prefer_quat = getattr(blobject, "rotation_mode", "XYZ") == "QUATERNION"
             for curve in _iter_action_fcurves(anim.action):
                 data_path = curve.data_path
                 for akeyframe in curve.keyframe_points:
                     keyframe = int(akeyframe.co[0])
                     keyvalue = akeyframe.co[1]
-                    # Euler rotation curves (only if we don't explicitly prefer quats)
                     if data_path == "rotation_euler" and not prefer_quat:
                         has_euler_keys = True
                         if keyframe not in object.rotanim:
                             object.rotanim[keyframe] = [0.0, 0.0, 0.0]
                         object.rotanim[keyframe][curve.array_index] = keyvalue
-                    # Quaternion rotation curves
                     elif data_path == "rotation_quaternion":
                         if keyframe not in quat_anim:
-                            # Identity quaternion (w, x, y, z)
                             quat_anim[keyframe] = [1.0, 0.0, 0.0, 0.0]
                         quat_anim[keyframe][curve.array_index] = keyvalue
-                    # Location curves
                     elif data_path == "location":
                         if keyframe not in object.posanim:
                             object.posanim[keyframe] = [0.0, 0.0, 0.0]
@@ -505,30 +504,26 @@ def export(
                             ]
                         object.scaleanim[keyframe][curve.array_index] = keyvalue
 
-            # If we have quaternion curves, convert them to Euler
-            # - always, when the object is in QUATERNION mode
-            # - otherwise, only if we didn't find usable Euler keys
             if quat_anim and (prefer_quat or not has_euler_keys):
                 from mathutils import Quaternion
 
                 for frame, quat_vals in quat_anim.items():
-                    q = Quaternion(quat_vals)  # (w, x, y, z)
-                    # Convert to Euler in Blender's default XYZ order;
-                    # later we remap to the Battlezone YZX convention.
+                    q = Quaternion(quat_vals)
                     eul = q.to_euler("XYZ")
                     object.rotanim[frame] = [eul.x, eul.y, eul.z]
 
     """
     Read the element data in blender and get it ready for writing later.
     """
-
-    # Load animation elements in blender.
-    for item in context.scene.AnimationCollection:
+    for item in scene.AnimationCollection:
         newelement = vdf_classes.ANIMElement()
         if getattr(item, "UseCustomUnknownGeoMask", False):
             newelement.unknowngeoflag = [int(v) for v in item.UnknownGeoMask]
         else:
-            # Legacy heuristic.
+            # Legacy heuristic: meshIndex[32] (dwords 1-32 of the element,
+            # layout VERIFIED, values unread by both engines). Stock assets
+            # use 0/1 prefix masks; [1]*32 marks slots 0-31 as driven, which
+            # matches how stock elements for deploy/turret pairs look.
             if item.Index in [0, 1]:
                 newelement.unknowngeoflag = [1] * 32
             else:
@@ -541,15 +536,16 @@ def export(
         ANIMElements.append(newelement)
 
     """
-    We need to create orientations for all the objects.
-    This will be used later in writing.
-    When creating orientations it will also add all the rotation and positions.
+    Create orientations for all the objects (also collects keys).
     """
-
     for object in blenderobjects.values():
         neworientation = vdf_classes.ANIMOrientation()
         neworientation.name = object.geo.name
-        neworientation.unknown = 0
+        # Per-part tagANIMOBJ_MESH.flags value captured at import (stock: 0).
+        geo_props_for_anim = getattr(object.object, "GEOPropertyGroup", None)
+        neworientation.unknown = int(
+            getattr(geo_props_for_anim, "ANIMOrientationFlags", 0) or 0
+        )
         neworientation.matrix1 = [
             1.00,
             0.0,
@@ -589,7 +585,6 @@ def export(
         for key, array in object.posanim.items():
             tx, ty, tz = array[0], array[2], array[1]
             if object.object.parent != None:
-                # Get the parent inverse if it exists and add it on to the animation to create an accurate offset for animations.
                 ObjectInverse = object.object.matrix_parent_inverse.to_translation()
                 tx = ObjectInverse.x + array[0]
                 ty = ObjectInverse.z + array[2]
@@ -609,10 +604,9 @@ def export(
                 ANIMTranslations.append(newtranslation)
 
     """
-    Reorder objects based on parenting and lods. If they are the wrong order, everything will blow up!
-    PARENT MUST COME BEFORE CHILD!
+    Reorder objects based on parenting and lods. If they are the wrong order,
+    everything will blow up! PARENT MUST COME BEFORE CHILD!
     """
-    # Make blank blender objects. Seriously this is important.
     NULLBlenderObject = vdf_classes.BlenderObject(None, NULLGEO)
     objects = [[], [], []]
     objects[0] = [NULLBlenderObject] * lodcount
@@ -627,11 +621,9 @@ def export(
             if object.geo.lod == 1:
                 DoBreak = False
                 if object.geo.parent.lower() != "world":
-                    # Note the idea is it will skip the object until we actually have its parent in the reordered list.
                     if object.geo.parent in orderednames:
                         objects[0][numindex] = object
                         orderednames.append(fixgeoname(object.geo.name, 1))
-                        # Get LOD 2 and 3 version if avaliable.
                         if fixgeoname(object.geo.name, 2) in blenderobjects:
                             LOD2 = blenderobjects[fixgeoname(object.geo.name, 2)]
                             objects[1][numindex] = LOD2
@@ -643,7 +635,6 @@ def export(
                 else:
                     objects[0][numindex] = object
                     orderednames.append(fixgeoname(object.geo.name.lower(), 1))
-                    # Get LOD 2 and 3 version if avaliable.
                     if fixgeoname(object.geo.name, 2) in blenderobjects:
                         LOD2 = blenderobjects[fixgeoname(object.geo.name, 2)]
                         objects[1][numindex] = LOD2
@@ -657,148 +648,206 @@ def export(
 
     _enforce_spinner_helper_order(objects)
 
-    # Ok, lets get to writing the VDF data.
-    with open(filepath, mode="wb") as file:  # b is important -> binary
-        position = 0
+    # ------------------------------------------------------------------
+    # Preserve unknown chunks captured at import.
+    # ------------------------------------------------------------------
+    preserved_store = getattr(scene, "bz_preserved_chunks", None)
+    for entry in list(preserved_store) if preserved_store is not None else []:
+        try:
+            payload = base64.b64decode(entry.payload_b64)
+        except Exception:
+            continue
+        model.raw_chunks.append(vdf_file.RawChunk(entry.tag.encode("ascii", "ignore")[:4].ljust(4, b"\0"), payload))
 
-        position = VDFHeader.Write(file, position)  # Write VDF header.
+    # ------------------------------------------------------------------
+    # VLOC injection entries authored/preserved in the scene.
+    # ------------------------------------------------------------------
+    vloc_store = getattr(scene, "bz_vloc_chunks", None)
+    for entry in list(vloc_store) if vloc_store is not None else []:
+        chunk = semantics.VLOCChunk()
+        kind = str(getattr(entry, "kind", "GENERIC"))
+        if kind == "HEADLIGHT":
+            chunk.kind_value = semantics.VLOC_HEADLIGHT
+        elif kind == "POV":
+            chunk.kind_value = semantics.VLOC_POV
+        elif kind == "IDSIZES":
+            chunk.kind_value = semantics.VLOC_IDSIZES
+        else:
+            chunk.kind_value = int(getattr(entry, "class_id", 0)) & 0xFFFFFFFF
+        chunk.class_id = chunk.kind_value
+        chunk.matrix = [float(v) for v in entry.matrix]
+        try:
+            chunk.opaque_payload = base64.b64decode(entry.payload_b64)
+        except Exception:
+            chunk.opaque_payload = b""
+        chunk.preserve_raw = bool(getattr(entry, "preserve_raw", True))
+        model.vlocs.append(chunk)
 
-        position = VDFC.Write(file, position)  # Write VDFC section.
-        position = EXIT.Write(file, position)  # End VDFC
+    # Fresh (non-imported) plans carry no vloc/raw slots; give every stored
+    # entry a plan position so newly authored injections serialize too.
+    while sum(1 for kind, _ in model.plan if kind == "vloc") < len(model.vlocs):
+        model.plan.append(
+            ("vloc", sum(1 for kind, _ in model.plan if kind == "vloc"))
+        )
+    while sum(1 for kind, _ in model.plan if kind == "raw") < len(model.raw_chunks):
+        model.plan.append(
+            ("raw", sum(1 for kind, _ in model.plan if kind == "raw"))
+        )
 
-        # Write VGEO section.
-        # Set the VGEO count to the lod with the highest amount of GEOs.
-        VGEO.geocount = lodcount
-        VGEO.sectionlength = ((VGEO.geocount * 100) * 28) + VGEO.binlength
-        position = VGEO.Write(file, position)
+    # ------------------------------------------------------------------
+    # Damage representation records (bands 1..3 = primary geometry states).
+    # ------------------------------------------------------------------
+    name_to_slot = {}
+    for idx, wrapper in enumerate(objects[0]):
+        if not _is_null_blender_object(wrapper):
+            name_to_slot[wrapper.geo.name.lower()] = idx
 
-        # Write geo data. We need to also fill empty slots with empty geo stuff.
+    damage_table = semantics.DamageVariantTable()
+    for idx, wrapper in enumerate(objects[0]):
+        if _is_null_blender_object(wrapper):
+            continue
+        # Base records feed variant synthesis (name-only rewrites).
+        damage_table.base_records[idx] = vdf_classes.serialize_section(wrapper.geo)
+        geo_props = getattr(wrapper.object, "GEOPropertyGroup", None)
+        if geo_props is None:
+            continue
+        for state in semantics.AUTHORED_DAMAGE_STATES:
+            variant_name = str(getattr(geo_props, f"DamageGeo{state}", "") or "").strip().lower()
+            if variant_name and variant_name != "null":
+                damage_table.set_variant_name(idx, state, variant_name[:8])
 
-        # Write LOD1
-        for object in objects[0]:
-            object.geo.Write(file, position)
-
-        # Write blanks!
-        for i in range(3):
-            for i in range(lodcount):
-                NULLGEO.Write(file, position)
-
-        # Write LOD2
-        for object in objects[1]:
-            object.geo.Write(file, position)
-
-        # Write blanks! Again...
-        for i in range(3):
-            for i in range(lodcount):
-                NULLGEO.Write(file, position)
-
-        # Write LOD3
-        for object in objects[2]:
-            object.geo.Write(file, position)
-
-        # Write EVEN MORE BLANKS! Wow! What a waste of space...
-        for i in range(19):
-            for i in range(lodcount):
-                NULLGEO.Write(file, position)
-
-        # Write ANIM header or don't...
-        if len(ANIMElements) > 0 and ExportAnimations:
-            ANIM.elementscount = len(ANIMElements)
-            ANIM.orientationscount = len(ANIMOrientations)
-            ANIM.rotationcount = len(ANIMRotations)
-            ANIM.translation2count = len(ANIMTranslations)
-            ANIM.positioncount = len(ANIMPositions)
-            if getattr(
-                context.scene.SDFVDFPropertyGroup, "UseAdvancedAnimHeader", False
-            ):
-                ANIM.null2 = int(context.scene.SDFVDFPropertyGroup.AnimNull2)
-                ANIM.unknown2 = int(context.scene.SDFVDFPropertyGroup.AnimUnknown2)
-                ANIM._reserved = [
-                    int(v) for v in context.scene.SDFVDFPropertyGroup.AnimReserved
-                ]
+    damage_store = getattr(scene, "bz_damage_band_records", None)
+    for entry in list(damage_store) if damage_store is not None else []:
+        try:
+            payload = base64.b64decode(entry.payload_b64)[:100]
+        except Exception:
+            continue
+        if len(payload) < 100:
+            continue
+        part_name = str(getattr(entry, "part_name", "") or "").strip().lower()
+        band = int(getattr(entry, "band", -1))
+        slot = int(getattr(entry, "slot", -1))
+        if part_name and part_name in name_to_slot:
+            resolved = name_to_slot[part_name]
+            if slot in (-1,) or slot == resolved:
+                slot = resolved
             else:
-                ANIM.null2 = 0
-                ANIM.unknown2 = 0
-                ANIM._reserved = [0, 0, 0, 0, 0]
-            ANIM.sectionlength = (
-                ANIM.binlength
-                + (ANIM.elementscount * 148)
-                + (ANIM.orientationscount * 132)
-                + (ANIM.rotationcount * 20)
-                + (ANIM.translation2count * 16)
-                + (ANIM.positioncount * 16)
-            )
-            position = ANIM.Write(file, position)
+                slot = resolved
+        if slot < 0 or band < 0 or band >= semantics.VGEO_BAND_COUNT:
+            continue
+        damage_table.variant_records[(slot, band)] = payload
 
-            # Write ANIM elements.
-            for element in ANIMElements:
-                position = element.Write(file, position)
+    # ------------------------------------------------------------------
+    # Build the 28-band record grid.
+    # ------------------------------------------------------------------
+    records = [None] * (semantics.VGEO_BAND_COUNT * lodcount)
 
-            # Write ANIM orientations.
-            for orientation in ANIMOrientations:
-                position = orientation.Write(file, position)
+    def _wrapper_record(band_list, slot):
+        wrapper = band_list[slot] if slot < len(band_list) else NULLBlenderObject
+        if _is_null_blender_object(wrapper):
+            return NULL_RECORD
+        return vdf_classes.serialize_section(wrapper.geo)
 
-            # Write ANIM rotations.
-            for animrotation in ANIMRotations:
-                position = animrotation.Write(file, position)
+    for slot in range(lodcount):
+        for band in range(semantics.VGEO_BAND_COUNT):
+            lod_slot, damage_state = semantics.band_coords(band)
+            if lod_slot == 0:
+                records[band * lodcount + slot] = damage_table.build_band_record(
+                    slot, band
+                ) if damage_state != 0 else _wrapper_record(objects[0], slot)
+            elif lod_slot in (1, 2):
+                if damage_state == 0:
+                    records[band * lodcount + slot] = _wrapper_record(
+                        objects[lod_slot], slot
+                    )
+                else:
+                    records[band * lodcount + slot] = damage_table.build_band_record(
+                        slot, band
+                    )
+            else:
+                records[band * lodcount + slot] = damage_table.build_band_record(
+                    slot, band
+                )
 
-            # Write ANIM translation2.
-            for animtranslation in ANIMTranslations:
-                position = animtranslation.Write(file, position)
+    # ------------------------------------------------------------------
+    # Fill optional sections into the model.
+    # ------------------------------------------------------------------
+    model.geocount = lodcount
+    model.records = records
 
-            # Write ANIM positions.
-            for animposition in ANIMPositions:
-                position = animposition.Write(file, position)
+    if ANIMElements and ExportAnimations:
+        model.anim_present = True
+        model.anim_header = vdf_classes.ANIMHeader()
+        if getattr(scene_props, "UseAdvancedAnimHeader", False):
+            model.anim_header.null2 = int(scene_props.AnimNull2)
+            model.anim_header.unknown2 = int(scene_props.AnimUnknown2)
+            model.anim_header._reserved = [
+                int(v) for v in scene_props.AnimReserved
+            ]
+        else:
+            model.anim_header.null2 = 0
+            model.anim_header.unknown2 = 0
+            model.anim_header._reserved = [0, 0, 0, 0, 0]
+        model.anim_elements = ANIMElements
+        model.anim_orientations = ANIMOrientations
+        model.anim_rotations = ANIMRotations
+        model.anim_translations2 = ANIMTranslations
+        model.anim_positions = ANIMPositions
+    elif "anim" in model.plan:
+        # Drop the anim block plus its terminator when there is nothing to write.
+        cleaned = []
+        skip_next_exit = False
+        for kind, index in model.plan:
+            if skip_next_exit:
+                if kind == "exit":
+                    skip_next_exit = False
+                    continue
+                skip_next_exit = False
+            if kind == "anim":
+                skip_next_exit = True
+                continue
+            cleaned.append((kind, index))
+        model.plan = cleaned
 
-            position = EXIT.Write(file, position)  # Need an extra exit for animations.
-        position = EXIT.Write(file, position)  # Need an exit for VGEO
+    XInMin, XInMax, YInMin, YInMax, ZInMin, ZInMax = [0.0] * 6
+    XOutMin, XOutMax, YOutMin, YOutMax, ZOutMin, ZOutMax = [0.0] * 6
+    if collisioninner != None:
+        XInMin = XInMax = collisioninner.data.vertices[0].co.x
+        YInMin = YInMax = collisioninner.data.vertices[0].co.y
+        ZInMin = ZInMax = collisioninner.data.vertices[0].co.z
+        for vert in collisioninner.data.vertices:
+            if vert.co.x < XInMin:
+                XInMin = vert.co.x
+            if vert.co.x > XInMax:
+                XInMax = vert.co.x
+            if vert.co.y < YInMin:
+                YInMin = vert.co.y
+            if vert.co.y > YInMax:
+                YInMax = vert.co.y
+            if vert.co.z < ZInMin:
+                ZInMin = vert.co.z
+            if vert.co.z > ZInMax:
+                ZInMax = vert.co.z
+    if collisionouter != None:
+        XOutMin = XOutMax = collisionouter.data.vertices[0].co.x
+        YOutMin = YOutMax = collisionouter.data.vertices[0].co.y
+        ZOutMin = ZOutMax = collisionouter.data.vertices[0].co.z
+        for vert in collisionouter.data.vertices:
+            if vert.co.x < XOutMin:
+                XOutMin = vert.co.x
+            if vert.co.x > XOutMax:
+                XOutMax = vert.co.x
+            if vert.co.y < YOutMin:
+                YOutMin = vert.co.y
+            if vert.co.y > YOutMax:
+                YOutMax = vert.co.y
+            if vert.co.z < ZOutMin:
+                ZOutMin = vert.co.z
+            if vert.co.z > ZOutMax:
+                ZOutMax = vert.co.z
 
-        XInMin, XInMax, YInMin, YInMax, ZInMin, ZInMax = [0.0] * 6
-        XOutMin, XOutMax, YOutMin, YOutMax, ZOutMin, ZOutMax = [0.0] * 6
-        if collisioninner != None:
-            # Set the initial values to an already existing mesh vertice.
-            XInMin = collisioninner.data.vertices[0].co.x
-            XInMax = collisioninner.data.vertices[0].co.x
-            YInMin = collisioninner.data.vertices[0].co.y
-            YInMax = collisioninner.data.vertices[0].co.y
-            ZInMin = collisioninner.data.vertices[0].co.z
-            ZInMax = collisioninner.data.vertices[0].co.z
-            for vert in collisioninner.data.vertices:
-                if vert.co.x < XInMin:
-                    XInMin = vert.co.x
-                if vert.co.x > XInMax:
-                    XInMax = vert.co.x
-                if vert.co.y < YInMin:
-                    YInMin = vert.co.y
-                if vert.co.y > YInMax:
-                    YInMax = vert.co.y
-                if vert.co.z < ZInMin:
-                    ZInMin = vert.co.z
-                if vert.co.z > ZInMax:
-                    ZInMax = vert.co.z
-        if collisionouter != None:
-            # Set the initial values to an already existing mesh vertice.
-            XOutMin = collisionouter.data.vertices[0].co.x
-            XOutMax = collisionouter.data.vertices[0].co.x
-            YOutMin = collisionouter.data.vertices[0].co.y
-            YOutMax = collisionouter.data.vertices[0].co.y
-            ZOutMin = collisionouter.data.vertices[0].co.z
-            ZOutMax = collisionouter.data.vertices[0].co.z
-            for vert in collisionouter.data.vertices:
-                if vert.co.x < XOutMin:
-                    XOutMin = vert.co.x
-                if vert.co.x > XOutMax:
-                    XOutMax = vert.co.x
-                if vert.co.y < YOutMin:
-                    YOutMin = vert.co.y
-                if vert.co.y > YOutMax:
-                    YOutMax = vert.co.y
-                if vert.co.z < ZOutMin:
-                    ZOutMin = vert.co.z
-                if vert.co.z > ZOutMax:
-                    ZOutMax = vert.co.z
-
-        COLP.data = [
+    if "colp" in [kind for kind, _ in model.plan]:
+        model.colp_data = [
             YOutMax,
             YInMax,
             YInMin,
@@ -812,14 +861,16 @@ def export(
             ZInMin,
             ZOutMin,
         ]
-        position = COLP.Write(file, position)
-        position = EXIT.Write(file, position)  # End COLP
 
-        if getattr(context.scene.SDFVDFPropertyGroup, "UseCustomSCPS", False):
-            SCPS.data = [int(v) for v in context.scene.SDFVDFPropertyGroup.SCPSData]
+    if "scps" in [kind for kind, _ in model.plan]:
+        model.scps_tag = "SPCS"
+        if getattr(scene_props, "UseCustomSCPS", False):
+            model.scps_data = [int(v) for v in scene_props.SCPSData]
         else:
-            SCPS.data = [0, 0, 0]
-        position = SCPS.Write(file, position)
-        position = EXIT.Write(file, position)  # END SPCS
+            model.scps_data = [0, 0, 0]
+
+    payload = vdf_file.serialize_vdf(model)
+    with open(filepath, mode="wb") as file:  # b is important -> binary
+        file.write(payload)
 
     return {"FINISHED"}

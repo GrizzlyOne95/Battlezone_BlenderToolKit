@@ -380,7 +380,11 @@ def export(
     for object in blenderobjects.values():
         neworientation = sdf_classes.ANIMOrientation()
         neworientation.name = object.geo.name
-        neworientation.unknown = 0
+        # Per-part tagANIMOBJ_MESH.flags value captured at import (stock: 0).
+        geo_props_for_anim = getattr(object.object, "GEOPropertyGroup", None)
+        neworientation.unknown = int(
+            getattr(geo_props_for_anim, "ANIMOrientationFlags", 0) or 0
+        )
         neworientation.matrix1 = [
             1.00,
             0.0,
@@ -581,5 +585,16 @@ def export(
             position = EXIT.Write(file, position)  # Need an extra exit for animations.
         position = EXIT.Write(file, position)
         position = EXIT.Write(file, position)
+
+        # Preserve unrecognized chunks captured at import (byte-for-byte).
+        import base64 as _base64
+
+        preserved_store = getattr(context.scene, "bz_preserved_chunks", None)
+        for entry in getattr(preserved_store, "elements", []) or []:
+            try:
+                payload = _base64.b64decode(entry.payload_b64)
+            except Exception:
+                continue
+            file.write(payload)
 
     return {"FINISHED"}
