@@ -520,7 +520,10 @@ def export(
         if getattr(item, "UseCustomUnknownGeoMask", False):
             newelement.unknowngeoflag = [int(v) for v in item.UnknownGeoMask]
         else:
-            # Legacy heuristic.
+            # Legacy heuristic: meshIndex[32] (dwords 1-32 of the element,
+            # layout VERIFIED, values unread by both engines). Stock assets
+            # use 0/1 prefix masks; [1]*32 marks slots 0-31 as driven, which
+            # matches how stock elements for deploy/turret pairs look.
             if item.Index in [0, 1]:
                 newelement.unknowngeoflag = [1] * 32
             else:

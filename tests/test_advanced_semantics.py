@@ -334,6 +334,44 @@ class VDFRoundTripTests(unittest.TestCase):
         self.assertEqual(deck.parent.lower(), "fxr11")
 
 
+class AnimElementLayoutTests(unittest.TestCase):
+    """Pins the PDB-verified tagANIMOBJ_ANIM layout (see
+    docs/EXPERIMENTAL_BINARY_FIELDS.md, 'ANIM element layout - VERIFIED'):
+
+        dword   0   animIndex
+        dwords 1-32 meshIndex[32]  (toolkit unknowngeoflag[]; engine-unread)
+        dword  33   startFrame     dword  34   frameCount (negative = reverse)
+        dword  35   loopCount      dword  36   frameRate (float)
+    """
+
+    def test_toolkit_fields_map_to_verified_offsets(self):
+        import struct as _struct
+
+        raw = bytearray(148)
+        _struct.pack_into("<i", raw, 0, 7)  # animIndex
+        for i in range(32):
+            _struct.pack_into("<i", raw, 4 + i * 4, 100 + i)  # meshIndex[32]
+        _struct.pack_into("<i", raw, 33 * 4, 30)  # startFrame
+        _struct.pack_into("<i", raw, 34 * 4, -31)  # frameCount (reverse)
+        _struct.pack_into("<i", raw, 35 * 4, 2)  # loopCount
+        _struct.pack_into("<f", raw, 36 * 4, 15.0)  # frameRate
+
+        element = vdf_classes.ANIMElement()
+        element.Read(bytes(raw), 0)
+
+        self.assertEqual(element.index, 7)
+        self.assertEqual(
+            list(element.unknowngeoflag), [100 + i for i in range(32)]
+        )
+        self.assertEqual(element.start, 30)
+        self.assertEqual(element.length, -31)
+        self.assertEqual(element.loop, 2)
+        self.assertAlmostEqual(float(element.speed), 15.0)
+
+        rebuilt = vdf_classes.serialize_section(element)
+        self.assertEqual(rebuilt, bytes(raw))
+
+
 class DeckClassificationTests(unittest.TestCase):
     def test_steep_faces_not_drivable(self):
         total, drivable = semantics.classify_deck_faces([1.0, 0.9, -1.0, 0.2, 0.39])

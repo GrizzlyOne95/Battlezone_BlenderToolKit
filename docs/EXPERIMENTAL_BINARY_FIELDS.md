@@ -30,7 +30,38 @@ The PDB names the 64-byte ANIM payload as `tagANIMOBJ_HEADER`:
 
 On disk, stock exported assets store these pointer-placeholder fields as zero. The toolkit preserves them for round-trip safety, but modders normally should not edit them.
 
-The PDB names `ANIMElement.unknowngeoflag[32]` as `meshIndex[32]`. Stock files use it as a 0/1 per-mesh-slot mask: `1` means the animation element affects that indexed GEO/mesh slot, `0` means it does not.
+### ANIM element layout — VERIFIED (2026-08 verification gate closed)
+
+The 148-byte element layout is now established by **decompiled machine code in two independent binaries** (PDB treated as advisory naming only):
+
+```
+dword   0    int   animIndex      matched against the requested animation id
+dwords  1-32 int   meshIndex[32]  NEVER read by either engine (advisory name)
+dword  33    int   startFrame     active.curFrame init; float-cast
+dword  34    int   frameCount     framesToDo; NEGATIVE = reverse playback
+dword  35    int   loopCount      loopsToDo (<1 = infinite)
+dword  36    float frameRate      playback rate
+```
+
+Evidence chain (names advisory; offsets are the load-bearing facts):
+- Redux raw decomp `FUN_0062a270` (`Raw .C/`, unsymbolized) walks elements at stride `0x94` and reads only dwords `[0]`, `[0x21]`, `[0x22]`, `[0x23]`, `[0x24]` (= 33..36). Roles follow from usage: sign-flipped `[0x22]` branch, `loopsToDo`, `(float)` conversion of startFrame.
+- bzone.exe 1.5 symbolized decomp (`functions/004e/004e731c_AnimObj_Start.c`) reads the identical offsets as `animIndex/frameRate/startFrame/frameCount/loopCount`.
+- Header offsets agree across both binaries (`animPtr` walk at `+0x24`; `obj`/`entity` at `+0x38`/`+0x3c`).
+- Stock data corroborates placement: 75 stock files / 374 elements reinterpret coherently under this layout - timing tuples like `(0,31,1,15.0)` and reversed clips `(30,-31,1,15.0)` land on dwords 33-36, while dwords 1-32 hold 0/1 values.
+- `meshIndex[]`: zero references in both trees. Stock usage is 0/1 flags in contiguous prefixes (all-32-set being most common), supporting the historical "per-mesh-slot mask" reading. Name from PDB: ADVISORY.
+
+Consequences for the toolkit mapping (all previously correct despite the research-doc dispute):
+
+| Toolkit field | Element dword | Verified meaning |
+|---|---:|---|
+| `Index` | 0 | animIndex |
+| `UnknownGeoMask[32]` | 1-32 | meshIndex[32] - unread by engines; preserve |
+| `Start` | 33 | startFrame (negative length reverses via Length) |
+| `Length` | 34 | frameCount (may be negative for reverse clips) |
+| `Loop` | 35 | loopCount (<1 loops forever) |
+| `Speed` | 36 | frameRate (float; stock: 10/15/50) |
+
+The GEO_FLAGS_RESEARCH.md section 4 claim that frameRate/startFrame/frameCount/loopCount occupy dwords 1-4 was incorrect; see its addendum.
 
 The PDB names `ANIMOrientation.unknown` as `tagANIMOBJ_MESH.flags`. Stock files scanned so far store `0`.
 

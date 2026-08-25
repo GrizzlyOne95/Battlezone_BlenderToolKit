@@ -413,6 +413,31 @@ Larger (needs design):
 - Optional validation warning when exporting nonzero VDF/SDF ObjectFlags (advanced users only).
 - Optional: verify empirically whether transform-only ANIM chunks (no rot/scale keys) are dropped by the engine as `AnimObj_Add:25–27` implies, and whether the toolkit needs a "dummy key table" workaround.
 
+## 13. Addendum (verification gate closed): ANIM element layout corrected
+
+Section 4 above states that `frameRate/startFrame/frameCount/loopCount` occupy
+element dwords 1-4. That placement was **wrong**; it came from reading the
+symbolized 1.5 decomp without cross-checking raw offsets. The verified layout
+(PDB advisory-only; established from unsymbolized Redux decomp offsets,
+matching symbolized 1.5 offsets, header-offset agreement across both binaries,
+and coherent stock timing values on dwords 33-36) is:
+
+```
+dword   0   animIndex
+dword 1-32 meshIndex[32]   <- the toolkit's unknowngeoflag[]; unread by both engines
+dword  33   startFrame
+dword  34   frameCount      negative = reverse playback
+dword  35   loopCount
+dword  36   frameRate (float)
+```
+
+The original toolkit field mapping (`index`, `unknowngeoflag[32]`,
+`start`, `length`, `loop`, `speed`) is therefore exactly right. Section 9's
+guidance row for "ANIM element dwords" should be read with this correction:
+the export heuristic `[1]*32` writes a full mesh-slot mask, not animation
+timing. Full evidence chain in `EXPERIMENTAL_BINARY_FIELDS.md` ("ANIM element
+layout - VERIFIED").
+
 ## 12. Source reference index
 
 1.5 tree (`GIT/BZ1_Source/1.5`; paths relative, `ADC:` = `all_decompiled.c`):

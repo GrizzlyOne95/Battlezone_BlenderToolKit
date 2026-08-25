@@ -517,13 +517,16 @@ class AnimationPropertyGroup(bpy.types.PropertyGroup):
 
     UseCustomUnknownGeoMask: bpy.props.BoolProperty(
         name="Use Custom Mesh Slot Mask",
-        description="Use a custom ANIM meshIndex[32] slot mask instead of automatic defaults",
+        description="Edit the ANIM element's meshIndex[32] list directly instead of automatic defaults. Neither Battlezone 98 engine reads these values; they are preserved verbatim",
         default=False,
     )
 
     UnknownGeoMask: bpy.props.IntVectorProperty(
         name="Mesh Slot Mask",
-        description="Raw ANIM element meshIndex[32] values; stock files use 0/1 to mark affected GEO mesh slots",
+        description=(
+            "ANIM element dwords 1-32 (PDB name meshIndex[32], advisory). Layout VERIFIED in both engines' code; values UNREAD at runtime. "
+            "Stock files store 0/1 flags in contiguous prefixes marking which mesh slots an element drives"
+        ),
         size=32,
         default=(0,) * 32,
     )

@@ -194,8 +194,9 @@ The toolkit now behaves as a non-destructive editor for VDF containers:
 - Unrecognized chunks (any tag) are captured verbatim and written back
   unchanged. Stock corpora contain none, so this only activates for
   third-party or future content.
-- VDFC trailing int, ANIM element tail dwords (32 dwords after the confirmed
-  rate/start/count/loop prefix), `tagANIMOBJ_MESH.flags`, SPCS/SCPS spelling,
+- VDFC trailing int, the ANIM element's `meshIndex[32]` dwords 1-32
+  (layout VERIFIED in both engines' code; values unread at runtime - see
+  `EXPERIMENTAL_BINARY_FIELDS.md`), `tagANIMOBJ_MESH.flags`, SPCS/SCPS spelling,
   COLP floats, and VGEO filler bytes are all preserved.
 - Known limitation: exact interleaving of preserved chunks relative to
   regenerated sections follows the recorded plan; if a file interleaves
