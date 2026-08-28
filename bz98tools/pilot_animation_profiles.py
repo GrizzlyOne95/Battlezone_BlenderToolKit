@@ -5,10 +5,11 @@
 # under the terms of the GNU General Public License v3.0.
 # See the LICENSE file or <https://www.gnu.org/licenses/>.
 
-"""Pure helpers for identifying Redux pilot rigs and matching animation clips.
+"""Pure helpers for identifying Redux pilot rigs and animation contracts.
 
-This module intentionally has no Blender dependency so profile detection and clip
-matching can be covered by the normal bpy-free test suite.
+This module intentionally has no Blender dependency so profile detection, clip
+matching, and the Redux Person animation-index contract can be covered by the
+normal bpy-free test suite and reused by asset builders.
 """
 
 from __future__ import annotations
@@ -19,30 +20,53 @@ from typing import Iterable, Mapping
 SERIALIZER_V1_80 = "[Serializer_v1.80]"
 SERIALIZER_V1_10 = "[Serializer_v1.10]"
 
-# Names observed in the stock Redux pilot skeletons.  The actual stock file is
-# always authoritative: the Blender UI enumerates the animations found in the
-# selected stock skeleton instead of assuming this list is exhaustive.
-KNOWN_PILOT_CLIPS = (
+# Authoritative Person animation indices used by the existing BZR model porter.
+# Indices 0-8 are the legacy Person contract; 9-11 are Redux additions.
+#
+# Keep these semantic indices separate from the Ogre .skeleton animation map:
+# Ogre clips are name-addressed, and several additional stock skeleton clips do
+# not have a proven Person/legacy animation index.
+PERSON_ANIMATION_INDEX_TO_NAME = {
+    0: "stand2Kneel",
+    1: "kneel2stand",
+    2: "idle",
+    3: "fireRecoilSniper",
+    4: "runForward",
+    5: "runBackward",
+    6: "runLeft",
+    7: "runRight",
+    8: "death1",
+    9: "idleParachute",
+    10: "landParachute",
+    11: "jump",
+}
+
+PERSON_ANIMATION_NAME_TO_INDEX = {
+    name: index for index, name in PERSON_ANIMATION_INDEX_TO_NAME.items()
+}
+
+# Additional names observed in stock Redux pilot .skeleton files. These are
+# valid named Ogre clips, but no Person animation index is currently proven for
+# them. idleEject/idleElect is a stock spelling variant; different skeletons
+# may contain one spelling rather than both.
+REDUX_NAMED_ONLY_PILOT_CLIPS = (
     "Take_001",
-    "death1",
     "death2",
-    "fireRecoilSniper",
-    "idle",
     "idleEject",
-    "idleElect",  # observed spelling in sspilo_fp.skeleton
-    "idleParachute",
-    "jump",
-    "kneel2stand",
-    "landParachute",
-    "runBackward",
-    "runForward",
-    "runLeft",
-    "runRight",
-    "stand2Kneel",
+    "idleElect",
     "walkBackward",
     "walkForward",
     "walkLeft",
     "walkRight",
+)
+
+# Union of every currently observed/known stock pilot clip name. Individual
+# stock files remain authoritative for which spelling/clip subset they contain.
+KNOWN_PILOT_CLIPS = tuple(
+    dict.fromkeys(
+        tuple(PERSON_ANIMATION_INDEX_TO_NAME.values())
+        + REDUX_NAMED_ONLY_PILOT_CLIPS
+    )
 )
 
 _CLIP_ALIASES = {
@@ -51,6 +75,31 @@ _CLIP_ALIASES = {
 }
 
 _BLENDER_NUMERIC_SUFFIX = re.compile(r"\.\d{3}$")
+
+
+def person_animation_index(clip_name: str):
+    """Return the verified Person animation index for ``clip_name`` or ``None``.
+
+    Matching is case-insensitive. Named-only Ogre clips intentionally return
+    ``None`` rather than receiving an invented numeric index.
+    """
+
+    normalized = str(clip_name or "").lower()
+    for name, index in PERSON_ANIMATION_NAME_TO_INDEX.items():
+        if name.lower() == normalized:
+            return index
+    return None
+
+
+def pilot_animation_reference_rows():
+    """Return stable rows for UI/docs: ``(index-or-None, name, indexed)``."""
+
+    rows = [
+        (index, name, True)
+        for index, name in sorted(PERSON_ANIMATION_INDEX_TO_NAME.items())
+    ]
+    rows.extend((None, name, False) for name in REDUX_NAMED_ONLY_PILOT_CLIPS)
+    return tuple(rows)
 
 
 def _bone_name(value):
@@ -69,8 +118,8 @@ def detect_pilot_profile(
     """Return a best-effort stock pilot profile from its bone signature.
 
     The known stock families are identified primarily from nation-prefixed helper
-    bones and the observed 3P/FP bone counts.  POV helper presence is a stronger
-    first-person signal than count alone.  Unknown/custom rigs are reported as
+    bones and the observed 3P/FP bone counts. POV helper presence is a stronger
+    first-person signal than count alone. Unknown/custom rigs are reported as
     such rather than force-fit to a stock profile.
     """
 
@@ -104,7 +153,7 @@ def detect_pilot_profile(
     elif count == 71:
         view = "Third Person"
     elif family_code == "ssp" and count == 32:
-        # Soviet 3P and FP both have 32 bones.  The FP skeleton carries the
+        # Soviet 3P and FP both have 32 bones. The FP skeleton carries the
         # GC1/POV helpers while the 3P skeleton does not.
         view = "First Person" if has_gc_helper else "Third Person"
 
@@ -123,7 +172,11 @@ def detect_pilot_profile(
         expected_serializer = SERIALIZER_V1_80
 
     known = family_code != "unknown" and view != "Unknown"
-    confidence = "HIGH" if known and expected_count == count else ("MEDIUM" if known else "LOW")
+    confidence = (
+        "HIGH"
+        if known and expected_count == count
+        else ("MEDIUM" if known else "LOW")
+    )
 
     warnings = []
     if expected_count is not None and count != expected_count:
@@ -140,7 +193,10 @@ def detect_pilot_profile(
         )
 
     label = f"{family} {view}" if known else "Unknown / Custom Pilot Rig"
-    key = f"{family_code}_{'fp' if view == 'First Person' else 'tp' if view == 'Third Person' else 'unknown'}"
+    key = (
+        f"{family_code}_"
+        f"{'fp' if view == 'First Person' else 'tp' if view == 'Third Person' else 'unknown'}"
+    )
 
     return {
         "key": key,
