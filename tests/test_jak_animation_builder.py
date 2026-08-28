@@ -42,6 +42,33 @@ def test_jak_builder_declares_expected_source_files_and_aliases():
         assert alias in source
 
 
+def test_cli_adds_complete_known_redux_pilot_surface():
+    source = _read(WRAPPER)
+    for alias in (
+        '"stand2Kneel": "idle"',
+        '"kneel2stand": "idle"',
+        '"fireRecoilSniper": "idle"',
+        '"runForward": "walk"',
+        '"runBackward": "walk"',
+        '"runLeft": "walk"',
+        '"runRight": "walk"',
+        '"death1": "death"',
+        '"idleParachute": "idle"',
+        '"landParachute": "idle"',
+        '"Take_001": "idle"',
+        '"death2": "death"',
+        '"idleEject": "idle"',
+        '"idleElect": "idle"',
+        '"walkBackward": "walk"',
+        '"walkForward": "walk"',
+        '"walkLeft": "walk"',
+        '"walkRight": "walk"',
+    ):
+        assert alias in source
+    assert "KNOWN_PILOT_CLIPS" in source
+    assert "_missing_compat" in source
+
+
 def test_cli_exposes_integration_ready_inputs():
     source = _read(WRAPPER)
     for option in (
