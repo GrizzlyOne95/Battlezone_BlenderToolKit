@@ -17,8 +17,9 @@ Run from Blender, for example:
 
 The script imports ``jak_walk.fbx`` as the authoritative mesh/bind pose,
 consolidates the fixed animation FBXs, retargets ``jak_skel.fbx`` idle onto
-that bind pose, creates the original BZ2 logical aliases and the currently
-known Redux Person compatibility aliases, then saves an optional .blend.
+that bind pose, creates the original BZ2 logical aliases, and by default adds
+a complete compatibility surface for every Redux pilot animation name currently
+known to the toolkit.
 """
 
 from __future__ import annotations
@@ -34,6 +35,45 @@ from bz98tools.jak_animation_builder import (
     build_jak_animation_set,
     parse_alias_specs,
 )
+from bz98tools.pilot_animation_profiles import KNOWN_PILOT_CLIPS
+
+
+# Jak has its own creature repertoire, so stock pilot motions that have no
+# literal animal counterpart are intentionally represented by harmless nearest
+# equivalents. The important contract is that every known Redux pilot clip name
+# exists in the generated Ogre skeleton; custom Jak clips remain available too.
+JAK_REDUX_COMPAT_ALIASES = {
+    "stand2Kneel": "idle",
+    "kneel2stand": "idle",
+    "fireRecoilSniper": "idle",
+    "runForward": "walk",
+    "runBackward": "walk",
+    "runLeft": "walk",
+    "runRight": "walk",
+    "death1": "death",
+    "idleParachute": "idle",
+    "landParachute": "idle",
+    "Take_001": "idle",
+    "death2": "death",
+    "idleEject": "idle",
+    "idleElect": "idle",
+    "walkBackward": "walk",
+    "walkForward": "walk",
+    "walkLeft": "walk",
+    "walkRight": "walk",
+}
+
+# ``idle`` is a real baked Jak Action and ``jump`` is already supplied by the
+# original BZ2 ODF alias (jump -> walk), so they are not duplicated above.
+_JAK_BASE_OR_ODF_NAMES = {"idle", "jump"}
+_missing_compat = set(KNOWN_PILOT_CLIPS) - (
+    set(JAK_REDUX_COMPAT_ALIASES) | _JAK_BASE_OR_ODF_NAMES
+)
+if _missing_compat:
+    raise RuntimeError(
+        "Jak Redux compatibility table is missing known pilot clip(s): "
+        + ", ".join(sorted(_missing_compat))
+    )
 
 
 def _script_argv():
@@ -72,7 +112,7 @@ def _parser():
     parser.add_argument(
         "--no-redux-compat-aliases",
         action="store_true",
-        help="Do not create the known stand2Kneel/idleParachute/landParachute compatibility aliases.",
+        help="Do not create the toolkit's complete known Redux pilot compatibility surface.",
     )
     parser.add_argument(
         "--rest-tolerance",
@@ -86,7 +126,11 @@ def _parser():
 def main(argv=None) -> int:
     args = _parser().parse_args(_script_argv() if argv is None else argv)
     try:
-        extra_aliases = parse_alias_specs(args.alias)
+        extra_aliases = {}
+        if not args.no_redux_compat_aliases:
+            extra_aliases.update(JAK_REDUX_COMPAT_ALIASES)
+        extra_aliases.update(parse_alias_specs(args.alias))
+
         armature, report = build_jak_animation_set(
             args.source_dir,
             context=bpy.context,
@@ -111,6 +155,8 @@ def main(argv=None) -> int:
         print(f"  bones: {report.bone_count}")
         print(f"  baked clips: {len(report.clips)}")
         print(f"  aliases: {len(report.aliases)}")
+        if not args.no_redux_compat_aliases:
+            print(f"  Redux known-name coverage: {len(KNOWN_PILOT_CLIPS)} clips")
         for clip in report.clips:
             mode = "retarget" if clip.retargeted else "direct"
             print(
