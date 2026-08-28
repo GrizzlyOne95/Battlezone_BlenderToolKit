@@ -7,10 +7,10 @@
 
 """Thin addon bootstrap.
 
-The historical addon entry point grew into a large monolithic module.  Keep that
+The historical addon entry point grew into a large monolithic module. Keep that
 implementation byte-for-byte in ``_addon_core.py`` and execute it in this module's
 namespace so existing class ``__module__`` values, package-relative imports, and
-public symbols remain compatible.  New self-contained feature modules can then
+public symbols remain compatible. New self-contained feature modules can then
 register around the legacy core without invasive edits to it.
 """
 
@@ -27,6 +27,7 @@ del _core_handle
 _core_register = register
 _core_unregister = unregister
 
+from . import pilot_animation_reference_ui as _pilot_animation_reference_ui
 from . import pilot_animation_ui as _pilot_animation_ui
 
 # First feature release containing the dedicated Redux pilot animation patch UI.
@@ -37,10 +38,14 @@ bl_info["version"] = (1, 4, 9)
 def register():
     _core_register()
     _pilot_animation_ui.register()
+    _pilot_animation_reference_ui.register()
 
 
 def unregister():
     try:
-        _pilot_animation_ui.unregister()
+        _pilot_animation_reference_ui.unregister()
     finally:
-        _core_unregister()
+        try:
+            _pilot_animation_ui.unregister()
+        finally:
+            _core_unregister()
