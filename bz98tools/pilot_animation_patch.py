@@ -9,7 +9,7 @@
 
 Redux pilots are a special case: their rendered animation is stored in the
 OGRE ``.skeleton`` rather than being driven solely by the legacy VDF ANIM
-section.  This module deliberately keeps the stock skeleton as the authority
+section. This module deliberately keeps the stock skeleton as the authority
 for bone handles, names, hierarchy, bind transforms, linked sources, and
 serializer version, and copies only selected named animation tracks from a
 replacement/exported skeleton.
@@ -51,7 +51,7 @@ class VersionPreservingSkeletonSerializer(SkeletonSerializer):
     """Skeleton serializer that round-trips Redux's stock pilot versions.
 
     The legacy serializer already reads both v1.80 and v1.10 but its write
-    entry point only permits v1.80.  Redux uses v1.80 for the third-person
+    entry point only permits v1.80. Redux uses v1.80 for the third-person
     pilot skeletons and v1.10 for the first-person variants, so animation
     patching must preserve either source version.
     """
@@ -109,7 +109,11 @@ def read_skeleton_stream(stream, *, validate_chunk_sizes=False) -> Skeleton:
 
 
 def write_skeleton_stream(
-    stream, skeleton: Skeleton, *, version: Optional[str] = None, validate_chunk_sizes=False
+    stream,
+    skeleton: Skeleton,
+    *,
+    version: Optional[str] = None,
+    validate_chunk_sizes=False,
 ):
     serializer = VersionPreservingSkeletonSerializer(
         stream, validate_chunk_sizes=validate_chunk_sizes
@@ -168,7 +172,18 @@ def _quat_tuple(value: Optional[Quaternion]):
 
 
 def _tuple_close(left, right, tolerance):
-    return all(math.isclose(a, b, rel_tol=tolerance, abs_tol=tolerance) for a, b in zip(left, right))
+    return all(
+        math.isclose(a, b, rel_tol=tolerance, abs_tol=tolerance)
+        for a, b in zip(left, right)
+    )
+
+
+def _quat_close(left, right, tolerance):
+    """Compare quaternion rotations while accepting q == -q equivalence."""
+
+    if _tuple_close(left, right, tolerance):
+        return True
+    return _tuple_close(left, tuple(-value for value in right), tolerance)
 
 
 def _parent_handle(bone):
@@ -184,9 +199,11 @@ def validate_skeleton_compatibility(
 ):
     """Validate that replacement animations were authored for the stock rig.
 
-    Bone handles are the primary skinning contract.  Names and hierarchy must
-    also match.  Bind transforms are compared with a small tolerance because a
+    Bone handles are the primary skinning contract. Names and hierarchy must
+    also match. Bind transforms are compared with a small tolerance because a
     Blender import/export cycle may introduce harmless floating-point noise.
+    Quaternion signs are allowed to flip because q and -q represent the same
+    rotation.
     """
 
     stock_handles = set(stock.bone_map)
@@ -224,9 +241,16 @@ def validate_skeleton_compatibility(
             )
 
         comparisons = (
-            ("position", _vec3_tuple(stock_bone.position), _vec3_tuple(replacement_bone.position)),
-            ("orientation", _quat_tuple(stock_bone.orientation), _quat_tuple(replacement_bone.orientation)),
-            ("scale", _scale_tuple(stock_bone.scale), _scale_tuple(replacement_bone.scale)),
+            (
+                "position",
+                _vec3_tuple(stock_bone.position),
+                _vec3_tuple(replacement_bone.position),
+            ),
+            (
+                "scale",
+                _scale_tuple(stock_bone.scale),
+                _scale_tuple(replacement_bone.scale),
+            ),
         )
         for label, stock_value, replacement_value in comparisons:
             if not _tuple_close(stock_value, replacement_value, bind_tolerance):
@@ -235,6 +259,17 @@ def validate_skeleton_compatibility(
                     f"tolerance {bind_tolerance}: stock={stock_value}, "
                     f"replacement={replacement_value}"
                 )
+
+        stock_orientation = _quat_tuple(stock_bone.orientation)
+        replacement_orientation = _quat_tuple(replacement_bone.orientation)
+        if not _quat_close(
+            stock_orientation, replacement_orientation, bind_tolerance
+        ):
+            raise PilotAnimationPatchError(
+                f"Bone {stock_bone.name!r} orientation differs from stock beyond "
+                f"tolerance {bind_tolerance}: stock={stock_orientation}, "
+                f"replacement={replacement_orientation}"
+            )
 
     return True
 
@@ -251,13 +286,17 @@ def _copy_quaternion(value: Optional[Quaternion]):
     return Quaternion(value.w, value.x, value.y, value.z)
 
 
-def clone_animation_for_skeleton(animation: Animation, target_skeleton: Skeleton) -> Animation:
+def clone_animation_for_skeleton(
+    animation: Animation, target_skeleton: Skeleton
+) -> Animation:
     """Clone one animation while rebinding every track to target_skeleton bones."""
 
     cloned = Animation()
     cloned.name = animation.name
     cloned.duration = animation.duration
-    cloned.use_base_keyframe = bool(getattr(animation, "use_base_keyframe", False))
+    cloned.use_base_keyframe = bool(
+        getattr(animation, "use_base_keyframe", False)
+    )
     cloned.base_keyframe_animation_name = animation.base_keyframe_animation_name
     cloned.base_keyframe_time = animation.base_keyframe_time
 
@@ -283,7 +322,9 @@ def clone_animation_for_skeleton(animation: Animation, target_skeleton: Skeleton
                     source_keyframe.time,
                     rot=_copy_quaternion(source_keyframe.rotation),
                     trans=_copy_vector(source_keyframe.translation),
-                    scale=_copy_vector(source_keyframe.scale, default=(1.0, 1.0, 1.0)),
+                    scale=_copy_vector(
+                        source_keyframe.scale, default=(1.0, 1.0, 1.0)
+                    ),
                 )
             )
         cloned.track_map[handle] = target_track
@@ -299,7 +340,12 @@ def patch_animations(
     validate_bind_pose: bool = True,
     bind_tolerance: float = 1.0e-4,
 ) -> list[str]:
-    """Replace selected named clips in ``stock`` and return patched names."""
+    """Replace selected named clips in ``stock`` and return patched names.
+
+    All selected animations are validated and cloned first. The stock animation
+    map is only mutated after every selected clip is ready, preventing a failed
+    multi-clip request from leaving a partially patched in-memory skeleton.
+    """
 
     names = list(dict.fromkeys(animation_names))
     if not names:
@@ -316,11 +362,15 @@ def patch_animations(
             f"Replacement skeleton does not contain animation(s): {', '.join(missing)}"
         )
 
+    cloned_animations = {
+        name: clone_animation_for_skeleton(replacement.animation_map[name], stock)
+        for name in names
+    }
+
     for name in names:
-        cloned = clone_animation_for_skeleton(replacement.animation_map[name], stock)
         # Assignment to an existing dict key preserves the stock animation order.
         # New custom clips intentionally append after the stock set.
-        stock.animation_map[name] = cloned
+        stock.animation_map[name] = cloned_animations[name]
 
     return names
 
@@ -337,7 +387,7 @@ def patch_skeleton_files(
 ) -> list[str]:
     """Patch selected clips into a stock skeleton and write a new file.
 
-    The output serializer version always comes from ``stock_path``.  The stock
+    The output serializer version always comes from ``stock_path``. The stock
     file is never modified in-place; callers must choose a distinct output.
     """
 
