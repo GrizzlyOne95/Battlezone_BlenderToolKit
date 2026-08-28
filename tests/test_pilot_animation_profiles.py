@@ -97,6 +97,49 @@ class PilotProfileTests(unittest.TestCase):
         self.assertEqual(result["label"], "Unknown / Custom Pilot Rig")
 
 
+class PilotAnimationContractTests(unittest.TestCase):
+    def test_verified_person_index_contract_is_exact(self):
+        self.assertEqual(
+            profiles.PERSON_ANIMATION_INDEX_TO_NAME,
+            {
+                0: "stand2Kneel",
+                1: "kneel2stand",
+                2: "idle",
+                3: "fireRecoilSniper",
+                4: "runForward",
+                5: "runBackward",
+                6: "runLeft",
+                7: "runRight",
+                8: "death1",
+                9: "idleParachute",
+                10: "landParachute",
+                11: "jump",
+            },
+        )
+
+    def test_reverse_person_index_lookup(self):
+        self.assertEqual(profiles.person_animation_index("runForward"), 4)
+        self.assertEqual(profiles.person_animation_index("IDLEPARACHUTE"), 9)
+        self.assertEqual(profiles.person_animation_index("jump"), 11)
+
+    def test_named_only_ogre_clips_do_not_get_fake_indices(self):
+        for name in profiles.REDUX_NAMED_ONLY_PILOT_CLIPS:
+            self.assertIsNone(profiles.person_animation_index(name), name)
+
+    def test_known_clip_union_contains_indexed_and_named_only_clips(self):
+        for name in profiles.PERSON_ANIMATION_INDEX_TO_NAME.values():
+            self.assertIn(name, profiles.KNOWN_PILOT_CLIPS)
+        for name in profiles.REDUX_NAMED_ONLY_PILOT_CLIPS:
+            self.assertIn(name, profiles.KNOWN_PILOT_CLIPS)
+
+    def test_reference_rows_keep_verified_indices_separate(self):
+        rows = profiles.pilot_animation_reference_rows()
+        indexed = [(index, name) for index, name, is_indexed in rows if is_indexed]
+        named_only = [name for index, name, is_indexed in rows if not is_indexed]
+        self.assertEqual(indexed, list(profiles.PERSON_ANIMATION_INDEX_TO_NAME.items()))
+        self.assertEqual(named_only, list(profiles.REDUX_NAMED_ONLY_PILOT_CLIPS))
+
+
 class PilotClipMatchingTests(unittest.TestCase):
     def test_exact_clip_name_matches(self):
         self.assertTrue(profiles.action_name_matches_clip("runForward", "runForward"))
@@ -115,6 +158,13 @@ class PilotClipMatchingTests(unittest.TestCase):
 class PilotUISyntaxTests(unittest.TestCase):
     def test_ui_module_parses_without_importing_blender(self):
         path = os.path.join(_REPO_ROOT, "bz98tools", "pilot_animation_ui.py")
+        with open(path, "r", encoding="utf-8") as handle:
+            ast.parse(handle.read(), filename=path)
+
+    def test_reference_ui_module_parses_without_importing_blender(self):
+        path = os.path.join(
+            _REPO_ROOT, "bz98tools", "pilot_animation_reference_ui.py"
+        )
         with open(path, "r", encoding="utf-8") as handle:
             ast.parse(handle.read(), filename=path)
 
