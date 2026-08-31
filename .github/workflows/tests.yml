@@ -24,6 +24,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Install test dependencies
+        run: python -m pip install numpy
+
       - name: Regenerate synthetic fixtures
         run: python tests/fixtures_builder.py
 
