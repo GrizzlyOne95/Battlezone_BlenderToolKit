@@ -30,9 +30,9 @@ _core_unregister = unregister
 from . import pilot_animation_reference_ui as _pilot_animation_reference_ui
 from . import pilot_animation_ui as _pilot_animation_ui
 
-# First feature release containing the dedicated Redux pilot animation patch UI.
+# Addon release version.
 bl_info = dict(bl_info)
-bl_info["version"] = (1, 4, 9)
+bl_info["version"] = (1, 4, 10)
 
 
 def register():
