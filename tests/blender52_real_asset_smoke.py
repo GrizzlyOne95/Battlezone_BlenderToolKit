@@ -4,7 +4,7 @@ Usage from the repository root with Blender 5.2's Python (or bpy 5.2.2):
 
     python tests/blender52_real_asset_smoke.py path/to/model.mesh path/to/model.skeleton
 
-The files are never copied into the repository.  They are staged in a temporary
+The files are never copied into the repository. They are staged in a temporary
 folder, imported through ``ogrefast.backend`` with the XML fallback forbidden,
 then re-exported through the same pure fast path and parsed again.
 """
@@ -25,6 +25,7 @@ import bpy
 
 from bz98tools.ogrefast import backend
 from bz98tools.ogrefast.pure.kenshi_facade import KenshiObjectSerializer
+from bz98tools.ogrefast.pure.pose_import_compat import PoseDetectingMeshSerializer
 
 
 class _Operator:
@@ -58,10 +59,13 @@ def _uv_count(obj):
 
 
 def _stage_pair(mesh_path: Path, skeleton_path: Path, temp_dir: Path):
-    serializer = KenshiObjectSerializer()
-    serializer.add_resource_location(str(mesh_path.parent))
-    source_mesh = serializer.load_mesh(mesh_path.name)
-    linked_name = source_mesh.get_linked_skeleton_name()
+    # Read only the mesh container first so an externally supplied skeleton may
+    # have any local filename (for example a Drive download ending in .bin).
+    # The staged copy is renamed to the exact linked resource name before the
+    # normal pure reader resolves it.
+    with mesh_path.open("rb") as stream:
+        raw_mesh = PoseDetectingMeshSerializer(stream).read()
+    linked_name = str(raw_mesh.skeleton_name or "")
     if not linked_name:
         raise AssertionError("source mesh has no linked skeleton")
 
@@ -69,6 +73,10 @@ def _stage_pair(mesh_path: Path, skeleton_path: Path, temp_dir: Path):
     staged_skeleton = temp_dir / linked_name
     shutil.copy2(mesh_path, staged_mesh)
     shutil.copy2(skeleton_path, staged_skeleton)
+
+    serializer = KenshiObjectSerializer()
+    serializer.add_resource_location(str(temp_dir))
+    source_mesh = serializer.load_mesh(staged_mesh.name)
     return staged_mesh, staged_skeleton, source_mesh
 
 
