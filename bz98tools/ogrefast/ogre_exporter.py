@@ -244,9 +244,30 @@ def collect_tracks(
         )
 
 
+def _action_slot_for_armature(action, armature_name):
+    """Return the Action slot driving ``armature_name``, tolerating API drift.
+
+    Blender 4.5's layered-Action slot accessor does not accept the
+    ``default=`` keyword used by older Blender versions, so prefer the
+    named ``OB<armature>`` slot and fall back to the first slot using only
+    positional access. Legacy (pre-slot) actions return ``None``.
+    """
+
+    slots = getattr(action, "slots", None)
+    if slots is None:
+        return None
+    try:
+        return slots[f"OB{armature_name}"]
+    except (KeyError, IndexError, TypeError):
+        pass
+    try:
+        return slots[0]
+    except (KeyError, IndexError, TypeError):
+        return None
+
+
 @func_timer
-def collect_bake_animations(
-    context: bpy.types.Context,
+def collect_bake_animations(    context: bpy.types.Context,
     export_info_log: List[str],
     skeleton_data: SkeletonData,
     armature: bpy.types.Object,
@@ -339,9 +360,9 @@ def collect_bake_animations(
 
             p_bones_foreach_set = p_bones.foreach_set
             for act in sorted(actions, key=lambda action: action.name):
-                slot = act.slots.get(f"OB{armature.name}", default=act.slots[0])
+                slot = _action_slot_for_armature(act, armature.name)
                 export_info_log.append(
-                    f"Export action {act.name}, slot {slot.name_display}"
+                    f"Export action {act.name}, slot {slot.name_display if slot is not None else '<legacy>'}"
                 )
                 start, end = act.frame_range
                 animation = AnimationData()
@@ -353,7 +374,8 @@ def collect_bake_animations(
                 p_bones_foreach_set("rotation_euler", init_vector_zeros)
                 p_bones_foreach_set("scale", init_vector_ones)
                 temp_animdata.action = act
-                temp_animdata.action_slot = slot
+                if slot is not None and hasattr(temp_animdata, "action_slot"):
+                    temp_animdata.action_slot = slot
                 temp_scene_layer.update()
 
                 collect_bake_tracks(

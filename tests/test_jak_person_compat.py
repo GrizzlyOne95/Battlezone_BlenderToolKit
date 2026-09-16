@@ -139,5 +139,59 @@ class JakImportGuardTests(unittest.TestCase):
         self.assertTrue(hasattr(guard, "__exit__"))
 
 
+class OgreSlotHelperTests(unittest.TestCase):
+    @staticmethod
+    def _load_helper():
+        import ast
+
+        path = os.path.join(_REPO_ROOT, "bz98tools", "ogrefast", "ogre_exporter.py")
+        with open(path, "r", encoding="utf-8") as handle:
+            module = ast.parse(handle.read(), filename=path)
+        for node in module.body:
+            if isinstance(node, ast.FunctionDef) and node.name == "_action_slot_for_armature":
+                namespace = {}
+                exec(compile(ast.Module(body=[node], type_ignores=[]), path, "exec"), namespace)  # noqa: S102
+                return namespace["_action_slot_for_armature"]
+        raise AssertionError("_action_slot_for_armature not found")
+
+    def test_named_slot_preferred(self):
+        helper = self._load_helper()
+
+        class _Slots(dict):
+            pass
+
+        named, first = object(), object()
+
+        class _Action:
+            slots = {"OBJak_Armature": named, "other": first}
+
+        # dict.get accepts default=, but the helper must not rely on it.
+        self.assertIs(helper(_Action(), "Jak_Armature"), named)
+
+    def test_first_slot_fallback(self):
+        helper = self._load_helper()
+
+        first = object()
+
+        class _Slots:
+            def __getitem__(self, key):
+                if key == 0:
+                    return first
+                raise KeyError(key)
+
+        class _Action:
+            slots = _Slots()
+
+        self.assertIs(helper(_Action(), "Jak_Armature"), first)
+
+    def test_legacy_action_returns_none(self):
+        helper = self._load_helper()
+
+        class _Action:
+            pass
+
+        self.assertIsNone(helper(_Action(), "Jak_Armature"))
+
+
 if __name__ == "__main__":
     unittest.main()
