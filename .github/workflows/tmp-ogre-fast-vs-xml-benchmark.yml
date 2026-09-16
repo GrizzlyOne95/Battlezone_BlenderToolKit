@@ -1,0 +1,49 @@
+name: Temporary Ogre Fast vs XML Benchmark
+
+on:
+  push:
+    branches:
+      - agent/pure-python-ogre-fastpath
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Download real aspilo benchmark pair
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force real-fixture | Out-Null
+          curl.exe -fL --retry 3 --retry-delay 2 'https://sdmntprcentralus.oaiusercontent.com/files/00000000-3394-81f5-847f-62bee496501b/raw?se=2026-09-16T22%3A00%3A01Z&sp=r&sv=2026-02-06&sr=b&scid=b74dadad-b01f-5775-9f10-1f01521e50bb&skoid=de71a0d5-fb02-4fce-be69-9296aced242b&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-16T20%3A10%3A38Z&ske=2026-09-17T20%3A10%3A38Z&sks=b&skv=2026-02-06&sig=O9rT/1kohhSGAbRTlHFAm0nsf1aBkf2UIlTdMgROGCU%3D' -o real-fixture/aspilo.mesh
+          curl.exe -fL --retry 3 --retry-delay 2 'https://sdmntprcentralus.oaiusercontent.com/files/00000000-a3c4-81f5-a062-d97b0760b05e/raw?se=2026-09-16T22%3A00%3A05Z&sp=r&sv=2026-02-06&sr=b&scid=e759c450-a366-5827-8d08-3e7b3cb4548c&skoid=de71a0d5-fb02-4fce-be69-9296aced242b&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-16T20%3A03%3A39Z&ske=2026-09-17T20%3A03%3A39Z&sks=b&skv=2026-02-06&sig=HgWgouB9/T/IFavfR1Py2Nc3uukvm%2BsXD9DKw%2BRgIU4%3D' -o real-fixture/aspilo.skeleton.bin
+          if ((Get-Item real-fixture/aspilo.mesh).Length -ne 883818) { throw 'mesh size mismatch' }
+          if ((Get-Item real-fixture/aspilo.skeleton.bin).Length -ne 2091392) { throw 'skeleton size mismatch' }
+          Get-FileHash real-fixture/aspilo.mesh -Algorithm SHA256
+          Get-FileHash real-fixture/aspilo.skeleton.bin -Algorithm SHA256
+
+      - name: Install Blender 5.2.2 Python module
+        run: python -m pip install --disable-pip-version-check bpy==5.2.2
+
+      - name: Run five-iteration benchmark
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts/benchmark | Out-Null
+          python tests/benchmark_ogre_fast_vs_xml.py real-fixture/aspilo.mesh real-fixture/aspilo.skeleton.bin --iterations 5 --output-json artifacts/benchmark/ogre-fast-vs-xml.json
+
+      - name: Upload benchmark result
+        uses: actions/upload-artifact@v4
+        with:
+          name: ogre-fast-vs-xml-benchmark
+          path: artifacts/benchmark/ogre-fast-vs-xml.json
+          if-no-files-found: error
+          retention-days: 7
