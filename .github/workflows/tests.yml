@@ -53,3 +53,6 @@ jobs:
 
       - name: Recover native animation transform contract
         run: python tests/native_animation_oracle.py
+
+      - name: Recover native pose transform contract
+        run: python tests/native_pose_oracle.py
