@@ -4,15 +4,21 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
+
 from ...bzrmodelporter.ogreskeleton import Skeleton as LegacySkeleton
 from ...bzrmodelporter.ogreskeleton_serializer import SkeletonSerializer as LegacySkeletonSerializer
 from ...bzrmodelporter.spacial import Quaternion as LegacyQuaternion
 from ...bzrmodelporter.spacial import Vector3 as LegacyVector3
+from .animation_compat import (
+    AnimatedSkeletonData,
+    AnimationData,
+    UnsupportedAnimationScale,
+)
 from .kenshi_compat import (
     BoneData,
     KenshiObjectSerializer as MeshKenshiObjectSerializer,
     OgreQuaternion,
-    SkeletonData,
     SkeletonVersion,
     Vector3,
 )
@@ -23,11 +29,14 @@ class UnsupportedPureSkeleton(RuntimeError):
 
 
 class KenshiObjectSerializer(MeshKenshiObjectSerializer):
-    """Add bone/hierarchy `.skeleton` read/write to the pure mesh serializer."""
+    """Add bones, hierarchy and no-scale animation `.skeleton` I/O."""
 
     def __init__(self, logfile="Kenshi_io_OGRE.log"):
         super().__init__(logfile=logfile)
         self._resource_locations: list[Path] = []
+
+    def create_skeleton(self, filename):
+        return AnimatedSkeletonData(filename, "General")
 
     def add_resource_location(self, folder):
         path = Path(folder).expanduser()
@@ -42,10 +51,6 @@ class KenshiObjectSerializer(MeshKenshiObjectSerializer):
             raise UnsupportedPureSkeleton(
                 f"pure Python skeleton writer currently targets Serializer_v1.80, got {version!r}"
             )
-        if getattr(skeleton, "_animations", None):
-            raise UnsupportedPureSkeleton(
-                "animation serialization is not wired through the compatibility API yet"
-            )
 
         legacy = _to_legacy_skeleton(skeleton)
         path = Path(path)
@@ -56,10 +61,6 @@ class KenshiObjectSerializer(MeshKenshiObjectSerializer):
         path = self._resolve_resource(file)
         with path.open("rb") as stream:
             legacy = LegacySkeletonSerializer(stream).read()
-        if any(True for _ in legacy.animations()):
-            raise UnsupportedPureSkeleton(
-                "animation import is not wired through the compatibility API yet"
-            )
         if any(True for _ in legacy.sources()):
             raise UnsupportedPureSkeleton(
                 "linked skeleton animation sources are not supported by the compatibility API yet"
@@ -77,7 +78,7 @@ class KenshiObjectSerializer(MeshKenshiObjectSerializer):
         raise FileNotFoundError(file)
 
 
-def _to_legacy_skeleton(source: SkeletonData) -> LegacySkeleton:
+def _to_legacy_skeleton(source: AnimatedSkeletonData) -> LegacySkeleton:
     target = LegacySkeleton()
     by_name = {}
 
@@ -114,14 +115,49 @@ def _to_legacy_skeleton(source: SkeletonData) -> LegacySkeleton:
             )
         by_name[parent_name].add_child(by_name[str(bone.name)])
 
+    for animation in source.get_animations():
+        legacy_animation = target.create_animation(
+            str(animation.name), float(animation.length)
+        )
+        for source_track in getattr(animation, "_tracks", ()):
+            if source_track.has_scale:
+                raise UnsupportedAnimationScale(
+                    "pure Python skeleton writer does not yet support scale keyframes"
+                )
+            if source_track.bone_name not in by_name:
+                raise UnsupportedPureSkeleton(
+                    f"animation {animation.name!r} references missing bone {source_track.bone_name!r}"
+                )
+            legacy_track = legacy_animation.create_track(
+                by_name[source_track.bone_name]
+            )
+            for index, time in enumerate(source_track.times):
+                translation = source_track.translations[index]
+                rotation = source_track.rotations[index]
+                legacy_track.create_keyframe(
+                    float(time),
+                    LegacyQuaternion(
+                        float(rotation[0]),
+                        float(rotation[1]),
+                        float(rotation[2]),
+                        float(rotation[3]),
+                    ),
+                    LegacyVector3(
+                        float(translation[0]),
+                        float(translation[1]),
+                        float(translation[2]),
+                    ),
+                    LegacyVector3(1.0, 1.0, 1.0),
+                )
+
     valid, message = target.verify()
     if not valid:
         raise UnsupportedPureSkeleton(message)
     return target
 
 
-def _from_legacy_skeleton(source: LegacySkeleton, filename: str) -> SkeletonData:
-    target = SkeletonData(filename, "General")
+def _from_legacy_skeleton(source: LegacySkeleton, filename: str) -> AnimatedSkeletonData:
+    target = AnimatedSkeletonData(filename, "General")
     bones = []
     for bone in source.bones():
         bones.append(
@@ -149,6 +185,59 @@ def _from_legacy_skeleton(source: LegacySkeleton, filename: str) -> SkeletonData
             )
         )
     target.set_bones(bones)
+
+    for source_animation in source.animations():
+        animation = AnimationData()
+        animation.name = str(source_animation.name)
+        animation.length = float(source_animation.duration)
+        for source_track in source_animation.tracks():
+            times = []
+            translations = []
+            rotations = []
+            scales = []
+            has_scale = False
+            for keyframe in source_track.keyframe_list:
+                times.append(float(keyframe.time))
+                translations.append(
+                    [
+                        float(keyframe.translation.x),
+                        float(keyframe.translation.y),
+                        float(keyframe.translation.z),
+                    ]
+                )
+                rotations.append(
+                    [
+                        float(keyframe.rotation.w),
+                        float(keyframe.rotation.x),
+                        float(keyframe.rotation.y),
+                        float(keyframe.rotation.z),
+                    ]
+                )
+                scale = np.asarray(
+                    [
+                        float(keyframe.scale.x),
+                        float(keyframe.scale.y),
+                        float(keyframe.scale.z),
+                    ],
+                    dtype=np.float32,
+                )
+                if not np.allclose(scale, 1.0, atol=1e-6):
+                    has_scale = True
+                scales.append(scale)
+            if has_scale:
+                raise UnsupportedAnimationScale(
+                    f"animation {source_animation.name!r} contains scale keyframes; falling back to legacy import"
+                )
+            animation.append_ogre_track(
+                str(source_track.target_bone.name),
+                times,
+                translations,
+                rotations,
+                scales,
+                has_scale=False,
+            )
+        target.add_animation(animation)
+
     return target
 
 
