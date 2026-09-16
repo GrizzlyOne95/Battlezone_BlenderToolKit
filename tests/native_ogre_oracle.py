@@ -93,7 +93,10 @@ def load_summary(serializer, name: str):
     submesh = submeshes[0]
     positions = np.asarray(submesh.get_positions(), dtype=np.float32).reshape(-1, 3)
     normals = np.asarray(submesh.get_normals(), dtype=np.float32).reshape(-1, 3)
-    texcoords = np.asarray(submesh.get_texcoords(0), dtype=np.float32).reshape(-1, 2)
+    texcoords = np.asarray(submesh.get_texcoords(), dtype=np.float32)
+    if texcoords.ndim == 3:
+        texcoords = texcoords[0]
+    texcoords = texcoords.reshape(-1, 2)
     return {
         "faces": list(submesh.faces),
         "face_count": int(submesh.face_count),
