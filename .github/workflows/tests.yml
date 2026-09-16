@@ -51,6 +51,9 @@ jobs:
       - name: Exercise pure Ogre path in Blender 5.2
         run: python tests/blender52_smoke.py
 
+      - name: Exercise rigged multi-UV fast path in Blender 5.2
+        run: python tests/blender52_multi_uv_smoke.py
+
   native-ogre-oracle:
     runs-on: windows-latest
     needs: unit
