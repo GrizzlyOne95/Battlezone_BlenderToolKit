@@ -22,6 +22,13 @@ NATIVE_ROOT = VENDOR_ROOT / "kenshi_blender_tool"
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(VENDOR_ROOT))
 
+# Running outside Blender must not execute bz98tools/__init__.py, which imports
+# bpy at module scope. Reuse the same package shell as the rest of the bpy-free
+# test suite so bz98tools.ogrefast.pure can be imported normally.
+import _bootstrap  # noqa: E402
+
+_bootstrap.ensure_package()
+
 if os.name != "nt":
     raise SystemExit("native Ogre oracle is Windows-only")
 
@@ -38,11 +45,6 @@ from bz98tools.ogrefast.pure.model import (  # noqa: E402
     VertexElement,
 )
 from bz98tools.ogrefast.pure.serializer import OgreMeshSerializer  # noqa: E402
-
-
-def fail(message: str) -> None:
-    print(f"[FAIL] {message}")
-    raise SystemExit(1)
 
 
 def check(name: str, condition: bool, detail="") -> None:
