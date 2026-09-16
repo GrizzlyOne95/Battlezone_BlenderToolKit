@@ -3,8 +3,10 @@
 Usage from the repository root with Blender 5.2's Python (or bpy 5.2.2):
 
     python tests/blender52_real_asset_smoke.py path/to/model.mesh path/to/model.skeleton
+    python tests/blender52_real_asset_smoke.py path/to/model.mesh path/to/model.skeleton --output-dir artifacts/ogre-fastpath-acceptance/aspilo
 
-The files are never copied into the repository. They are staged in a temporary
+The files are never copied into the repository unless an explicit output directory
+inside the working tree is supplied. The source pair is staged in a temporary
 folder, imported through ``ogrefast.backend`` with the XML fallback forbidden,
 then re-exported through the same pure fast path and parsed again.
 """
@@ -168,13 +170,19 @@ def _import_fast(staged_mesh: Path, expected_actions: set[str]):
     return meshes, armature
 
 
-def _export_fast(temp_dir: Path, meshes, armature, expected_actions: set[str]):
+def _export_fast(output_dir: Path, meshes, armature, expected_actions: set[str]):
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_mesh = output_dir / "aspilo_fast52.mesh"
+    output_skeleton = output_mesh.with_suffix(".skeleton")
+    for path in (output_mesh, output_skeleton):
+        if path.exists():
+            path.unlink()
+
     bpy.ops.object.select_all(action="DESELECT")
     for obj in meshes:
         obj.select_set(True)
     bpy.context.view_layer.objects.active = meshes[0]
 
-    output_mesh = temp_dir / "aspilo_fast52.mesh"
     operator = _Operator()
     result = backend.export_mesh(
         operator,
@@ -203,12 +211,11 @@ def _export_fast(temp_dir: Path, meshes, armature, expected_actions: set[str]):
     if result != {"FINISHED"} or errors or not output_mesh.is_file():
         raise AssertionError(f"fast export failed: {result} {errors}")
 
-    output_skeleton = output_mesh.with_suffix(".skeleton")
     if not output_skeleton.is_file():
         raise AssertionError("fast export did not create linked .skeleton")
 
     serializer = KenshiObjectSerializer()
-    serializer.add_resource_location(str(temp_dir))
+    serializer.add_resource_location(str(output_dir))
     roundtrip = serializer.load_mesh(output_mesh.name)
     submeshes = roundtrip.get_submeshes()
     if len(submeshes) != 2:
@@ -238,12 +245,19 @@ def _export_fast(temp_dir: Path, meshes, armature, expected_actions: set[str]):
         output_mesh,
         output_skeleton,
     )
+    return output_mesh, output_skeleton
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("mesh", type=Path)
     parser.add_argument("skeleton", type=Path)
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help="directory for the validated aspilo_fast52.mesh/.skeleton pair; defaults to the temporary staging directory",
+    )
     args = parser.parse_args(argv)
 
     if bpy.app.version[:2] != (5, 2):
@@ -253,11 +267,21 @@ def main(argv=None):
     if not mesh_path.is_file() or not skeleton_path.is_file():
         raise FileNotFoundError("mesh and skeleton paths must both exist")
 
-    temp_dir = Path(tempfile.mkdtemp(prefix="bz98_real_ogre52_"))
-    staged_mesh, _, source_mesh = _stage_pair(mesh_path, skeleton_path, temp_dir)
+    staging_dir = Path(tempfile.mkdtemp(prefix="bz98_real_ogre52_"))
+    output_dir = (
+        args.output_dir.expanduser().resolve() if args.output_dir is not None else staging_dir
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    staged_mesh, _, source_mesh = _stage_pair(mesh_path, skeleton_path, staging_dir)
     expected_actions = _assert_source_contract(source_mesh)
     meshes, armature = _import_fast(staged_mesh, expected_actions)
-    _export_fast(temp_dir, meshes, armature, expected_actions)
+    output_mesh, output_skeleton = _export_fast(
+        output_dir, meshes, armature, expected_actions
+    )
+    print("OUTPUT_DIR", output_dir)
+    print("OUTPUT_MESH", output_mesh)
+    print("OUTPUT_SKELETON", output_skeleton)
     print("BLENDER 5.2 REAL ASSET PURE OGRE FAST-PATH PASSED")
 
 
