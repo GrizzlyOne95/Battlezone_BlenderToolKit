@@ -40,6 +40,26 @@ class BoneAssignment:
 
 
 @dataclass(slots=True)
+class PoseVertex:
+    vertex_index: int
+    offset: tuple[float, float, float]
+    normal: tuple[float, float, float] | None = None
+
+
+@dataclass(slots=True)
+class PoseData:
+    name: str
+    # Ogre pose targets use 0 for shared geometry and submesh_index + 1 for
+    # dedicated submesh geometry.
+    target: int
+    vertices: list[PoseVertex] = field(default_factory=list)
+
+    @property
+    def includes_normals(self) -> bool:
+        return any(vertex.normal is not None for vertex in self.vertices)
+
+
+@dataclass(slots=True)
 class SubMeshData:
     material_name: str
     indices: list[int]
@@ -64,6 +84,7 @@ class MeshData:
     skeleton_name: str = ""
     bounds: MeshBounds | None = None
     bone_assignments: list[BoneAssignment] = field(default_factory=list)
+    poses: list[PoseData] = field(default_factory=list)
 
     def iter_geometries(self) -> Iterable[GeometryData]:
         if self.shared_geometry is not None:
