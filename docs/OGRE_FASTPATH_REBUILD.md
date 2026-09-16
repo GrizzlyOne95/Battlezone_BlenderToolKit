@@ -42,7 +42,7 @@ Automated coverage currently includes:
 - multi-UV wire-format/readback coverage where a vertex differs only in UV set 1, ensuring optimization cannot incorrectly merge it; and
 - real Blender 5.2.2 / Python 3.13 smoke tests covering shape-key mesh round-trip, Batch Selected export, visual-keying `.skeleton` animation bake, the pilot-animation bake helper, and rigged two-UV fast-path export.
 
-The current fully green matrix is GitHub Actions run #123.
+The latest fully green matrix before the one-click helper addition is GitHub Actions run #127.
 
 ## Representative real-asset acceptance profile
 
@@ -63,11 +63,31 @@ The source pair exercises substantially more than the synthetic fixtures:
 
 Those characteristics all fall inside the proven pure fast-path feature set. `tests/blender52_real_asset_smoke.py` accepts an external `.mesh` and `.skeleton` pair, forbids the XML fallback, imports the pair in Blender 5.2, verifies the armature/weights/materials/two UV sets/actions, re-exports through the pure fast path, and requires the resulting binary pair to preserve two submeshes, two UV sets, 71 bones and all 19 animation names.
 
-Example:
+The Python harness can be run directly:
 
 ```text
-python tests/blender52_real_asset_smoke.py /path/to/aspilo.mesh /path/to/aspilo.skeleton
+python tests/blender52_real_asset_smoke.py /path/to/aspilo.mesh /path/to/aspilo.skeleton --output-dir artifacts/ogre-fastpath-acceptance/aspilo
 ```
+
+### One-click Windows acceptance
+
+For the normal Windows test workflow, use the PowerShell helper instead:
+
+```powershell
+.\scripts\Test-OgreFastPath52.ps1 "C:\path\to\aspilo.mesh" "C:\path\to\aspilo.skeleton.bin"
+```
+
+If the two paths are omitted, the script prompts for them. It:
+
+1. locates Python 3.13 (`py -3.13` preferred);
+2. creates/reuses `.venv-ogre52`;
+3. installs `bpy==5.2.2` only when needed;
+4. runs the real-asset import -> export -> binary validation with XML fallback forbidden;
+5. writes the validated files to `artifacts\ogre-fastpath-acceptance\aspilo\`;
+6. prints SHA-256 hashes for both outputs; and
+7. opens Explorer with `aspilo_fast52.mesh` selected unless `-NoOpen` is supplied.
+
+The Drive-downloaded skeleton may keep a local `.skeleton.bin` filename; the harness stages it under the exact `aspilo.skeleton` resource name referenced by the mesh.
 
 ## Intentional fallback / remaining gaps
 
