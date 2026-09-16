@@ -1,0 +1,19 @@
+// DRAFT (UNQUALIFIED) -- neutered sniper shell for the Jak bite trigger.
+// Cloned from stock g2snipb.odf. All damage removed, no tracer/smoke/flash
+// render blocks. If a shot ever escapes, it is short-lived and harmless.
+// Real melee damage must be applied separately by creature logic inside the
+// attack2 strike window at close range.
+
+[OrdnanceClass]
+classLabel = "snipershell"
+lifeSpan = 0.2
+shotSpeed = 10.0
+damageBallistic = 0
+damageConcussion = 0
+damageFlame = 0
+damageImpact = 0
+ammoCost = 0
+
+[SniperShellClass]
+killRadius = 0
+killLength = 0

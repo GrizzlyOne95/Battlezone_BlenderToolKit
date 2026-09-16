@@ -1,0 +1,41 @@
+// DRAFT (UNQUALIFIED) -- Jak Person wrapper for BZ98 Redux.
+// Cloned from stock fspilo.odf (classLabel = "person").
+// Requires: jakpilot.mesh / jakpilot.skeleton / jakpilot.material + textures,
+// plus a legacy VDF/GEO shell cloned from a known-good stock pilot pair.
+// WORLD-only milestone: no cockpit/POV/weapon-helper support.
+
+[GameObjectClass]
+baseName = "jakpilot"
+classLabel = "person"
+geometryName = "jakpilot"
+scrapCost = 0
+scrapValue = 0
+pilotCost = 1
+maxHealth = 250
+maxAmmo = 3
+explosionName = "xgibb"
+unitName = "Jak Killer"
+aiName = "PersonFriend"
+aiName2 = "PersonEnemy"
+heatSignature = 0.2
+imageSignature = 0.3
+radarSignature = 0.2
+canDetect = 1
+
+// Animation-state trigger only (see jakbite_gun.odf). Real melee damage
+// must come from creature logic, not from this weapon's projectile.
+weaponHard1 = "GC1"
+weaponName1 = "jakbite_gun"
+
+[PersonClass]
+xplSnipe = "xplSnipe"
+animRate = 10.0
+
+// Placeholder pilot voice lines until Jak sounds are wired.
+painSound1 = "fpain01.wav"
+burnSound1 = "fburn01.wav"
+dieSound1 = "fdeath01.wav"
+crushSound = "fsquis01.wav"
+jumpSound = "fjump01.wav"
+landSound = "fland01.wav"
+stepSound = "running.wav"
