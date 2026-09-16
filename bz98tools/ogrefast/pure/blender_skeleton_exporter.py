@@ -37,6 +37,7 @@ def _load_shared_exporter():
     exporter.Vector3 = kenshi_compat.Vector3
     exporter.OgreQuaternion = kenshi_compat.OgreQuaternion
     exporter.Matrix3 = kenshi_compat.Matrix3
+    exporter.SkeletonVersion = kenshi_compat.SkeletonVersion
     return exporter
 
 
