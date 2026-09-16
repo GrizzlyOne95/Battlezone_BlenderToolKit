@@ -50,6 +50,25 @@ class ImportedSubMeshData(SubMeshData):
         else:
             self._bone_mapping = {int(bone.id): str(bone.name) for bone in bones}
 
+    def _expand_to_corners(self, values: np.ndarray) -> np.ndarray:
+        """Expand vertex-domain attributes through the triangle index buffer.
+
+        The historical native wrapper exposes normals, UVs and colours in the
+        order Blender's CORNER/loop domain expects, while positions remain
+        vertex-domain.  Real Ogre meshes routinely reuse vertices across many
+        triangle loops, so returning raw vertex-buffer rows is insufficient.
+        """
+
+        values = np.asarray(values)
+        indices = np.asarray(self.faces, dtype=np.int64).reshape(-1)
+        if indices.size == 0:
+            return np.empty((0, values.shape[1]), dtype=values.dtype)
+        if int(indices.min()) < 0 or int(indices.max()) >= len(values):
+            raise UnsupportedPureImport(
+                "submesh index buffer references a vertex outside its geometry"
+            )
+        return values[indices]
+
     def get_positions(self):
         values = _decode_semantic(self._wire_geometry, {"POSITION"})
         if values is None:
@@ -60,7 +79,8 @@ class ImportedSubMeshData(SubMeshData):
         values = _decode_semantic(self._wire_geometry, {"NORMAL"})
         if values is None:
             return []
-        return _ogre_to_blender_xyz(values[:, :3]).astype(np.float32, copy=False).tolist()
+        values = _ogre_to_blender_xyz(values[:, :3]).astype(np.float32, copy=False)
+        return self._expand_to_corners(values).tolist()
 
     def get_texcoords(self):
         elements = _elements_by_semantic(
@@ -76,7 +96,7 @@ class ImportedSubMeshData(SubMeshData):
                 raise UnsupportedPureImport("texture coordinate element has fewer than 2 components")
             uv = values[:, :2].astype(np.float32, copy=True)
             uv[:, 1] = 1.0 - uv[:, 1]
-            uv_sets.append(uv.reshape(-1))
+            uv_sets.append(self._expand_to_corners(uv).reshape(-1))
         return np.stack(uv_sets, axis=0)
 
     def get_colors(self, is_rgba=True):
@@ -85,11 +105,16 @@ class ImportedSubMeshData(SubMeshData):
             empty = np.empty((0, 4), dtype=np.float32)
             return empty, empty
 
-        rgba = _decode_colour_element(self._wire_geometry, element)
-        if not is_rgba:
-            rgba = rgba[:, :3]
-        alpha = np.repeat(rgba[:, 3:4], 4, axis=1) if rgba.shape[1] >= 4 else np.ones((len(rgba), 4), dtype=np.float32)
-        return rgba.astype(np.float32, copy=False), alpha.astype(np.float32, copy=False)
+        rgba = self._expand_to_corners(
+            _decode_colour_element(self._wire_geometry, element)
+        ).astype(np.float32, copy=False)
+        alpha = (
+            np.repeat(rgba[:, 3:4], 4, axis=1)
+            if rgba.shape[1] >= 4
+            else np.ones((len(rgba), 4), dtype=np.float32)
+        )
+        colors = rgba if is_rgba else rgba[:, :3]
+        return colors, alpha
 
     def get_vertex_groups(self):
         # Static pure import rejects bone assignments before reaching Blender.
