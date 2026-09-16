@@ -83,31 +83,35 @@ def build_mesh() -> MeshData:
 
 
 def main() -> int:
-    with tempfile.TemporaryDirectory(prefix="bz98_ogre_oracle_") as tmp:
-        mesh_path = Path(tmp) / "oracle.mesh"
-        OgreMeshSerializer().dump(build_mesh(), mesh_path)
-        check("pure mesh written", mesh_path.is_file(), f"bytes={mesh_path.stat().st_size}")
+    # Do not use TemporaryDirectory here: the native serializer keeps its log
+    # file open until process teardown on Windows, which prevents automatic
+    # directory cleanup even after the actual oracle assertions complete.
+    tmp_path = Path(tempfile.mkdtemp(prefix="bz98_ogre_oracle_"))
+    mesh_path = tmp_path / "oracle.mesh"
+    OgreMeshSerializer().dump(build_mesh(), mesh_path)
+    check("pure mesh written", mesh_path.is_file(), f"bytes={mesh_path.stat().st_size}")
 
-        serializer = native.KenshiObjectSerializer(str(Path(tmp) / "native_oracle.log"))
-        loaded = serializer.load_mesh(str(mesh_path))
-        check("native OGRE loader accepts pure mesh", loaded is not None)
+    serializer = native.KenshiObjectSerializer(str(tmp_path / "native_oracle.log"))
+    serializer.add_resource_location(str(tmp_path))
+    loaded = serializer.load_mesh(mesh_path.name)
+    check("native OGRE loader accepts pure mesh", loaded is not None)
 
-        submeshes = loaded.get_submeshes()
-        check("one submesh loaded", len(submeshes) == 1, f"count={len(submeshes)}")
-        submesh = submeshes[0]
-        check("triangle face count preserved", int(submesh.face_count) == 1, submesh.face_count)
-        check("triangle indices preserved", list(submesh.faces) == [0, 1, 2], submesh.faces)
-        check("vertex count preserved", int(submesh.geometry.vertex_count) == 3, submesh.geometry.vertex_count)
-        check("normals recognized", bool(submesh.geometry.has_normals))
-        check("UVs recognized", bool(submesh.geometry.has_texture_coord))
+    submeshes = loaded.get_submeshes()
+    check("one submesh loaded", len(submeshes) == 1, f"count={len(submeshes)}")
+    submesh = submeshes[0]
+    check("triangle face count preserved", int(submesh.face_count) == 1, submesh.face_count)
+    check("triangle indices preserved", list(submesh.faces) == [0, 1, 2], submesh.faces)
+    check("vertex count preserved", int(submesh.geometry.vertex_count) == 3, submesh.geometry.vertex_count)
+    check("normals recognized", bool(submesh.geometry.has_normals))
+    check("UVs recognized", bool(submesh.geometry.has_texture_coord))
 
-        positions = np.asarray(submesh.get_positions(), dtype=np.float32).reshape(-1, 3)
-        check("three positions decoded", positions.shape == (3, 3), positions.shape)
-        check("position data finite", bool(np.isfinite(positions).all()))
+    positions = np.asarray(submesh.get_positions(), dtype=np.float32).reshape(-1, 3)
+    check("three positions decoded", positions.shape == (3, 3), positions.shape)
+    check("position data finite", bool(np.isfinite(positions).all()))
 
-        print(f"[INFO] native-decoded positions: {positions.tolist()}")
-        print("NATIVE OGRE ORACLE PASSED")
-        return 0
+    print(f"[INFO] native-decoded positions: {positions.tolist()}")
+    print("NATIVE OGRE ORACLE PASSED")
+    return 0
 
 
 if __name__ == "__main__":
