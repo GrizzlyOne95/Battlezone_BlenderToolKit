@@ -57,14 +57,64 @@ ODF_ALIASES: Mapping[str, str] = {
     "eat2": "eat1",
 }
 
-# Known Redux Person/pilot compatibility names.  Do not try to guess the
-# remaining stock pilot vocabulary here; PR #9 can later populate an exact
-# compatibility map from the authoritative stock .skeleton.
+# Known Redux Person/pilot compatibility names for the generic fallback path.
+# Do not try to guess the remaining stock pilot vocabulary here; PR #9 can
+# later populate an exact compatibility map from the authoritative stock
+# .skeleton.  This generic default intentionally keeps sniper/crouch slots on
+# idle so unrelated creatures stay harmless.  The Jak experiment uses the
+# explicit JAK_PERSON_COMPAT_ALIASES profile below instead.
 DEFAULT_COMPAT_ALIASES: Mapping[str, str] = {
     "stand2Kneel": "idle",
     "idleParachute": "idle",
     "landParachute": "idle",
 }
+
+# Explicit Jak creature compatibility profile.
+#
+# The Jak experiment drives its three-stage melee attack through Redux's
+# native Person sniper/crouch state machine:
+#
+#   stand2Kneel (index 0)      -> attack1 (wind-up/lunge)
+#   fireRecoilSniper (index 3) -> attack2 (strike/bite)
+#   kneel2stand (index 1)      -> attack3 (recovery)
+#
+# All other stock locomotion/idle/death slots resolve to the nearest harmless
+# Jak equivalent.  Native Jak Actions (walk/run/jump/idle/death/curious/
+# attack1-4/eat1-2) are preserved; these aliases only add stock-compatible
+# Action copies pointing at them.
+JAK_PERSON_COMPAT_ALIASES: Mapping[str, str] = {
+    # Native sniper/crouch FSM as three-stage melee controller.
+    "stand2Kneel": "attack1",
+    "fireRecoilSniper": "attack2",
+    "kneel2stand": "attack3",
+    # Ordinary locomotion compatibility.
+    "runForward": "walk",
+    "runBackward": "walk",
+    "runLeft": "walk",
+    "runRight": "walk",
+    "walkForward": "walk",
+    "walkBackward": "walk",
+    "walkLeft": "walk",
+    "walkRight": "walk",
+    # Death compatibility.
+    "death1": "death",
+    "death2": "death",
+    # Jump is also an ODF-level alias (jump -> walk); listed here so the
+    # explicit profile is complete on its own.
+    "jump": "walk",
+    # Parachute/eject/Take_001 have no animal counterpart; hold idle safely.
+    "idleParachute": "idle",
+    "landParachute": "idle",
+    "idleEject": "idle",
+    "idleElect": "idle",
+    "Take_001": "idle",
+}
+
+
+def jak_person_compat_aliases() -> Dict[str, str]:
+    """Return a copy of the explicit Jak Person compatibility profile."""
+
+    return dict(JAK_PERSON_COMPAT_ALIASES)
 
 JAK_SIGNATURE_BONES = frozenset(
     {
@@ -158,16 +208,101 @@ def validate_source_directory(source_dir: os.PathLike | str) -> Path:
     return source
 
 
+def _is_helper_ancestor(node, maybe_descendant) -> bool:
+    """Return True if ``node`` is an ancestor of (or identical to) ``maybe_descendant``."""
+
+    seen = set()
+    current = maybe_descendant
+    while current is not None and id(current) not in seen:
+        if current is node:
+            return True
+        seen.add(id(current))
+        current = getattr(current, "parent", None)
+    return False
+
+
+class _cycle_safe_fbx_import:
+    """Guard Blender's FBX importer against XSI-style mesh-ancestor rigs.
+
+    The original BZ2 Jak FBXs parent the skinned ``mainbody`` mesh above its
+    own deforming bones (``hp_dummyroot_1 -> mainbody -> hip -> ...``).
+    Blender's importer inserts an armature node under the mesh and then
+    ``collect_armature_meshes`` reparents every skinned mesh under that
+    armature. When the mesh is already an ancestor of the armature this
+    creates a parent cycle (armature <-> mesh), detaches both from the scene
+    root, and the whole rig is silently dropped -- only the unskinned
+    ``hp_dummyroot_1`` dummy imports.
+
+    This context manager patches the collector so a mesh that is an ancestor
+    of (or identical to) the armature keeps its authored transform/parenting
+    while remaining registered for armature-modifier setup. Meshes in normal
+    (non-ancestor) positions follow the stock code path untouched.
+    """
+
+    def __init__(self):
+        self._node_cls = None
+        self._original = None
+
+    def __enter__(self):
+        try:
+            from io_scene_fbx import import_fbx as _import_fbx_module
+        except ImportError:
+            return self
+        node_cls = getattr(_import_fbx_module, "FbxImportHelperNode", None)
+        if node_cls is None:
+            return self
+        original = node_cls.collect_armature_meshes
+
+        def _collect_cycle_safe(helper):
+            if not helper.is_armature:
+                return original(helper)
+            armature_matrix_inv = helper.get_world_matrix().inverted_safe()
+            meshes = set()
+            for child in helper.children:
+                # Children meshes may be linked to children armatures, in which
+                # case we do not want to link them to a parent one (T70244).
+                child.collect_armature_meshes()
+                if not child.meshes:
+                    child.collect_skeleton_meshes(meshes)
+            for mesh in meshes:
+                if _is_helper_ancestor(mesh, helper):
+                    # XSI-style ancestor mesh: reparenting would orphan the rig.
+                    # Keep the authored hierarchy; link_hierarchy still wires
+                    # the armature modifier from helper.meshes/armature_setup.
+                    continue
+                old_matrix = mesh.matrix
+                mesh.matrix = armature_matrix_inv @ mesh.get_world_matrix()
+                mesh.anim_compensation_matrix = (
+                    old_matrix.inverted_safe() @ mesh.matrix
+                )
+                mesh.is_global_animation = True
+                mesh.parent = helper
+            helper.meshes = meshes
+
+        self._node_cls = node_cls
+        self._original = original
+        node_cls.collect_armature_meshes = _collect_cycle_safe
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        if self._node_cls is not None and self._original is not None:
+            self._node_cls.collect_armature_meshes = self._original
+        self._node_cls = None
+        self._original = None
+        return False
+
+
 def _import_fbx(path: Path):
     _require_blender()
     before = set(bpy.data.objects)
-    result = bpy.ops.import_scene.fbx(
-        filepath=str(path),
-        use_anim=True,
-        use_image_search=False,
-        automatic_bone_orientation=False,
-        use_prepost_rot=True,
-    )
+    with _cycle_safe_fbx_import():
+        result = bpy.ops.import_scene.fbx(
+            filepath=str(path),
+            use_anim=True,
+            use_image_search=False,
+            automatic_bone_orientation=False,
+            use_prepost_rot=True,
+        )
     if result != {"FINISHED"}:
         raise JakAnimationBuildError(f"Blender FBX import failed for {path}")
     imported = [obj for obj in bpy.data.objects if obj not in before]
