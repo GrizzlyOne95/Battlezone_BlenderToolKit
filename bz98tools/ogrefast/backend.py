@@ -44,9 +44,9 @@ def _pure_export_mode(context, export_poses, export_animation):
             if key_blocks and len(key_blocks) > 1:
                 return None, "pure Python shape-key/pose export is not implemented yet"
 
-    if armatures and export_animation:
-        return None, "pure Python skeleton animation export is not implemented yet"
-
+    # Normal action export is now supported for rigged meshes. The shared
+    # exporter invokes the pure AnimationData compatibility layer with
+    # use_scale_keyframe=False, matching the add-on's current fast-path setup.
     return ("rigged" if armatures else "static"), None
 
 
@@ -125,7 +125,7 @@ def import_mesh(
         from .pure import blender_importer
 
         print(
-            "Using pure Python Ogre backend for static mesh import"
+            "Using pure Python Ogre backend for mesh import"
             + (f"; native backend unavailable: {native_reason}" if native_reason else ".")
         )
         return blender_importer.load(
@@ -282,6 +282,7 @@ def export_mesh(
                     dict(
                         export_skeleton=export_skeleton,
                         export_poses=export_poses,
+                        export_animation=export_animation,
                         renormalize_weights=renormalize_weights,
                     )
                     if pure_mode == "rigged"
