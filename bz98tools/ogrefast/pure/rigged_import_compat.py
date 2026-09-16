@@ -1,17 +1,20 @@
 from __future__ import annotations
 
-"""Rigged-mesh extension of the pure static Ogre import compatibility layer."""
+"""Rigged/static mesh extension of the pure Ogre import compatibility layer."""
 
 from dataclasses import dataclass
+
+import numpy as np
 
 from .import_compat import (
     ImportedSubMeshData,
     UnsupportedPureImport,
-    _DetectingMeshSerializer,
     _decode_semantic,
+    _ogre_to_blender_xyz,
     _wire_geometry_from_legacy,
 )
 from .kenshi_compat import BoneAssignmentData, MeshData, OperationType
+from .pose_import_compat import PoseDetectingMeshSerializer
 from .skeleton_compat import KenshiObjectSerializer as SkeletonKenshiObjectSerializer
 from ...bzrmodelporter.ogremesh import OT
 
@@ -23,6 +26,10 @@ class VertexGroupData:
 
 
 class RiggedImportedSubMeshData(ImportedSubMeshData):
+    def __init__(self):
+        super().__init__()
+        self._pose_records = []
+
     def get_vertex_groups(self):
         grouped: dict[int, list[tuple[list[int], float]]] = {}
         for assignment in self.boneassignments:
@@ -38,6 +45,26 @@ class RiggedImportedSubMeshData(ImportedSubMeshData):
             for bone_index, values in sorted(grouped.items())
         ]
 
+    def get_shapekeys(self):
+        if not self._pose_records:
+            return []
+        base = np.asarray(self.get_positions(), dtype=np.float32).reshape(-1, 3)
+        result = []
+        for pose in self._pose_records:
+            coords = base.copy()
+            for vertex in pose.vertices:
+                index = int(vertex.vertex_index)
+                if index < 0 or index >= len(coords):
+                    raise UnsupportedPureImport(
+                        f"pose {pose.name!r} references vertex {index}, but target geometry has {len(coords)} vertices"
+                    )
+                offset = _ogre_to_blender_xyz(
+                    np.asarray([vertex.offset], dtype=np.float32)
+                )[0]
+                coords[index] += offset
+            result.append((str(pose.name), coords))
+        return result
+
 
 class RiggedImportedMeshData(MeshData):
     def __init__(self, file="", group="General"):
@@ -52,12 +79,12 @@ class RiggedImportedMeshData(MeshData):
 
 
 class KenshiObjectSerializer(SkeletonKenshiObjectSerializer):
-    """Load static or skinned meshes plus non-animated linked skeletons."""
+    """Load meshes, poses, skin weights and linked skeleton animations."""
 
     def load_mesh(self, file):
         path = self._resolve_resource(file)
         with path.open("rb") as stream:
-            source = _DetectingMeshSerializer(stream).read()
+            source = PoseDetectingMeshSerializer(stream).read()
         mesh = _convert_mesh(source, path.name)
 
         if mesh.get_linked_skeleton_name():
@@ -77,10 +104,17 @@ def _convert_assignments(items):
 
 
 def _convert_mesh(source, filename: str) -> RiggedImportedMeshData:
-    if getattr(source, "_pure_import_contains_poses", False):
-        raise UnsupportedPureImport("mesh contains pose/shape-key data")
     if getattr(source, "_pure_import_contains_animations", False):
         raise UnsupportedPureImport("mesh contains mesh animation data")
+
+    poses = list(getattr(source, "_pure_import_poses", ()))
+    for pose in poses:
+        if pose.includes_normals:
+            # Blender shape keys have no independently authored normal-delta
+            # storage. Failing closed avoids silently discarding OGRE data.
+            raise UnsupportedPureImport(
+                f"pose {pose.name!r} contains normal offsets, which cannot be preserved as Blender shape keys"
+            )
 
     shared_geometry = (
         _wire_geometry_from_legacy(source.shared_vertex_data)
@@ -88,6 +122,18 @@ def _convert_mesh(source, filename: str) -> RiggedImportedMeshData:
         else None
     )
     shared_assignments = _convert_assignments(source.bone_assignments())
+
+    valid_pose_targets = set()
+    if shared_geometry is not None:
+        valid_pose_targets.add(0)
+    for index, source_submesh in enumerate(source.submesh_list):
+        if not source_submesh.use_shared_vertices:
+            valid_pose_targets.add(index + 1)
+    unknown_targets = sorted({pose.target for pose in poses} - valid_pose_targets)
+    if unknown_targets:
+        raise UnsupportedPureImport(
+            f"mesh contains pose targets with no matching geometry: {unknown_targets}"
+        )
 
     mesh = RiggedImportedMeshData(filename, "General")
     if source.skeleton_name:
@@ -123,6 +169,7 @@ def _convert_mesh(source, filename: str) -> RiggedImportedMeshData:
                 f"submesh {index} contains bone assignments but the mesh has no skeleton link"
             )
 
+        target = 0 if source_submesh.use_shared_vertices else index + 1
         submesh = RiggedImportedSubMeshData()
         submesh.index = index
         submesh.submesh_name = source_submesh.get_name() or f"SubMesh{index}"
@@ -134,6 +181,7 @@ def _convert_mesh(source, filename: str) -> RiggedImportedMeshData:
         submesh.face_count = len(indices) // 3
         submesh.boneassignments = assignments
         submesh._wire_geometry = geometry
+        submesh._pose_records = [pose for pose in poses if pose.target == target]
         ogre_positions = _decode_semantic(geometry, {"POSITION"})
         if ogre_positions is not None:
             submesh._positions = ogre_positions[:, :3].copy()
