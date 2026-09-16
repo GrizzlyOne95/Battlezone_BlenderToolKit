@@ -27,19 +27,27 @@ def _selected_mesh_objects(context):
     ]
 
 
-def _pure_static_support(context, export_poses):
+def _pure_export_mode(context, export_poses, export_animation):
     selected = _selected_mesh_objects(context)
-    if any(obj.find_armature() is not None for obj in selected):
-        return False, "pure Python rigged mesh export is not implemented yet"
+    armatures = {
+        armature
+        for armature in (obj.find_armature() for obj in selected)
+        if armature is not None
+    }
+    if len(armatures) > 1:
+        return None, "pure Python export currently requires all selected rigged meshes to share one armature"
 
     if export_poses:
         for obj in selected:
             shape_keys = getattr(getattr(obj, "data", None), "shape_keys", None)
             key_blocks = getattr(shape_keys, "key_blocks", None)
             if key_blocks and len(key_blocks) > 1:
-                return False, "pure Python shape-key/pose export is not implemented yet"
+                return None, "pure Python shape-key/pose export is not implemented yet"
 
-    return True, None
+    if armatures and export_animation:
+        return None, "pure Python skeleton animation export is not implemented yet"
+
+    return ("rigged" if armatures else "static"), None
 
 
 def _write_materials(
@@ -248,16 +256,21 @@ def export_mesh(
         except Exception as exc:
             native_reason = f"native export failed: {exc}"
 
-    pure_supported, pure_reason = _pure_static_support(context, export_poses)
-    if pure_supported:
+    pure_mode, pure_reason = _pure_export_mode(
+        context, export_poses, export_animation
+    )
+    if pure_mode:
         try:
-            from .pure import blender_exporter
+            if pure_mode == "rigged":
+                from .pure import blender_rigged_exporter as pure_exporter
+            else:
+                from .pure import blender_exporter as pure_exporter
 
             print(
-                "Using pure Python Ogre backend for static mesh export"
+                f"Using pure Python Ogre backend for {pure_mode} mesh export"
                 + (f"; native backend unavailable: {native_reason}" if native_reason else ".")
             )
-            result = blender_exporter.save(
+            result = pure_exporter.save(
                 operator,
                 context,
                 filepath,
@@ -265,7 +278,15 @@ def export_mesh(
                 export_colour=export_colour,
                 apply_transform=apply_transform,
                 apply_modifiers=apply_modifiers,
-                mesh_optimize=True,
+                **(
+                    dict(
+                        export_skeleton=export_skeleton,
+                        export_poses=export_poses,
+                        renormalize_weights=renormalize_weights,
+                    )
+                    if pure_mode == "rigged"
+                    else dict(mesh_optimize=True)
+                ),
             )
             if result == {"FINISHED"}:
                 _write_materials(
