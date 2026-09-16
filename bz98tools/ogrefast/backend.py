@@ -79,31 +79,48 @@ def import_mesh(
     use_selected_skeleton=False,
     import_materials=True,
 ):
-    available, reason = probe_native_backend()
-    if not available:
-        return _fallback(
-            operator,
-            reason,
-            legacy_handler,
-            operator,
-            context,
-            filepath,
-            xml_converter=xml_converter,
-            keep_xml=keep_xml,
-            import_normals=import_normals,
-            normal_mode=normal_mode,
-            import_shapekeys=import_shapekeys,
-            import_animations=import_animations,
-            round_frames=round_frames,
-            use_selected_skeleton=use_selected_skeleton,
-            import_materials=import_materials,
-        )
+    legacy_kwargs = dict(
+        xml_converter=xml_converter,
+        keep_xml=keep_xml,
+        import_normals=import_normals,
+        normal_mode=normal_mode,
+        import_shapekeys=import_shapekeys,
+        import_animations=import_animations,
+        round_frames=round_frames,
+        use_selected_skeleton=use_selected_skeleton,
+        import_materials=import_materials,
+    )
 
-    from . import ogre_importer
+    native_available, native_reason = probe_native_backend()
+    if native_available:
+        from . import ogre_importer
 
+        try:
+            print("Using native Ogre backend for mesh import.")
+            return ogre_importer.load(
+                operator,
+                context,
+                filepath,
+                import_normals=import_normals,
+                normal_mode=normal_mode,
+                import_shapekeys=import_shapekeys,
+                import_animations=import_animations,
+                round_frames=round_frames,
+                use_selected_skeleton=use_selected_skeleton,
+                create_materials=import_materials,
+            )
+        except Exception as exc:
+            native_reason = f"native import failed: {exc}"
+
+    pure_reason = None
     try:
-        print("Using native Ogre backend for mesh import.")
-        return ogre_importer.load(
+        from .pure import blender_importer
+
+        print(
+            "Using pure Python Ogre backend for static mesh import"
+            + (f"; native backend unavailable: {native_reason}" if native_reason else ".")
+        )
+        return blender_importer.load(
             operator,
             context,
             filepath,
@@ -116,23 +133,20 @@ def import_mesh(
             create_materials=import_materials,
         )
     except Exception as exc:
-        return _fallback(
-            operator,
-            f"native import failed: {exc}",
-            legacy_handler,
-            operator,
-            context,
-            filepath,
-            xml_converter=xml_converter,
-            keep_xml=keep_xml,
-            import_normals=import_normals,
-            normal_mode=normal_mode,
-            import_shapekeys=import_shapekeys,
-            import_animations=import_animations,
-            round_frames=round_frames,
-            use_selected_skeleton=use_selected_skeleton,
-            import_materials=import_materials,
-        )
+        pure_reason = f"pure Python import unavailable: {exc}"
+
+    reasons = "; ".join(
+        reason for reason in (native_reason, pure_reason) if reason
+    ) or "no fast backend is available"
+    return _fallback(
+        operator,
+        reasons,
+        legacy_handler,
+        operator,
+        context,
+        filepath,
+        **legacy_kwargs,
+    )
 
 
 def export_mesh(
