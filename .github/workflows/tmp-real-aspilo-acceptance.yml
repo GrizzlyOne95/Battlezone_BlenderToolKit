@@ -1,0 +1,58 @@
+name: Temporary Real Aspilo Acceptance
+
+on:
+  push:
+    branches:
+      - agent/pure-python-ogre-fastpath
+
+permissions:
+  contents: read
+
+jobs:
+  real-aspilo-blender52:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install Blender 5.2.2 and Drive downloader
+        run: python -m pip install --disable-pip-version-check bpy==5.2.2 gdown
+
+      - name: Download real aspilo acceptance pair
+        shell: bash
+        run: |
+          mkdir -p real-fixture
+          gdown 'https://drive.google.com/uc?id=1zaF9KmJhv8BdkG-mznVHiwle4_9u-9tK' -O real-fixture/aspilo.mesh
+          gdown 'https://drive.google.com/uc?id=1k3X8cOXuLwxFmeBlVqRaaPV8130tAWfZ' -O real-fixture/aspilo.skeleton.bin
+          ls -lh real-fixture
+
+      - name: Run real Blender 5.2 fast-path acceptance
+        run: |
+          python tests/blender52_real_asset_smoke.py \
+            real-fixture/aspilo.mesh \
+            real-fixture/aspilo.skeleton.bin \
+            --output-dir artifacts/aspilo-real
+
+      - name: Hash generated binaries
+        if: success()
+        shell: bash
+        run: |
+          sha256sum artifacts/aspilo-real/aspilo_fast52.mesh
+          sha256sum artifacts/aspilo-real/aspilo_fast52.skeleton
+          ls -lh artifacts/aspilo-real
+
+      - name: Upload generated BZR pair
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aspilo-fast52-real-acceptance
+          path: |
+            artifacts/aspilo-real/aspilo_fast52.mesh
+            artifacts/aspilo-real/aspilo_fast52.skeleton
+          if-no-files-found: error
+          retention-days: 7
