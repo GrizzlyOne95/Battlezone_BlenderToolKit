@@ -74,11 +74,17 @@ class PureOgreMultiUvTests(unittest.TestCase):
         loaded_submesh = loaded.get_submeshes()[0]
         self.assertEqual(loaded_submesh.geometry.texcoords_size, 2)
         uv_sets = loaded_submesh.get_texcoords()
-        self.assertEqual(uv_sets.shape, (2, 8))
 
-        # Import flips V back to Blender coordinates.  The split vertex appears
-        # as the fourth exported vertex and must retain UV1=(0.5, 0.25).
-        np.testing.assert_allclose(uv_sets[1].reshape(-1, 2)[3], [0.5, 0.25])
+        # The historical/native accessor is Blender-loop-domain, not raw
+        # vertex-buffer-domain: 6 indexed triangle corners x 2 floats/set.
+        self.assertEqual(uv_sets.shape, (2, 12))
+        uv_loops = uv_sets.reshape(2, 6, 2)
+
+        # Import flips V back to Blender coordinates.  The first corner of the
+        # second triangle is the UV1 seam and must survive vertex splitting and
+        # index-buffer expansion as authored.
+        np.testing.assert_allclose(uv_loops[1][3], [0.5, 0.25])
+        np.testing.assert_allclose(uv_loops[0][3], [0.0, 0.0])
 
 
 if __name__ == "__main__":
