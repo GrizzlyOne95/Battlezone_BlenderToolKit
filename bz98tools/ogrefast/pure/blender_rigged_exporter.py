@@ -6,6 +6,7 @@ import importlib
 import sys
 
 from . import kenshi_compat
+from .animation_compat import AnimationData
 from .skeleton_compat import KenshiObjectSerializer
 
 
@@ -22,9 +23,10 @@ def _load_shared_exporter():
             sys.modules.pop(module_name, None)
 
     # ogre_exporter copied the symbols from kenshi_blender_tool at import time;
-    # swap only the serializer factory so the existing Blender collection code
-    # writes through our pure mesh + skeleton implementation.
+    # swap the serializer and animation object while retaining the established
+    # Blender bone/mesh/action collection code.
     exporter.KenshiObjectSerializer = KenshiObjectSerializer
+    exporter.AnimationData = AnimationData
     return exporter
 
 
@@ -39,6 +41,7 @@ def save(
     apply_modifiers=True,
     export_skeleton=True,
     export_poses=False,
+    export_animation=False,
     renormalize_weights=True,
 ):
     exporter = _load_shared_exporter()
@@ -52,7 +55,7 @@ def save(
         apply_modifiers=apply_modifiers,
         export_skeleton=export_skeleton,
         export_poses=export_poses,
-        export_animation=False,
+        export_animation=export_animation,
         export_all_bones=False,
         mesh_optimize=True,
         export_version="V_1_10",
