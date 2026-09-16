@@ -41,7 +41,10 @@ function Get-Python313Launcher {
     if ($py) {
         & $py.Source -3.13 -c "import sys; assert sys.version_info[:2] == (3, 13); print(sys.executable)" *> $null
         if ($LASTEXITCODE -eq 0) {
-            return @($py.Source, "-3.13")
+            return [pscustomobject]@{
+                Command = $py.Source
+                Prefix  = @("-3.13")
+            }
         }
     }
 
@@ -49,7 +52,10 @@ function Get-Python313Launcher {
     if ($python) {
         & $python.Source -c "import sys; assert sys.version_info[:2] == (3, 13); print(sys.executable)" *> $null
         if ($LASTEXITCODE -eq 0) {
-            return @($python.Source)
+            return [pscustomobject]@{
+                Command = $python.Source
+                Prefix  = @()
+            }
         }
     }
 
@@ -76,11 +82,8 @@ $OutputDir = [System.IO.Path]::GetFullPath($OutputDir)
 New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 
 $launcher = Get-Python313Launcher
-$basePython = $launcher[0]
-$baseArgs = @()
-if ($launcher.Count -gt 1) {
-    $baseArgs = $launcher[1..($launcher.Count - 1)]
-}
+$basePython = $launcher.Command
+$baseArgs = @($launcher.Prefix)
 
 if (-not (Test-Path -LiteralPath $VenvPython -PathType Leaf)) {
     Write-Host "Creating isolated Python 3.13 environment: $VenvDir" -ForegroundColor Yellow
@@ -108,6 +111,7 @@ Write-Host "Output folder:  $OutputDir"
 Write-Host ""
 Write-Host "Running real Blender 5.2 pure-fast-path import -> export -> binary validation..." -ForegroundColor Cyan
 
+$SmokeExit = 1
 Push-Location $RepoRoot
 try {
     & $VenvPython $SmokeScript $Mesh $Skeleton --output-dir $OutputDir
