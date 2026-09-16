@@ -11,26 +11,26 @@ from .model import BoneAssignment, GeometryData, MeshData, MeshVersion, SubMeshD
 class OgreMeshSerializer:
     """Minimal direct OGRE v1.10 mesh serializer.
 
-    This intentionally emits only chunks we actively author. Edge lists, LOD,
-    poses and animation are omitted until separately implemented and tested.
+    The byte layout follows OGRE's MeshSerializerImpl v1.x writer. Edge lists,
+    LOD, poses and animation remain intentionally out of scope for this first
+    milestone.
     """
 
-    HEADER_ID = 0x1000
+    HEADER_ID = chunks.HEADER
 
     def dumps(self, mesh: MeshData, version: MeshVersion = MeshVersion.V_1_10) -> bytes:
         if version is not MeshVersion.V_1_10:
             raise NotImplementedError(f"unsupported mesh version: {version}")
 
         writer = BinaryWriter()
-        # Serializer::writeFileHeader writes the stream ID followed by a newline-
-        # terminated version string. The header is not a normal length-prefixed
-        # chunk.
+        # Serializer::writeFileHeader writes a 16-bit stream ID followed by a
+        # newline-terminated version string. It is not a normal sized chunk.
         writer.u16(self.HEADER_ID)
         writer.line(f"[{version.value}]")
 
         with writer.chunk(chunks.M_MESH):
-            # skeletalAnimation flag in Ogre's v1.x mesh chunk.
-            writer.bool(bool(mesh.skeleton_name or mesh.bone_assignments))
+            # OGRE derives this flag from Mesh::hasSkeleton().
+            writer.bool(bool(mesh.skeleton_name))
 
             if mesh.shared_geometry is not None:
                 self._write_geometry(writer, mesh.shared_geometry)
@@ -42,8 +42,12 @@ class OgreMeshSerializer:
                 with writer.chunk(chunks.M_MESH_SKELETON_LINK):
                     writer.line(mesh.skeleton_name)
 
-            for assignment in mesh.bone_assignments:
-                self._write_bone_assignment(writer, chunks.M_MESH_BONE_ASSIGNMENT, assignment)
+                # OGRE only writes shared-geometry assignments when a skeleton
+                # is linked.
+                for assignment in mesh.bone_assignments:
+                    self._write_bone_assignment(
+                        writer, chunks.M_MESH_BONE_ASSIGNMENT, assignment
+                    )
 
             if mesh.bounds is not None:
                 with writer.chunk(chunks.M_MESH_BOUNDS):
@@ -51,9 +55,16 @@ class OgreMeshSerializer:
                     writer.vec3(mesh.bounds.maximum)
                     writer.f32(mesh.bounds.radius)
 
+            self._write_submesh_name_table(writer, mesh)
+
         return writer.getvalue()
 
-    def dump(self, mesh: MeshData, path: str | Path, version: MeshVersion = MeshVersion.V_1_10) -> None:
+    def dump(
+        self,
+        mesh: MeshData,
+        path: str | Path,
+        version: MeshVersion = MeshVersion.V_1_10,
+    ) -> None:
         Path(path).write_bytes(self.dumps(mesh, version))
 
     def _write_submesh(self, writer: BinaryWriter, submesh: SubMeshData) -> None:
@@ -76,12 +87,15 @@ class OgreMeshSerializer:
                     raise ValueError("submesh without shared vertices requires geometry")
                 self._write_geometry(writer, submesh.geometry)
 
-            if submesh.operation_type != 4:
-                with writer.chunk(chunks.M_SUBMESH_OPERATION):
-                    writer.u16(int(submesh.operation_type))
+            # OGRE's writer emits this unconditionally even though the reader
+            # treats a missing operation chunk as TRIANGLE_LIST.
+            with writer.chunk(chunks.M_SUBMESH_OPERATION):
+                writer.u16(int(submesh.operation_type))
 
             for assignment in submesh.bone_assignments:
-                self._write_bone_assignment(writer, chunks.M_SUBMESH_BONE_ASSIGNMENT, assignment)
+                self._write_bone_assignment(
+                    writer, chunks.M_SUBMESH_BONE_ASSIGNMENT, assignment
+                )
 
     def _write_geometry(self, writer: BinaryWriter, geometry: GeometryData) -> None:
         with writer.chunk(chunks.M_GEOMETRY):
@@ -108,8 +122,19 @@ class OgreMeshSerializer:
                     with writer.chunk(chunks.M_GEOMETRY_VERTEX_BUFFER_DATA):
                         writer.write(buffer.data)
 
+    def _write_submesh_name_table(self, writer: BinaryWriter, mesh: MeshData) -> None:
+        with writer.chunk(chunks.M_SUBMESH_NAME_TABLE):
+            for index, submesh in enumerate(mesh.submeshes):
+                if not submesh.name:
+                    continue
+                with writer.chunk(chunks.M_SUBMESH_NAME_TABLE_ELEMENT):
+                    writer.u16(index)
+                    writer.line(submesh.name)
+
     @staticmethod
-    def _write_bone_assignment(writer: BinaryWriter, chunk_id: int, assignment: BoneAssignment) -> None:
+    def _write_bone_assignment(
+        writer: BinaryWriter, chunk_id: int, assignment: BoneAssignment
+    ) -> None:
         with writer.chunk(chunk_id):
             writer.u32(assignment.vertex_index)
             writer.u16(assignment.bone_index)
