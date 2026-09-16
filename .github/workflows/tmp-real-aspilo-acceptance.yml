@@ -20,15 +20,18 @@ jobs:
         with:
           python-version: '3.13'
 
-      - name: Install Blender 5.2.2 and Drive downloader
-        run: python -m pip install --disable-pip-version-check bpy==5.2.2 gdown
+      - name: Install Blender 5.2.2
+        run: python -m pip install --disable-pip-version-check bpy==5.2.2
 
       - name: Download real aspilo acceptance pair
         shell: bash
         run: |
           mkdir -p real-fixture
-          gdown 'https://drive.google.com/uc?id=1zaF9KmJhv8BdkG-mznVHiwle4_9u-9tK' -O real-fixture/aspilo.mesh
-          gdown 'https://drive.google.com/uc?id=1k3X8cOXuLwxFmeBlVqRaaPV8130tAWfZ' -O real-fixture/aspilo.skeleton.bin
+          curl -fL --retry 3 --retry-delay 2 'https://sdmntprcentralus.oaiusercontent.com/files/00000000-aba0-81f5-a43d-542af96d4c35/raw?se=2026-09-16T21%3A05%3A13Z&sp=r&sv=2026-02-06&sr=b&scid=2210b002-bf26-5335-8d43-a6395616f292&skoid=de71a0d5-fb02-4fce-be69-9296aced242b&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-16T19%3A59%3A25Z&ske=2026-09-17T19%3A59%3A25Z&sks=b&skv=2026-02-06&sig=PQop4A9sm3LnBWMgUO11enWFXxU6N3svzrkAqvW7c48%3D' -o real-fixture/aspilo.mesh
+          curl -fL --retry 3 --retry-delay 2 'https://sdmntprcentralus.oaiusercontent.com/files/00000000-1adc-81f5-b931-2a319a5e90ea/raw?se=2026-09-16T21%3A05%3A19Z&sp=r&sv=2026-02-06&sr=b&scid=ab45de12-476e-5659-a15e-eda8f56ba5e4&skoid=de71a0d5-fb02-4fce-be69-9296aced242b&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-16T20%3A23%3A37Z&ske=2026-09-17T20%3A23%3A37Z&sks=b&skv=2026-02-06&sig=lT3jSGJPv/42ayb1Dx3wvTDo7IUJkDLKfFIncT524k8%3D' -o real-fixture/aspilo.skeleton.bin
+          test "$(stat -c%s real-fixture/aspilo.mesh)" -eq 883818
+          test "$(stat -c%s real-fixture/aspilo.skeleton.bin)" -eq 2091392
+          sha256sum real-fixture/aspilo.mesh real-fixture/aspilo.skeleton.bin
           ls -lh real-fixture
 
       - name: Run real Blender 5.2 fast-path acceptance
