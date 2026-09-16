@@ -5,15 +5,22 @@ from pathlib import Path
 from . import chunks
 from .binary import BinaryWriter
 from .enums import vertex_semantic, vertex_type
-from .model import BoneAssignment, GeometryData, MeshData, MeshVersion, SubMeshData
+from .model import (
+    BoneAssignment,
+    GeometryData,
+    MeshData,
+    MeshVersion,
+    PoseData,
+    SubMeshData,
+)
 
 
 class OgreMeshSerializer:
-    """Minimal direct OGRE v1.10 mesh serializer.
+    """Direct OGRE v1.10 mesh serializer used by the pure Python backend.
 
-    The byte layout follows OGRE's MeshSerializerImpl v1.x writer. Edge lists,
-    LOD, poses and animation remain intentionally out of scope for this first
-    milestone.
+    Static geometry, skin weights, skeleton links and sparse pose/shape-key
+    chunks are written directly. LOD, edge lists and mesh animation tracks
+    remain intentionally out of scope here.
     """
 
     HEADER_ID = chunks.HEADER
@@ -56,6 +63,7 @@ class OgreMeshSerializer:
                     writer.f32(mesh.bounds.radius)
 
             self._write_submesh_name_table(writer, mesh)
+            self._write_poses(writer, mesh.poses)
 
         return writer.getvalue()
 
@@ -130,6 +138,33 @@ class OgreMeshSerializer:
                 with writer.chunk(chunks.M_SUBMESH_NAME_TABLE_ELEMENT):
                     writer.u16(index)
                     writer.line(submesh.name)
+
+    def _write_poses(self, writer: BinaryWriter, poses: list[PoseData]) -> None:
+        if not poses:
+            return
+        with writer.chunk(chunks.M_POSES):
+            for pose in poses:
+                if pose.target < 0 or pose.target > 0xFFFF:
+                    raise ValueError(f"pose target outside uint16 range: {pose.target}")
+                includes_normals = pose.includes_normals
+                if includes_normals and any(vertex.normal is None for vertex in pose.vertices):
+                    raise ValueError(
+                        f"pose {pose.name!r} mixes vertices with and without normal offsets"
+                    )
+                with writer.chunk(chunks.M_POSE):
+                    writer.line(pose.name)
+                    writer.u16(pose.target)
+                    writer.bool(includes_normals)
+                    for vertex in pose.vertices:
+                        if vertex.vertex_index < 0 or vertex.vertex_index > 0xFFFFFFFF:
+                            raise ValueError(
+                                f"pose vertex index outside uint32 range: {vertex.vertex_index}"
+                            )
+                        with writer.chunk(chunks.M_POSE_VERTEX):
+                            writer.u32(vertex.vertex_index)
+                            writer.vec3(vertex.offset)
+                            if includes_normals:
+                                writer.vec3(vertex.normal)
 
     @staticmethod
     def _write_bone_assignment(
