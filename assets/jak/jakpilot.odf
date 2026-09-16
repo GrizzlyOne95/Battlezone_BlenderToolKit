@@ -28,10 +28,10 @@ imageSignature = 0.3
 radarSignature = 0.2
 canDetect = 1
 
-// Animation-state trigger only (see jakbite_gun.odf). Real melee damage
+// Animation-state trigger only (see jakbite.odf). Real melee damage
 // must come from creature logic, not from this weapon's projectile.
 weaponHard1 = "GC1"
-weaponName1 = "jakbite_gun"
+weaponName1 = "jakbite"
 
 [PersonClass]
 xplSnipe = "xplSnipe"
