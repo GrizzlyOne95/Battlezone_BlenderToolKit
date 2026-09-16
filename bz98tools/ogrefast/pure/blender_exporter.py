@@ -95,12 +95,9 @@ def save(
 
 
 def _ordered_uv_layers(mesh):
-    """Return active UV first, then preserve Blender collection order."""
+    """Preserve Blender UV collection order as Ogre TEXCOORD indices."""
 
-    active = mesh.uv_layers.active
-    if active is None:
-        return []
-    return [active] + [layer for layer in mesh.uv_layers if layer.name != active.name]
+    return list(mesh.uv_layers)
 
 
 def _collect_uv_sets(mesh, loop_count):
