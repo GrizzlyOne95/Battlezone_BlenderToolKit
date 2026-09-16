@@ -1,3 +1,5 @@
+import os
+
 from . import probe_native_backend
 
 
@@ -150,6 +152,95 @@ def import_mesh(
         filepath,
         **legacy_kwargs,
     )
+
+
+def export_skeleton(
+    operator,
+    context,
+    filepath,
+    *,
+    apply_transform=True,
+    export_animation=False,
+    export_all_bones=False,
+    export_version="V_1_10",
+    is_visual_keying=False,
+    use_scale_keyframe=False,
+    legacy_handler=None,
+):
+    """Export a standalone Ogre skeleton through native or pure fast backends.
+
+    The native CP311 extension remains the preferred reference implementation
+    when it can load. Blender/Python combinations that cannot import it use the
+    pure serializer and the same Blender collection code.
+    """
+
+    output_path = (
+        filepath if str(filepath).lower().endswith(".skeleton") else f"{filepath}.skeleton"
+    )
+    common_kwargs = dict(
+        apply_transform=apply_transform,
+        export_animation=export_animation,
+        export_all_bones=export_all_bones,
+        export_version=export_version,
+        is_visual_keying=is_visual_keying,
+        use_scale_keyframe=use_scale_keyframe,
+    )
+
+    native_available, native_reason = probe_native_backend()
+    if native_available:
+        from . import ogre_exporter
+
+        try:
+            print("Using native Ogre backend for skeleton export.")
+            result = ogre_exporter.save_skeleton(
+                operator=operator,
+                context=context,
+                filepath=filepath,
+                **common_kwargs,
+            )
+            if result == {"FINISHED"} and os.path.isfile(output_path):
+                return result
+            native_reason = "native skeleton export did not produce an output file"
+        except Exception as exc:
+            native_reason = f"native skeleton export failed: {exc}"
+
+    pure_reason = None
+    try:
+        from .pure import blender_skeleton_exporter
+
+        print(
+            "Using pure Python Ogre backend for skeleton export"
+            + (f"; native backend unavailable: {native_reason}" if native_reason else ".")
+        )
+        result = blender_skeleton_exporter.save(
+            operator=operator,
+            context=context,
+            filepath=filepath,
+            **common_kwargs,
+        )
+        if result == {"FINISHED"} and os.path.isfile(output_path):
+            return result
+        pure_reason = "pure Python skeleton export did not produce an output file"
+    except Exception as exc:
+        pure_reason = f"pure Python skeleton export failed: {exc}"
+
+    reasons = "; ".join(
+        reason for reason in (native_reason, pure_reason) if reason
+    ) or "no skeleton fast backend is available"
+    if legacy_handler is not None:
+        return _fallback(
+            operator,
+            reasons,
+            legacy_handler,
+            operator,
+            context,
+            filepath,
+            **common_kwargs,
+        )
+
+    print(f"Ogre skeleton export unavailable: {reasons}")
+    operator.report({"ERROR"}, f"Ogre skeleton export failed: {reasons}")
+    return {"CANCELLED"}
 
 
 def _export_batch_selected(
