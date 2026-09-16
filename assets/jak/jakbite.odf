@@ -3,11 +3,11 @@
 // Purpose: drive the native Person sniper/crouch FSM
 // (stand2Kneel -> fireRecoilSniper -> kneel2stand = attack1 -> attack2 ->
 // attack3). NOT a damage weapon: ordName points at the neutered
-// jakbite_shell. No muzzle flash, no gunshot sound.
+// jakbitb. No muzzle flash, no gunshot sound.
 
 [WeaponClass]
 classLabel = "snipergun"
-ordName = "jakbite_shell"
+ordName = "jakbitb"
 wpnName = "Jak Bite Trigger"
 wpnReticle = "gblstbz2"
 wpnPriority = 0
