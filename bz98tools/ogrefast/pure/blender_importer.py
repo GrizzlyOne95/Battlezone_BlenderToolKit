@@ -52,8 +52,9 @@ def load(
     folder, mesh_file = os.path.split(filepath)
     serializer = KenshiObjectSerializer()
     serializer.add_resource_location(folder)
-    # Unsupported poses/mesh animations or animated linked skeletons raise
-    # here, before Blender is modified, allowing backend.py to use XML.
+    # Unsupported poses/mesh animations, scale-key skeleton animations or
+    # linked animation sources raise here before Blender is modified, allowing
+    # backend.py to hand the file to the legacy XML importer safely.
     mesh_data = serializer.load_mesh(mesh_file)
 
     shared = _load_shared_blender_helpers()
@@ -64,6 +65,7 @@ def load(
                 obj.select_set(False)
 
         import_info_log = []
+        skeleton_data = None
         selected_skeleton = (
             context.active_object
             if use_selected_skeleton
@@ -107,6 +109,22 @@ def load(
             import_shapekeys=import_shapekeys,
             create_materials=create_materials,
         )
+
+        if import_animations and skeleton_data is not None and selected_skeleton is not None:
+            render = context.scene.render
+            if round_frames:
+                fps = int(round(skeleton_data.calc_animation_fps()))
+                if fps > 0:
+                    print("Setting FPS to", fps)
+                    render.fps = fps
+            shared.create_animation(
+                animations=skeleton_data.get_animations(),
+                import_info_log=import_info_log,
+                armature=selected_skeleton,
+                fps=render.fps,
+                round_frames=round_frames,
+            )
+
         if import_info_log:
             print("\n".join(import_info_log))
         operator.report({"INFO"}, "Import successful (pure Python Ogre backend)")
