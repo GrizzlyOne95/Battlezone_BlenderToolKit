@@ -61,6 +61,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Validate PowerShell acceptance helper syntax
+        shell: pwsh
+        run: |
+          $null = [ScriptBlock]::Create((Get-Content -Raw scripts/Test-OgreFastPath52.ps1))
+
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
