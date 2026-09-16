@@ -1,3 +1,5 @@
 __pycache__/
 *.pyc
 dist/
+.venv-ogre52/
+artifacts/ogre-fastpath-acceptance/
