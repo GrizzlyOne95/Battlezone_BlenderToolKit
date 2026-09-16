@@ -3,11 +3,17 @@
 // Requires: jakpilot.mesh / jakpilot.skeleton / jakpilot.material + textures,
 // plus a legacy VDF/GEO shell cloned from a known-good stock pilot pair.
 // WORLD-only milestone: no cockpit/POV/weapon-helper support.
+// Scale: FBX source imports centimeter-scale (Blender UnitScaleFactor);
+// geometryScale 100 restores BZ2-true sizing (prior jak.mesh bounds
+// 2.17 x 5.81 x 2.54 prove raw units render as meters; ivangel.odf proves
+// geometryScale is honored on Ogre meshes in this mod). TUNE IN GAME.
+// KNOWN GATE: no legacy jakpilot.vdf collision shell yet.
 
 [GameObjectClass]
 baseName = "jakpilot"
 classLabel = "person"
 geometryName = "jakpilot"
+geometryScale = 100
 scrapCost = 0
 scrapValue = 0
 pilotCost = 1
