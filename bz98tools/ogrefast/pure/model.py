@@ -43,6 +43,7 @@ class BoneAssignment:
 class SubMeshData:
     material_name: str
     indices: list[int]
+    name: str = ""
     use_shared_vertices: bool = False
     operation_type: int = 4  # Ogre::RenderOperation::OT_TRIANGLE_LIST
     geometry: GeometryData | None = None
