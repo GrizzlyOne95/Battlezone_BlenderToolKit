@@ -339,7 +339,12 @@ def collect_bake_animations(
 
             p_bones_foreach_set = p_bones.foreach_set
             for act in sorted(actions, key=lambda action: action.name):
-                slot = act.slots.get(f"OB{armature.name}", default=act.slots[0])
+                slot = act.slots.get(f"OB{armature.name}")
+                if slot is None:
+                    if len(act.slots) == 0:
+                        export_info_log.append(f"Skip action {act.name}: no action slot")
+                        continue
+                    slot = act.slots[0]
                 export_info_log.append(
                     f"Export action {act.name}, slot {slot.name_display}"
                 )
