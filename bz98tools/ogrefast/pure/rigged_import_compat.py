@@ -30,6 +30,16 @@ class RiggedImportedSubMeshData(ImportedSubMeshData):
         super().__init__()
         self._pose_records = []
 
+    def get_colors(self, is_rgba=True):
+        # Blender's foreach_set() consumes a flat scalar sequence.  The pure
+        # base reader keeps RGBA values as (loop, 4) arrays for convenient
+        # semantic processing, so flatten them at the legacy API boundary.
+        colors, alpha = super().get_colors(is_rgba=is_rgba)
+        return (
+            np.asarray(colors, dtype=np.float32).reshape(-1),
+            np.asarray(alpha, dtype=np.float32).reshape(-1),
+        )
+
     def get_vertex_groups(self):
         grouped: dict[int, list[tuple[list[int], float]]] = {}
         for assignment in self.boneassignments:
