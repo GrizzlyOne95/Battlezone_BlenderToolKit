@@ -1,3 +1,4 @@
+import struct
 import unittest
 
 import numpy as np
@@ -53,6 +54,28 @@ class PureKenshiCompatTests(unittest.TestCase):
         )
         self.assertEqual(submesh._wire_geometry.buffers[0].vertex_size, 32)
         self.assertEqual(len(submesh._wire_geometry.buffers[0].data), 4 * 32)
+
+    def test_matches_legacy_coordinate_and_uv_conversion(self):
+        submesh = SubMeshData()
+        submesh.set_vertex(**self._base_arrays(), optimize=True)
+
+        # Legacy exporter writes Blender (X,Y,Z) as Ogre (X,Z,-Y).
+        np.testing.assert_allclose(submesh._positions[2], [1.0, 0.0, -1.0])
+
+        raw = submesh._wire_geometry.buffers[0].data
+        vertex_size = submesh._wire_geometry.buffers[0].vertex_size
+        vertex_2 = 2 * vertex_size
+
+        # Normal (0,0,1) -> (0,1,0).
+        self.assertEqual(
+            struct.unpack_from("<3f", raw, vertex_2 + 12),
+            (0.0, 1.0, 0.0),
+        )
+        # UV (1,1) -> (1,0) because legacy export flips V.
+        self.assertEqual(
+            struct.unpack_from("<2f", raw, vertex_2 + 24),
+            (1.0, 0.0),
+        )
 
     def test_uv_seam_splits_same_source_vertex(self):
         arrays = self._base_arrays()
