@@ -1,3 +1,4 @@
+import math
 import tempfile
 import unittest
 from pathlib import Path
@@ -115,6 +116,78 @@ class PureOgreAnimationTests(unittest.TestCase):
         np.testing.assert_allclose(track.nd_rotations[:, 1::2], rotations, atol=1e-6)
         self.assertFalse(track.has_scale)
 
+    def test_baked_matrix_path_matches_native_oracle(self):
+        basis = Matrix3(
+            [[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]
+        )
+        c = math.cos(math.pi / 4.0)
+        s = math.sin(math.pi / 4.0)
+        matrices = [
+            [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            [
+                [1.0, 0.0, 0.0, 1.0],
+                [0.0, c, -s, 2.0],
+                [0.0, s, c, 3.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+        ]
+
+        animation = AnimationData()
+        animation.name = "baked"
+        animation.length = 1.0
+        animation.set_animation_tracks(
+            bone_matrix_map={"root": basis},
+            pose_matrix_map={"root": matrices},
+            time_array=[0.0, 1.0],
+            use_scale=False,
+        )
+
+        self.assertEqual(len(animation._tracks), 1)
+        stored = animation._tracks[0]
+        np.testing.assert_allclose(
+            stored.translations,
+            [[0.0, 0.0, 0.0], [-2.0, -1.0, 3.0]],
+            atol=1e-6,
+        )
+        np.testing.assert_allclose(
+            stored.rotations,
+            [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.9238795, 0.0, 0.0, 0.3826834],
+            ],
+            atol=1e-6,
+        )
+        np.testing.assert_allclose(stored.scales, np.ones((2, 3)), atol=1e-6)
+        self.assertFalse(stored.has_scale)
+
+    def test_baked_matrix_rejects_mismatched_frame_count(self):
+        animation = AnimationData()
+        with self.assertRaisesRegex(ValueError, "matrices for"):
+            animation.set_animation_tracks(
+                bone_matrix_map={
+                    "root": Matrix3(
+                        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+                    )
+                },
+                pose_matrix_map={
+                    "root": [
+                        [
+                            [1.0, 0.0, 0.0, 0.0],
+                            [0.0, 1.0, 0.0, 0.0],
+                            [0.0, 0.0, 1.0, 0.0],
+                            [0.0, 0.0, 0.0, 1.0],
+                        ]
+                    ]
+                },
+                time_array=[0.0, 1.0],
+                use_scale=False,
+            )
+
     def test_scale_key_export_fails_closed(self):
         animation = AnimationData()
         with self.assertRaises(UnsupportedAnimationScale):
@@ -126,6 +199,13 @@ class PureOgreAnimationTests(unittest.TestCase):
                 np.asarray([[1.0], [0.0], [0.0], [0.0]], dtype=np.float32),
                 np.ones((3, 1), dtype=np.float32),
                 True,
+            )
+        with self.assertRaises(UnsupportedAnimationScale):
+            animation.set_animation_tracks(
+                bone_matrix_map={},
+                pose_matrix_map={},
+                time_array=[],
+                use_scale=True,
             )
 
 
