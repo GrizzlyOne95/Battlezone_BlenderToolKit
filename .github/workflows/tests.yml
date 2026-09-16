@@ -50,3 +50,6 @@ jobs:
 
       - name: Load pure mesh with bundled native OGRE backend
         run: python tests/native_ogre_oracle.py
+
+      - name: Recover native animation transform contract
+        run: python tests/native_animation_oracle.py
