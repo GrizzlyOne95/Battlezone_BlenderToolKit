@@ -152,6 +152,51 @@ def import_mesh(
     )
 
 
+def _export_batch_selected(
+    operator,
+    context,
+    filepath,
+    legacy_handler,
+    legacy_kwargs,
+):
+    from .batch import export_selected_individually
+
+    if not _selected_mesh_objects(context):
+        operator.report({"WARNING"}, "No objects selected for export")
+        return {"CANCELLED"}
+
+    single_kwargs = dict(legacy_kwargs)
+    single_kwargs["batch_export"] = False
+
+    def export_one(output_path, _obj):
+        return export_mesh(
+            operator,
+            context,
+            output_path,
+            legacy_handler,
+            **single_kwargs,
+        )
+
+    try:
+        results = export_selected_individually(context, filepath, export_one)
+    except Exception as exc:
+        operator.report({"ERROR"}, f"Batch Ogre export failed: {exc}")
+        return {"CANCELLED"}
+
+    failed = [
+        (obj.name, output_path, result)
+        for obj, output_path, result in results
+        if result != {"FINISHED"}
+    ]
+    if failed:
+        detail = ", ".join(name for name, _, _ in failed)
+        operator.report({"ERROR"}, f"Batch Ogre export failed for: {detail}")
+        return {"CANCELLED"}
+
+    operator.report({"INFO"}, f"Batch export successful ({len(results)} meshes)")
+    return {"FINISHED"}
+
+
 def export_mesh(
     operator,
     context,
@@ -196,14 +241,12 @@ def export_mesh(
     )
 
     if batch_export:
-        return _fallback(
-            operator,
-            "fast batch mesh export is not wired yet",
-            legacy_handler,
+        return _export_batch_selected(
             operator,
             context,
             filepath,
-            **legacy_kwargs,
+            legacy_handler,
+            legacy_kwargs,
         )
 
     selected_objects = _selected_mesh_objects(context)
