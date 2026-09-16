@@ -61,13 +61,15 @@ def _make_rigged_two_uv_triangle():
 
     uv0 = mesh.uv_layers.new(name="UV0")
     uv1 = mesh.uv_layers.new(name="UV1")
-    mesh.uv_layers.active = uv0
     mesh.attributes[uv0.name].data.foreach_set(
         "vector", [0.0, 0.0, 1.0, 0.0, 0.0, 1.0]
     )
     mesh.attributes[uv1.name].data.foreach_set(
         "vector", [0.25, 0.75, 0.75, 0.75, 0.25, 0.25]
     )
+    # Deliberately make UV1 active. Ogre TEXCOORD numbering must still follow
+    # authored layer order (UV0 -> index 0, UV1 -> index 1), not active status.
+    mesh.uv_layers.active = uv1
 
     material = bpy.data.materials.new("MultiUvMat")
     mesh.materials.append(material)
@@ -131,8 +133,12 @@ def main():
             f"expected two UV sets in exported Ogre mesh, got {submesh.geometry.texcoords_size}"
         )
     uv_sets = submesh.get_texcoords().reshape(2, -1, 2)
-    if tuple(round(float(v), 5) for v in uv_sets[1][0]) != (0.25, 0.75):
-        raise AssertionError(f"second UV set changed: {uv_sets[1][0]}")
+    first0 = tuple(round(float(v), 5) for v in uv_sets[0][0])
+    first1 = tuple(round(float(v), 5) for v in uv_sets[1][0])
+    if first0 != (0.0, 0.0):
+        raise AssertionError(f"TEXCOORD0 was reordered by active UV layer: {first0}")
+    if first1 != (0.25, 0.75):
+        raise AssertionError(f"TEXCOORD1 changed: {first1}")
     if not submesh.get_vertex_groups():
         raise AssertionError("rigged multi-UV export lost bone weights")
     skeleton = loaded.get_linked_skeleton()
