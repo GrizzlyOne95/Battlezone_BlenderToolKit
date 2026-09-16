@@ -32,3 +32,21 @@ jobs:
 
       - name: Run bpy-free semantic test suite
         run: python tests/run_tests.py
+
+  native-ogre-oracle:
+    runs-on: windows-latest
+    needs: unit
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install test dependencies
+        run: python -m pip install numpy
+
+      - name: Load pure mesh with bundled native OGRE backend
+        run: python tests/native_ogre_oracle.py
