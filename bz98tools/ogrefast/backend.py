@@ -37,17 +37,12 @@ def _pure_export_mode(context, export_poses, export_animation):
     if len(armatures) > 1:
         return None, "pure Python export currently requires all selected rigged meshes to share one armature"
 
-    if export_poses:
-        for obj in selected:
-            shape_keys = getattr(getattr(obj, "data", None), "shape_keys", None)
-            key_blocks = getattr(shape_keys, "key_blocks", None)
-            if key_blocks and len(key_blocks) > 1:
-                return None, "pure Python shape-key/pose export is not implemented yet"
-
-    # Normal action export is now supported for rigged meshes. The shared
-    # exporter invokes the pure AnimationData compatibility layer with
-    # use_scale_keyframe=False, matching the add-on's current fast-path setup.
-    return ("rigged" if armatures else "static"), None
+    # The shared ogre_exporter collector is required for rigging, actions and
+    # shape-key pose collection. Ordinary static geometry can keep using the
+    # smaller direct Blender adapter.
+    if armatures or export_poses or export_animation:
+        return "collector", None
+    return "static", None
 
 
 def _write_materials(
@@ -261,7 +256,7 @@ def export_mesh(
     )
     if pure_mode:
         try:
-            if pure_mode == "rigged":
+            if pure_mode == "collector":
                 from .pure import blender_rigged_exporter as pure_exporter
             else:
                 from .pure import blender_exporter as pure_exporter
@@ -285,7 +280,7 @@ def export_mesh(
                         export_animation=export_animation,
                         renormalize_weights=renormalize_weights,
                     )
-                    if pure_mode == "rigged"
+                    if pure_mode == "collector"
                     else dict(mesh_optimize=True)
                 ),
             )
