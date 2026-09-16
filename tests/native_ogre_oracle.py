@@ -67,7 +67,7 @@ def make_submesh(module):
     submesh.index = 0
     submesh.submesh_name = "oracle"
     submesh.material = "bz98/oracle"
-    submesh.operation_type = module.triangle_list
+    submesh.operation_type = module.OperationType.triangle_list
     out_indices = submesh.set_vertex(*arrays(), 3, True)
     submesh.set_bone_assignments([], out_indices)
     return submesh
@@ -76,14 +76,14 @@ def make_submesh(module):
 def save_native(serializer, path: Path) -> None:
     mesh = serializer.create_mesh(path.name)
     mesh.set_submeshes([make_submesh(native)])
-    serializer.save_mesh(mesh, str(path), native.V_1_10)
+    serializer.save_mesh(mesh, str(path), native.MeshVersion.V_1_10)
 
 
 def save_pure(path: Path) -> None:
     serializer = pure.KenshiObjectSerializer()
     mesh = serializer.create_mesh(path.name)
     mesh.set_submeshes([make_submesh(pure)])
-    serializer.save_mesh(mesh, path, pure.V_1_10)
+    serializer.save_mesh(mesh, path, pure.MeshVersion.V_1_10)
 
 
 def load_summary(serializer, name: str):
@@ -107,8 +107,6 @@ def load_summary(serializer, name: str):
 
 
 def main() -> int:
-    # The native logger holds its file handle until interpreter teardown, so use
-    # a process-lifetime temp directory rather than TemporaryDirectory cleanup.
     tmp_path = Path(tempfile.mkdtemp(prefix="bz98_ogre_oracle_"))
     native_path = tmp_path / "native.mesh"
     pure_path = tmp_path / "pure.mesh"
