@@ -8,7 +8,8 @@ import bmesh
 import bpy
 import numpy as np
 
-from .kenshi_compat import KenshiObjectSerializer, MeshVersion, SubMeshData
+from .kenshi_compat import KenshiObjectSerializer, MeshVersion
+from .pose_compat import SubMeshData
 
 
 class UnsupportedPureExport(RuntimeError):
@@ -93,6 +94,28 @@ def save(
         raise
 
 
+def _ordered_uv_layers(mesh):
+    """Return active UV first, then preserve Blender collection order."""
+
+    active = mesh.uv_layers.active
+    if active is None:
+        return []
+    return [active] + [layer for layer in mesh.uv_layers if layer.name != active.name]
+
+
+def _collect_uv_sets(mesh, loop_count):
+    values = []
+    for layer in _ordered_uv_layers(mesh):
+        array = np.empty(loop_count * 2, dtype=np.float32)
+        mesh.attributes[layer.name].data.foreach_get("vector", array)
+        values.append(array.reshape(-1, 2))
+    if not values:
+        return np.empty(2, dtype=np.float32)
+    if len(values) == 1:
+        return values[0]
+    return np.stack(values, axis=0)
+
+
 def _collect_submesh(
     context,
     obj,
@@ -146,12 +169,7 @@ def _collect_submesh(
         mesh.loops.foreach_get("normal", nd_normals)
         nd_normals = nd_normals.reshape(-1, 3)
 
-        if uv_name:
-            nd_texcoords = np.empty(loop_count * 2, dtype=np.float32)
-            mesh.attributes[uv_name].data.foreach_get("vector", nd_texcoords)
-            nd_texcoords = nd_texcoords.reshape(-1, 2)
-        else:
-            nd_texcoords = np.empty(2, dtype=np.float32)
+        nd_texcoords = _collect_uv_sets(mesh, loop_count)
 
         tangent_dimensions = (
             4
