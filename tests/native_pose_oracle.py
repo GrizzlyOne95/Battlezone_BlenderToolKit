@@ -103,27 +103,33 @@ def _make_submesh(index: int, name: str, x_offset: float):
     nd_texcoords = np.asarray([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
 
     out_indices = submesh.set_vertex(
-        nd_vert_indices,
-        nd_loop_indices,
-        nd_positions,
-        nd_normals,
-        np.empty(3, dtype=np.float32),
-        np.empty(1, dtype=np.float32),
-        np.empty(3, dtype=np.float32),
-        nd_texcoords,
-        np.empty(4, dtype=np.float32),
-        np.empty(4, dtype=np.float32),
-        3,
-        False,
+        nd_vert_indices=nd_vert_indices,
+        nd_loop_indices=nd_loop_indices,
+        nd_positions=nd_positions,
+        nd_normals=nd_normals,
+        nd_tangents=np.empty(3, dtype=np.float32),
+        nd_bitangent_signs=np.empty(1, dtype=np.float32),
+        nd_bitangents=np.empty(3, dtype=np.float32),
+        nd_texcoords=nd_texcoords,
+        nd_colors=np.empty(4, dtype=np.float32),
+        nd_alphas=np.empty(4, dtype=np.float32),
+        tangent_dimensions=3,
+        optimize=False,
     )
+    print(f"OUT_INDICES_{index}", np.asarray(out_indices).tolist())
 
-    # Only source vertex 0 moves. This also verifies that append_shapekey maps
-    # source-vertex deltas onto exported loop vertices correctly.
+    # Move every source vertex so the fixture cannot accidentally disappear
+    # because of a source/export mapping convention. Distinct values also make
+    # the native axis conversion obvious in the binary stream.
     shape_delta = np.asarray(
-        [[1.0, 2.0, 3.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+        [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]],
         dtype=np.float32,
     )
     submesh.append_shapekey("OraclePose", shape_delta, out_indices)
+    try:
+        print(f"IN_MEMORY_POSES_{index}", submesh.get_shapekeys())
+    except Exception as exc:
+        print(f"IN_MEMORY_POSES_{index}_ERROR", repr(exc))
     return submesh
 
 
@@ -141,6 +147,9 @@ def main() -> int:
     )
     serializer.save_mesh(mesh, str(mesh_path), native.MeshVersion.V_1_10)
 
+    raw = mesh_path.read_bytes()
+    print("POSE_VERTEX_MARKERS", raw.count(b"\x11\xc1"), "SIZE", len(raw))
+
     with mesh_path.open("rb") as stream:
         parsed = PoseRecordingSerializer(stream).read()
 
@@ -152,16 +161,22 @@ def main() -> int:
         raise SystemExit(f"unexpected pose targets: {[pose['target'] for pose in poses]}")
     if any(pose["includes_normals"] for pose in poses):
         raise SystemExit("native append_shapekey unexpectedly wrote pose normals")
+    if any(len(pose["vertices"]) != 3 for pose in poses):
+        raise SystemExit(f"expected three sparse pose vertices per target, got {poses}")
 
-    expected = np.asarray([1.0, 3.0, -2.0], dtype=np.float32)
+    expected = np.asarray(
+        [[1.0, 3.0, -2.0], [4.0, 6.0, -5.0], [7.0, 9.0, -8.0]],
+        dtype=np.float32,
+    )
     for pose in poses:
-        if len(pose["vertices"]) != 1:
-            raise SystemExit(f"expected one sparse pose vertex, got {pose['vertices']}")
-        vertex_index, offset, _ = pose["vertices"][0]
-        if vertex_index != 0:
-            raise SystemExit(f"unexpected pose vertex index {vertex_index}")
-        if not np.allclose(offset, expected, atol=1e-6):
-            raise SystemExit(f"unexpected pose offset {offset}; expected {expected.tolist()}")
+        got_indices = [vertex[0] for vertex in pose["vertices"]]
+        got_offsets = np.asarray([vertex[1] for vertex in pose["vertices"]], dtype=np.float32)
+        if got_indices != [0, 1, 2]:
+            raise SystemExit(f"unexpected pose vertex indices {got_indices}")
+        if not np.allclose(got_offsets, expected, atol=1e-6):
+            raise SystemExit(
+                f"unexpected pose offsets {got_offsets.tolist()}; expected {expected.tolist()}"
+            )
 
     print("NATIVE POSE ORACLE PASSED")
     return 0
