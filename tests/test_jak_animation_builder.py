@@ -43,11 +43,22 @@ def test_jak_builder_declares_expected_source_files_and_aliases():
 
 
 def test_cli_adds_complete_known_redux_pilot_surface():
+    backend = _read(BACKEND)
     source = _read(WRAPPER)
+    # The CLI must reuse the explicit Jak profile as the single source of
+    # truth rather than maintaining a second independent index map.
+    assert "JAK_PERSON_COMPAT_ALIASES" in backend
+    assert "JAK_PERSON_COMPAT_ALIASES" in source
+    assert "KNOWN_PILOT_CLIPS" in source
+    assert "_missing_compat" in source
+    # Native sniper/crouch FSM drives the three-stage melee attack.
     for alias in (
-        '"stand2Kneel": "idle"',
-        '"kneel2stand": "idle"',
-        '"fireRecoilSniper": "idle"',
+        '"stand2Kneel": "attack1"',
+        '"fireRecoilSniper": "attack2"',
+        '"kneel2stand": "attack3"',
+    ):
+        assert alias in backend, alias
+    for alias in (
         '"runForward": "walk"',
         '"runBackward": "walk"',
         '"runLeft": "walk"',
@@ -64,9 +75,7 @@ def test_cli_adds_complete_known_redux_pilot_surface():
         '"walkLeft": "walk"',
         '"walkRight": "walk"',
     ):
-        assert alias in source
-    assert "KNOWN_PILOT_CLIPS" in source
-    assert "_missing_compat" in source
+        assert alias in backend, alias
 
 
 def test_cli_exposes_integration_ready_inputs():

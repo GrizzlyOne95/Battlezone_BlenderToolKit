@@ -31,6 +31,7 @@ from pathlib import Path
 import bpy
 
 from bz98tools.jak_animation_builder import (
+    JAK_PERSON_COMPAT_ALIASES,
     JakAnimationBuildError,
     build_jak_animation_set,
     parse_alias_specs,
@@ -38,33 +39,22 @@ from bz98tools.jak_animation_builder import (
 from bz98tools.pilot_animation_profiles import KNOWN_PILOT_CLIPS
 
 
-# Jak has its own creature repertoire, so stock pilot motions that have no
-# literal animal counterpart are intentionally represented by harmless nearest
-# equivalents. The important contract is that every known Redux pilot clip name
-# exists in the generated Ogre skeleton; custom Jak clips remain available too.
-JAK_REDUX_COMPAT_ALIASES = {
-    "stand2Kneel": "idle",
-    "kneel2stand": "idle",
-    "fireRecoilSniper": "idle",
-    "runForward": "walk",
-    "runBackward": "walk",
-    "runLeft": "walk",
-    "runRight": "walk",
-    "death1": "death",
-    "idleParachute": "idle",
-    "landParachute": "idle",
-    "Take_001": "idle",
-    "death2": "death",
-    "idleEject": "idle",
-    "idleElect": "idle",
-    "walkBackward": "walk",
-    "walkForward": "walk",
-    "walkLeft": "walk",
-    "walkRight": "walk",
-}
+# Jak has its own creature repertoire.  The native Person sniper/crouch FSM is
+# used experimentally as a three-stage melee controller (stand2Kneel ->
+# attack1, fireRecoilSniper -> attack2, kneel2stand -> attack3); every other
+# stock pilot motion without a literal animal counterpart resolves to the
+# nearest harmless equivalent.  The important contract is that every known
+# Redux pilot clip name exists in the generated Ogre skeleton; custom Jak
+# clips remain available too.
+#
+# This table is the explicit Jak profile from bz98tools.jak_animation_builder
+# (single source of truth).  The generic DEFAULT_COMPAT_ALIASES fallback is
+# intentionally NOT used here so unrelated creatures keep their safe default.
+JAK_REDUX_COMPAT_ALIASES = dict(JAK_PERSON_COMPAT_ALIASES)
 
-# ``idle`` is a real baked Jak Action and ``jump`` is already supplied by the
-# original BZ2 ODF alias (jump -> walk), so they are not duplicated above.
+# ``idle`` is a real baked Jak Action, so it is not duplicated in the compat
+# table.  ``jump`` is both an ODF-level alias (jump -> walk) and an explicit
+# entry in the Jak Person profile so the profile is complete on its own.
 _JAK_BASE_OR_ODF_NAMES = {"idle", "jump"}
 _missing_compat = set(KNOWN_PILOT_CLIPS) - (
     set(JAK_REDUX_COMPAT_ALIASES) | _JAK_BASE_OR_ODF_NAMES
@@ -135,7 +125,10 @@ def main(argv=None) -> int:
             args.source_dir,
             context=bpy.context,
             armature_name=args.armature_name,
-            include_compat_aliases=not args.no_redux_compat_aliases,
+            # The Jak script supplies its own explicit profile via
+            # extra_aliases; the generic DEFAULT_COMPAT_ALIASES fallback stays
+            # off so unrelated creatures keep their safe default.
+            include_compat_aliases=False,
             extra_aliases=extra_aliases,
             rest_tolerance=args.rest_tolerance,
         )
