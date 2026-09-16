@@ -102,6 +102,7 @@ def _make_submesh(index: int, name: str, x_offset: float):
     nd_normals = np.asarray([[0.0, 0.0, 1.0]] * 3, dtype=np.float32)
     nd_texcoords = np.asarray([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
 
+    # Match the production fast exporter: mesh_optimize=True.
     out_indices = submesh.set_vertex(
         nd_vert_indices=nd_vert_indices,
         nd_loop_indices=nd_loop_indices,
@@ -114,13 +115,10 @@ def _make_submesh(index: int, name: str, x_offset: float):
         nd_colors=np.empty(4, dtype=np.float32),
         nd_alphas=np.empty(4, dtype=np.float32),
         tangent_dimensions=3,
-        optimize=False,
+        optimize=True,
     )
     print(f"OUT_INDICES_{index}", np.asarray(out_indices).tolist())
 
-    # Move every source vertex so the fixture cannot accidentally disappear
-    # because of a source/export mapping convention. Distinct values also make
-    # the native axis conversion obvious in the binary stream.
     shape_delta = np.asarray(
         [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]],
         dtype=np.float32,
