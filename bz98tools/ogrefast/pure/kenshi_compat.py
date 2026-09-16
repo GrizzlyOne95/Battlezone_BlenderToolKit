@@ -242,11 +242,22 @@ class SubMeshData:
         ):
             raise ValueError("source vertex index is outside the position array")
 
-        positions = source_positions[source_indices]
+        # Match the legacy Battlezone/Kenshi exporter exactly:
+        # Blender (X, Y, Z) -> Ogre (X, Z, -Y), and V -> 1 - V.
+        positions = _blender_to_ogre_xyz(source_positions[source_indices])
         normals = _loop_array(nd_normals, loop_count, 3)
+        if normals is not None:
+            normals = _blender_to_ogre_xyz(normals)
         texcoords = _loop_array(nd_texcoords, loop_count, 2)
+        if texcoords is not None:
+            texcoords = texcoords.copy()
+            texcoords[:, 1] = 1.0 - texcoords[:, 1]
         tangents = _loop_array(nd_tangents, loop_count, 3)
+        if tangents is not None:
+            tangents = _blender_to_ogre_xyz(tangents)
         bitangents = _loop_array(nd_bitangents, loop_count, 3)
+        if bitangents is not None:
+            bitangents = _blender_to_ogre_xyz(bitangents)
         tangent_signs = _flat_loop_array(nd_bitangent_signs, loop_count)
         colors = _loop_array(nd_colors, loop_count, 4)
         alphas = _loop_array(nd_alphas, loop_count, 4)
@@ -438,11 +449,20 @@ def _flat_loop_array(value, loop_count: int):
     return array if array.size == loop_count else None
 
 
+def _blender_to_ogre_xyz(value):
+    array = np.asarray(value, dtype=np.float32).reshape(-1, 3)
+    out = np.empty_like(array)
+    out[:, 0] = array[:, 0]
+    out[:, 1] = array[:, 2]
+    out[:, 2] = -array[:, 1]
+    return out
+
+
 def _pack_colour_abgr(rgba) -> bytes:
     rgba = np.clip(np.asarray(rgba, dtype=np.float32), 0.0, 1.0)
     r, g, b, a = (int(round(float(channel) * 255.0)) for channel in rgba)
-    # OGRE's VET_COLOUR_ABGR integer is 0xAABBGGRR. In little-endian files
-    # this is physically stored as R, G, B, A bytes.
+    # OGRE 1.10 VET_COLOUR_ABGR is 0xAABBGGRR. In a little-endian mesh
+    # stream that is physically stored as R, G, B, A bytes.
     return bytes((r, g, b, a))
 
 
