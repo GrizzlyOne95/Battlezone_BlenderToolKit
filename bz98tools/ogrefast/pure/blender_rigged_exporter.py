@@ -1,13 +1,20 @@
 from __future__ import annotations
 
-"""Run the established Blender rigged-mesh collector on the pure serializers."""
+"""Run the established Blender mesh/rig/pose collector on pure serializers."""
 
 import importlib
 import sys
 
-from . import kenshi_compat
+from . import pose_compat
 from .animation_compat import AnimationData
-from .skeleton_compat import KenshiObjectSerializer
+from .skeleton_compat import KenshiObjectSerializer as SkeletonKenshiObjectSerializer
+
+
+class KenshiObjectSerializer(SkeletonKenshiObjectSerializer):
+    """Combine pure mesh-pose creation with pure skeleton/animation I/O."""
+
+    def create_mesh(self, filename):
+        return pose_compat.MeshData(filename, "General")
 
 
 def _load_shared_exporter():
@@ -15,17 +22,18 @@ def _load_shared_exporter():
     previous = sys.modules.get(module_name)
     inserted = previous is None
     if inserted:
-        sys.modules[module_name] = kenshi_compat
+        sys.modules[module_name] = pose_compat
     try:
         exporter = importlib.import_module("bz98tools.ogrefast.ogre_exporter")
     finally:
         if inserted:
             sys.modules.pop(module_name, None)
 
-    # ogre_exporter copied the symbols from kenshi_blender_tool at import time;
-    # swap the serializer and animation object while retaining the established
-    # Blender bone/mesh/action collection code.
+    # ogre_exporter copies symbols from kenshi_blender_tool at import time.
+    # Explicitly replace the stateful compatibility types too, in case the
+    # module had already been imported earlier in this Blender session.
     exporter.KenshiObjectSerializer = KenshiObjectSerializer
+    exporter.SubMeshData = pose_compat.SubMeshData
     exporter.AnimationData = AnimationData
     return exporter
 
