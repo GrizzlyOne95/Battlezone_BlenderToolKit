@@ -1,11 +1,12 @@
-"""Recover the bundled native pose/shape-key wire contract on Windows/CP311.
+"""Recover and cross-check the native pose/shape-key wire contract on CP311.
 
 The CPython extension has a known quirk in the index array returned by
 SubMeshData.set_vertex for this synthetic fixture (it reports [2, 2, 2]).
 That return-array bug is not part of the OGRE wire format and is deliberately
-not a compatibility target. This oracle therefore gives every source vertex
-the same non-zero shape delta, isolating the binary contract we do need to
-match: target numbering, sparse pose records, and Blender->Ogre axis mapping.
+not a compatibility target. Every source vertex therefore gets the same
+non-zero shape delta when probing the native writer. The oracle verifies the
+wire contract, then confirms the old native reader accepts a pose stream made
+by the pure writer.
 """
 
 from __future__ import annotations
@@ -39,6 +40,7 @@ from bz98tools.bzrmodelporter.ogremesh_serializer import (  # noqa: E402
     MeshChunkID,
     MeshSerializer,
 )
+from bz98tools.ogrefast.pure import pose_compat as pure  # noqa: E402
 
 
 class PoseRecordingSerializer(MeshSerializer):
@@ -86,13 +88,8 @@ class PoseRecordingSerializer(MeshSerializer):
         self.pop_chunk(MeshChunkID.POSES)
 
 
-def _make_submesh(index: int, name: str, x_offset: float):
-    submesh = native.SubMeshData()
-    submesh.index = index
-    submesh.submesh_name = name
-    submesh.material = name + "Mat"
-
-    out_indices = submesh.set_vertex(
+def _arrays(x_offset: float):
+    return dict(
         nd_vert_indices=np.asarray([0, 1, 2], dtype=np.int32),
         nd_loop_indices=np.asarray([0, 1, 2], dtype=np.int32),
         nd_positions=np.asarray(
@@ -115,43 +112,51 @@ def _make_submesh(index: int, name: str, x_offset: float):
         tangent_dimensions=3,
         optimize=True,
     )
-    print(f"NATIVE_RETURN_MAPPING_{index}", np.asarray(out_indices).tolist())
 
+
+def _shape_delta():
     # Identical source deltas intentionally neutralize the native return-map
     # quirk so the emitted OGRE bytes reveal only the coordinate contract.
-    shape_delta = np.asarray(
+    return np.asarray(
         [[1.0, 2.0, 3.0], [1.0, 2.0, 3.0], [1.0, 2.0, 3.0]],
         dtype=np.float32,
     )
-    submesh.append_shapekey("OraclePose", shape_delta, out_indices)
+
+
+def _make_native_submesh(index: int, name: str, x_offset: float):
+    submesh = native.SubMeshData()
+    submesh.index = index
+    submesh.submesh_name = name
+    submesh.material = name + "Mat"
+    out_indices = submesh.set_vertex(**_arrays(x_offset))
+    print(f"NATIVE_RETURN_MAPPING_{index}", np.asarray(out_indices).tolist())
+    submesh.append_shapekey("OraclePose", _shape_delta(), out_indices)
     return submesh
 
 
-def main() -> int:
-    temp_dir = Path(tempfile.mkdtemp(prefix="bz98_pose_oracle_"))
-    mesh_path = temp_dir / "pose.mesh"
+def _make_pure_submesh(index: int, name: str, x_offset: float):
+    submesh = pure.SubMeshData()
+    submesh.index = index
+    submesh.submesh_name = name
+    submesh.material = name + "Mat"
+    out_indices = submesh.set_vertex(**_arrays(x_offset))
+    submesh.set_bone_assignments([], out_indices)
+    submesh.append_shapekey("OraclePose", _shape_delta(), out_indices)
+    return submesh
 
-    serializer = native.KenshiObjectSerializer(str(temp_dir / "pose.log"))
-    mesh = serializer.create_mesh(mesh_path.name)
-    mesh.set_submeshes(
-        [
-            _make_submesh(0, "first", 0.0),
-            _make_submesh(1, "second", 10.0),
-        ]
-    )
-    serializer.save_mesh(mesh, str(mesh_path), native.MeshVersion.V_1_10)
 
-    with mesh_path.open("rb") as stream:
+def _assert_pose_wire(path: Path):
+    with path.open("rb") as stream:
         parsed = PoseRecordingSerializer(stream).read()
 
     poses = getattr(parsed, "oracle_poses", [])
-    print("POSE_CASE", poses)
+    print("POSE_CASE", path.name, poses)
     if len(poses) != 2:
         raise SystemExit(f"expected two poses, got {len(poses)}")
     if [pose["target"] for pose in poses] != [1, 2]:
         raise SystemExit(f"unexpected pose targets: {[pose['target'] for pose in poses]}")
     if any(pose["includes_normals"] for pose in poses):
-        raise SystemExit("native append_shapekey unexpectedly wrote pose normals")
+        raise SystemExit("pose stream unexpectedly contains normal offsets")
     if any(len(pose["vertices"]) != 3 for pose in poses):
         raise SystemExit(f"expected three pose vertices per target, got {poses}")
 
@@ -166,7 +171,54 @@ def main() -> int:
                     f"unexpected pose offset {offset}; expected {expected_offset.tolist()}"
                 )
 
-    print("NATIVE POSE ORACLE PASSED")
+
+def main() -> int:
+    temp_dir = Path(tempfile.mkdtemp(prefix="bz98_pose_oracle_"))
+    native_path = temp_dir / "native_pose.mesh"
+    pure_path = temp_dir / "pure_pose.mesh"
+
+    native_serializer = native.KenshiObjectSerializer(str(temp_dir / "pose.log"))
+    native_serializer.add_resource_location(str(temp_dir))
+    native_mesh = native_serializer.create_mesh(native_path.name)
+    native_mesh.set_submeshes(
+        [
+            _make_native_submesh(0, "first", 0.0),
+            _make_native_submesh(1, "second", 10.0),
+        ]
+    )
+    native_serializer.save_mesh(
+        native_mesh, str(native_path), native.MeshVersion.V_1_10
+    )
+    _assert_pose_wire(native_path)
+
+    pure_serializer = pure.KenshiObjectSerializer()
+    pure_mesh = pure_serializer.create_mesh(pure_path.name)
+    pure_mesh.set_submeshes(
+        [
+            _make_pure_submesh(0, "first", 0.0),
+            _make_pure_submesh(1, "second", 10.0),
+        ]
+    )
+    pure_serializer.save_mesh(pure_mesh, pure_path, pure.MeshVersion.V_1_10)
+    _assert_pose_wire(pure_path)
+
+    # Cross-implementation compatibility: the legacy native backend must be
+    # able to load the pure writer's stream and surface both shape keys.
+    loaded = native_serializer.load_mesh(pure_path.name)
+    loaded_submeshes = loaded.get_submeshes()
+    if len(loaded_submeshes) != 2:
+        raise SystemExit(
+            f"native reader loaded {len(loaded_submeshes)} pure submeshes, expected 2"
+        )
+    for index, submesh in enumerate(loaded_submeshes):
+        shapes = submesh.get_shapekeys()
+        print(f"NATIVE_READ_PURE_POSES_{index}", shapes)
+        if len(shapes) != 1 or shapes[0][0] != "OraclePose":
+            raise SystemExit(
+                f"native reader did not surface OraclePose on submesh {index}: {shapes}"
+            )
+
+    print("NATIVE/PURE POSE ORACLE PASSED")
     return 0
 
 
