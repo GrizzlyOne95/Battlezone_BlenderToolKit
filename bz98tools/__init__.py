@@ -27,6 +27,7 @@ del _core_handle
 _core_register = register
 _core_unregister = unregister
 
+from . import makeobj_compat_ui as _makeobj_compat_ui
 from . import pilot_animation_reference_ui as _pilot_animation_reference_ui
 from . import pilot_animation_ui as _pilot_animation_ui
 
@@ -39,13 +40,17 @@ def register():
     _core_register()
     _pilot_animation_ui.register()
     _pilot_animation_reference_ui.register()
+    _makeobj_compat_ui.register()
 
 
 def unregister():
     try:
-        _pilot_animation_reference_ui.unregister()
+        _makeobj_compat_ui.unregister()
     finally:
         try:
-            _pilot_animation_ui.unregister()
+            _pilot_animation_reference_ui.unregister()
         finally:
-            _core_unregister()
+            try:
+                _pilot_animation_ui.unregister()
+            finally:
+                _core_unregister()
