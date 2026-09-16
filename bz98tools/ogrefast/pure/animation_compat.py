@@ -3,13 +3,14 @@ from __future__ import annotations
 """Pure-Python compatibility model for Ogre skeleton animation tracks.
 
 The coordinate contract is pinned against the bundled CPython-3.11 native
-backend in ``tests/native_animation_oracle.py``.  For the normal (no scale
-keyframes) path used by the addon:
+backend in ``tests/native_animation_oracle.py``. For the normal no-scale path
+used by the addon, both ordinary F-curve collection and visual-keying/baked
+matrix collection reduce to the same contract:
 
 * export translation: ``D @ bone_matrix @ blender_location``
   where ``D = diag(-1, 1, 1)``;
 * export quaternion: ``(w, x, y, z) -> (w, y, z, x)``;
-* import uses the inverse mappings.  The importer supplies the transpose of
+* import uses the inverse mappings. The importer supplies the transpose of
   the export bone matrix, so the translation transform inverts exactly for
   the orthonormal bone bases produced by the Blender collector.
 """
@@ -189,12 +190,66 @@ class AnimationData:
             )
         return result
 
-    def set_animation_tracks(self, *args, **kwargs):
-        # Used only by the optional visual-keying/baked path. Keep that path on
-        # the legacy backend until its matrix contract is separately pinned.
-        raise NotImplementedError(
-            "pure Python baked/visual-keying animation export is not implemented yet"
-        )
+    def set_animation_tracks(
+        self,
+        bone_matrix_map,
+        pose_matrix_map,
+        time_array,
+        use_scale=False,
+    ):
+        """Convert baked local pose matrices through the native animation contract.
+
+        ``ogre_exporter.collect_bake_tracks`` supplies one Blender local 4x4
+        pose matrix per sampled frame. The old extension decomposes those
+        matrices, then applies the same basis/axis conversion used by
+        ``append_animation_track``. This behavior is pinned by the native
+        baked-matrix cases in ``tests/native_animation_oracle.py``.
+        """
+
+        if use_scale:
+            raise UnsupportedAnimationScale(
+                "pure Python baked animation export does not yet support scale keyframes"
+            )
+
+        times = np.asarray(time_array, dtype=np.float32).reshape(-1)
+        for bone_name, matrix_frames in pose_matrix_map.items():
+            if bone_name not in bone_matrix_map:
+                raise ValueError(
+                    f"baked animation track {bone_name!r} has no bone basis matrix"
+                )
+            if len(matrix_frames) != len(times):
+                raise ValueError(
+                    f"baked animation track {bone_name!r} has {len(matrix_frames)} matrices for {len(times)} times"
+                )
+
+            locations = np.empty((3, len(times)), dtype=np.float32)
+            rotations = np.empty((4, len(times)), dtype=np.float32)
+            scales = np.ones((3, len(times)), dtype=np.float32)
+            previous_quaternion = None
+
+            for index, matrix in enumerate(matrix_frames):
+                location, quaternion, _scale = _decompose_pose_matrix(matrix)
+                # q and -q encode the same orientation. Keep neighboring baked
+                # samples in one hemisphere so Ogre interpolation cannot take
+                # a gratuitous long path if decomposition changes sign.
+                if (
+                    previous_quaternion is not None
+                    and float(np.dot(previous_quaternion, quaternion)) < 0.0
+                ):
+                    quaternion = -quaternion
+                previous_quaternion = quaternion
+                locations[:, index] = location
+                rotations[:, index] = quaternion
+
+            self.append_animation_track(
+                bone_name=bone_name,
+                bone_matrix=bone_matrix_map[bone_name],
+                nd_times=times,
+                nd_locations=locations,
+                nd_rotations=rotations,
+                nd_scales=scales,
+                use_scale=False,
+            )
 
 
 class AnimatedSkeletonData(SkeletonData):
@@ -221,6 +276,85 @@ def _matrix3_array(matrix):
     if array.shape != (3, 3):
         raise ValueError(f"expected 3x3 bone matrix, got {array.shape}")
     return array
+
+
+def _decompose_pose_matrix(matrix):
+    """Return Blender-space translation, quaternion (wxyz), and scale.
+
+    This intentionally has no ``mathutils`` dependency so the binary semantic
+    suite can run on ordinary CPython. The 3x3 block is split into per-column
+    scale and an orthonormal rotation basis, matching Blender's transform
+    convention for ordinary local pose matrices. A polar/SVD cleanup handles
+    small numerical drift or shear before quaternion extraction.
+    """
+
+    array = np.asarray(matrix, dtype=np.float64)
+    if array.shape != (4, 4):
+        raise ValueError(f"expected 4x4 pose matrix, got {array.shape}")
+    if not np.all(np.isfinite(array)):
+        raise ValueError("pose matrix contains non-finite values")
+
+    location = array[:3, 3].astype(np.float32)
+    linear = array[:3, :3]
+    scale = np.linalg.norm(linear, axis=0)
+    if np.any(scale < 1e-12):
+        raise ValueError("pose matrix contains a degenerate scale axis")
+
+    normalized = linear / scale[np.newaxis, :]
+    u, _singular, vh = np.linalg.svd(normalized)
+    rotation = u @ vh
+    if np.linalg.det(rotation) < 0.0:
+        # Preserve a proper rotation. Scale keys are intentionally unsupported,
+        # so reflection magnitude/sign is not serialized on this path.
+        u[:, -1] *= -1.0
+        rotation = u @ vh
+
+    quaternion = _quaternion_from_rotation_matrix(rotation)
+    return location, quaternion.astype(np.float32), scale.astype(np.float32)
+
+
+def _quaternion_from_rotation_matrix(rotation):
+    matrix = np.asarray(rotation, dtype=np.float64)
+    if matrix.shape != (3, 3):
+        raise ValueError(f"expected 3x3 rotation matrix, got {matrix.shape}")
+
+    trace = float(np.trace(matrix))
+    if trace > 0.0:
+        s = np.sqrt(trace + 1.0) * 2.0
+        w = 0.25 * s
+        x = (matrix[2, 1] - matrix[1, 2]) / s
+        y = (matrix[0, 2] - matrix[2, 0]) / s
+        z = (matrix[1, 0] - matrix[0, 1]) / s
+    elif matrix[0, 0] > matrix[1, 1] and matrix[0, 0] > matrix[2, 2]:
+        s = np.sqrt(max(0.0, 1.0 + matrix[0, 0] - matrix[1, 1] - matrix[2, 2])) * 2.0
+        if s < 1e-12:
+            return np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        w = (matrix[2, 1] - matrix[1, 2]) / s
+        x = 0.25 * s
+        y = (matrix[0, 1] + matrix[1, 0]) / s
+        z = (matrix[0, 2] + matrix[2, 0]) / s
+    elif matrix[1, 1] > matrix[2, 2]:
+        s = np.sqrt(max(0.0, 1.0 + matrix[1, 1] - matrix[0, 0] - matrix[2, 2])) * 2.0
+        if s < 1e-12:
+            return np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        w = (matrix[0, 2] - matrix[2, 0]) / s
+        x = (matrix[0, 1] + matrix[1, 0]) / s
+        y = 0.25 * s
+        z = (matrix[1, 2] + matrix[2, 1]) / s
+    else:
+        s = np.sqrt(max(0.0, 1.0 + matrix[2, 2] - matrix[0, 0] - matrix[1, 1])) * 2.0
+        if s < 1e-12:
+            return np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        w = (matrix[1, 0] - matrix[0, 1]) / s
+        x = (matrix[0, 2] + matrix[2, 0]) / s
+        y = (matrix[1, 2] + matrix[2, 1]) / s
+        z = 0.25 * s
+
+    quaternion = np.asarray([w, x, y, z], dtype=np.float64)
+    norm = float(np.linalg.norm(quaternion))
+    if norm < 1e-12:
+        raise ValueError("pose rotation decomposed to a zero quaternion")
+    return quaternion / norm
 
 
 def _channel_array(value, channels, count, label):
