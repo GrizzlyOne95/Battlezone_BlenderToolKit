@@ -2,8 +2,8 @@
 
 Run with the official ``bpy`` Python module. This intentionally exercises the
 actual Blender collector/importer glue rather than only the bpy-free binary
-models: shape-key pose export/import, Batch Selected export, and the standalone
-visual-keying skeleton bake used by the pilot animation workflow are covered.
+models: shape-key pose export/import, Batch Selected export, the standalone
+visual-keying skeleton bake, and the pilot-animation helper are covered.
 """
 
 from __future__ import annotations
@@ -277,6 +277,55 @@ def _test_visual_keying_skeleton_bake(temp_dir: Path):
     print("[PASS] Blender 5.2 pure visual-keying .skeleton bake")
 
 
+def _test_pilot_ui_baked_replacement(temp_dir: Path):
+    _clear_scene()
+    for action in list(bpy.data.actions):
+        bpy.data.actions.remove(action)
+
+    armature = _animated_single_bone_rig()
+    _select_only(armature)
+    source_action = armature.animation_data.action
+    original_selection = list(bpy.context.selected_objects)
+    original_active = bpy.context.view_layer.objects.active
+
+    from bz98tools import pilot_animation_ui
+
+    operator = _Operator()
+    replacement = pilot_animation_ui._build_baked_replacement(
+        bpy.context,
+        operator,
+        armature,
+        [("PilotMove", source_action)],
+        str(temp_dir),
+    )
+
+    if set(replacement.animation_map) != {"PilotMove"}:
+        raise AssertionError(
+            f"pilot helper returned unexpected clips: {sorted(replacement.animation_map)}"
+        )
+    animation = replacement.animation_map["PilotMove"]
+    if abs(float(animation.duration) - 1.0) > 1e-5:
+        raise AssertionError(f"pilot helper changed clip duration: {animation.duration}")
+    tracks = list(animation.tracks())
+    if len(tracks) != 1 or tracks[0].target_bone.name != "root":
+        raise AssertionError("pilot helper did not preserve the root animation track")
+    if len(tracks[0].keyframe_list) != 31:
+        raise AssertionError(
+            f"pilot helper expected 31 baked samples, got {len(tracks[0].keyframe_list)}"
+        )
+
+    if list(bpy.context.selected_objects) != original_selection:
+        raise AssertionError("pilot helper did not restore Blender selection")
+    if bpy.context.view_layer.objects.active is not original_active:
+        raise AssertionError("pilot helper did not restore active Blender object")
+    if any(obj.name.startswith("__BZ_PilotBake_") for obj in bpy.data.objects):
+        raise AssertionError("pilot helper leaked its temporary armature")
+    if any(action.name.startswith("__BZPILOT_") for action in bpy.data.actions):
+        raise AssertionError("pilot helper leaked its temporary Action")
+
+    print("[PASS] Blender 5.2 pilot-animation bake helper through pure facade")
+
+
 def main():
     print("BLENDER_VERSION", bpy.app.version_string)
     if bpy.app.version[:2] != (5, 2):
@@ -286,6 +335,7 @@ def main():
     _test_shape_key_roundtrip(temp_dir)
     _test_batch_export(temp_dir)
     _test_visual_keying_skeleton_bake(temp_dir)
+    _test_pilot_ui_baked_replacement(temp_dir)
     print("BLENDER 5.2 PURE OGRE SMOKE PASSED")
 
 
