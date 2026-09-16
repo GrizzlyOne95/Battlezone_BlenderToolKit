@@ -9,17 +9,17 @@ Existing Blender collector code continues to use the historical `kenshi_blender_
 - the bundled native CPython extension when its ABI is compatible; or
 - a pure-Python compatibility facade on newer Python/Blender runtimes.
 
-This keeps one Blender-side mesh/skeleton collection path instead of maintaining separate native and pure exporters.
+Bones and animation channels continue to use the established collector semantics. The pure mesh collector extends that path where the compiled API was limiting, including preservation of multiple Ogre texture-coordinate sets.
 
 ## Implemented
 
 - OGRE `MeshSerializer_v1.100` direct binary mesh output.
 - Direct binary `.mesh` import.
 - Triangle-list submeshes with 16-bit and 32-bit indices.
-- Vertex declarations and buffers for positions, normals, UVs, colors, tangents and binormals.
+- Vertex declarations and buffers for positions, normals, multiple UV sets, colors, tangents and binormals.
 - Legacy Blender/Ogre coordinate and UV conversion.
 - Material/submesh names and mesh bounds.
-- Vertex splitting/deduplication compatible with the fast exporter workflow.
+- Vertex splitting/deduplication using all authored UV sets.
 - Skeleton links and vertex bone assignments.
 - Direct `.skeleton` read/write using the repository's existing Ogre skeleton serializer.
 - Bone hierarchy/bind-pose import and export.
@@ -38,8 +38,36 @@ Automated coverage currently includes:
 - Windows/Python 3.11 native-oracle checks using the bundled old Ogre backend;
 - native-vs-pure static mesh semantic comparison;
 - native animation transform oracle coverage;
-- native/pure pose wire-format and cross-reader coverage; and
-- a real Blender 5.2.2 / Python 3.13 smoke test covering shape-key mesh round-trip, Batch Selected export, visual-keying `.skeleton` animation bake, and the pilot-animation bake helper.
+- native/pure pose wire-format and cross-reader coverage;
+- multi-UV wire-format/readback coverage where a vertex differs only in UV set 1, ensuring optimization cannot incorrectly merge it; and
+- real Blender 5.2.2 / Python 3.13 smoke tests covering shape-key mesh round-trip, Batch Selected export, visual-keying `.skeleton` animation bake, the pilot-animation bake helper, and rigged two-UV fast-path export.
+
+The current fully green matrix is GitHub Actions run #123.
+
+## Representative real-asset acceptance profile
+
+A real Battlezone pilot pair (`aspilo.mesh` + linked `aspilo.skeleton`) is now used as an external/manual acceptance fixture. The original files are intentionally not committed to this public repository.
+
+The source pair exercises substantially more than the synthetic fixtures:
+
+- `MeshSerializer_v1.100` mesh and `Serializer_v1.80` skeleton;
+- 2 dedicated-geometry triangle-list submeshes (`asp11ctr` and `gunmesh`);
+- 9,970 total mesh vertices;
+- 45,681 indices;
+- 14,604 vertex/bone assignments, with no vertex exceeding the existing three-weight exporter limit;
+- 2 UV sets on each submesh;
+- vertex colors and tangents;
+- linked `aspilo.skeleton`;
+- 71 bones and 67 parent relations; and
+- 19 skeleton animations with no scale-key frames and no linked external animation sources.
+
+Those characteristics all fall inside the proven pure fast-path feature set. `tests/blender52_real_asset_smoke.py` accepts an external `.mesh` and `.skeleton` pair, forbids the XML fallback, imports the pair in Blender 5.2, verifies the armature/weights/materials/two UV sets/actions, re-exports through the pure fast path, and requires the resulting binary pair to preserve two submeshes, two UV sets, 71 bones and all 19 animation names.
+
+Example:
+
+```text
+python tests/blender52_real_asset_smoke.py /path/to/aspilo.mesh /path/to/aspilo.skeleton
+```
 
 ## Intentional fallback / remaining gaps
 
@@ -54,4 +82,4 @@ The pure backend currently fails closed or leaves the legacy path in place for f
 
 ## Final validation before merge
 
-The remaining release gate is representative Battlezone 98 Redux runtime testing. Exported `.mesh`/`.skeleton` pairs should be loaded in BZR and checked for geometry orientation, materials, skinning, shape keys where applicable, and animated playback before this branch becomes the default production path.
+Format-level compatibility and Blender 5.2 fast-path execution are now covered. The remaining release gate is Battlezone 98 Redux itself: export the representative real pair with Blender 5.2, load it in BZR, and check geometry orientation, both material/UV channels, skinning, and all expected pilot animation playback before this branch becomes the default production path.
