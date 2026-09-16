@@ -1,34 +1,11 @@
 from __future__ import annotations
 
-"""Blender adapter for the pure static/rigged Ogre binary reader."""
+"""Blender adapter for the unified pure static/rigged Ogre binary reader."""
 
-import importlib
 import os
-import sys
 
-from . import kenshi_compat
-from .rigged_import_compat import KenshiObjectSerializer
-
-
-def _load_shared_blender_helpers():
-    """Import ogre_importer even when the CPython-specific module is unavailable.
-
-    ogre_importer imports ``kenshi_blender_tool`` at module scope. For the pure
-    path we supply the compatibility module long enough to import its Blender
-    object-construction helpers. The helpers then operate on our compatible
-    MeshData/SubMeshData/SkeletonData instances.
-    """
-
-    module_name = "kenshi_blender_tool"
-    previous = sys.modules.get(module_name)
-    inserted = previous is None
-    if inserted:
-        sys.modules[module_name] = kenshi_compat
-    try:
-        return importlib.import_module("bz98tools.ogrefast.ogre_importer")
-    finally:
-        if inserted:
-            sys.modules.pop(module_name, None)
+from .. import ogre_importer as shared
+from .kenshi_facade import KenshiObjectSerializer
 
 
 def load(
@@ -52,12 +29,11 @@ def load(
     folder, mesh_file = os.path.split(filepath)
     serializer = KenshiObjectSerializer()
     serializer.add_resource_location(folder)
-    # Unsupported poses/mesh animations, scale-key skeleton animations or
-    # linked animation sources raise here before Blender is modified, allowing
+    # Unsupported mesh-animation data, scale-key skeleton animations or linked
+    # animation sources raise here before Blender is modified, allowing
     # backend.py to hand the file to the legacy XML importer safely.
     mesh_data = serializer.load_mesh(mesh_file)
 
-    shared = _load_shared_blender_helpers()
     original_selection = list(context.selected_objects)
     try:
         for obj in original_selection:
