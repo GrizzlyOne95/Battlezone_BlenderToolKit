@@ -8,6 +8,7 @@ collectors do not need to know whether they are backed by the old CPython
 extension or the new pure serializers.
 """
 
+import math
 from enum import IntEnum
 
 from .animation_compat import AnimatedSkeletonData, AnimationData, BlenderAnimationTrack
@@ -69,6 +70,47 @@ class Radian(float):
 
     def valueRadians(self):
         return float(self)
+
+
+def _quaternion_to_angle_axis(self):
+    """Match Ogre::Quaternion::ToAngleAxis for importer compatibility.
+
+    Skeleton quaternions are expected to be unit length, but normalising here
+    makes the pure facade robust to small serializer/float drift and mirrors the
+    practical behaviour the Blender importer expects from the native helper.
+    """
+
+    w = float(self.w)
+    x = float(self.x)
+    y = float(self.y)
+    z = float(self.z)
+    length = math.sqrt(w * w + x * x + y * y + z * z)
+    if length > 1.0e-12:
+        inv_length = 1.0 / length
+        w *= inv_length
+        x *= inv_length
+        y *= inv_length
+        z *= inv_length
+    else:
+        w, x, y, z = 1.0, 0.0, 0.0, 0.0
+
+    w = max(-1.0, min(1.0, w))
+    sqr_axis = x * x + y * y + z * z
+    if sqr_axis > 1.0e-12:
+        inv_axis = 1.0 / math.sqrt(sqr_axis)
+        axis = Vector3(x * inv_axis, y * inv_axis, z * inv_axis)
+        angle = 2.0 * math.acos(w)
+    else:
+        # Ogre chooses the X axis for the identity/zero-angle case.
+        axis = Vector3(1.0, 0.0, 0.0)
+        angle = 0.0
+    return Radian(angle), axis
+
+
+# The compiled module exposes this method on OgreQuaternion.  The compatibility
+# class lives in kenshi_compat because it is also used by the wire adapters, so
+# bind the higher-level helper here where Radian is part of the public facade.
+OgreQuaternion.to_angle_axis = _quaternion_to_angle_axis
 
 
 class SkeletonAnimationBlendMode(IntEnum):
