@@ -78,7 +78,7 @@ class KenshiObjectSerializer(MeshKenshiObjectSerializer):
         raise FileNotFoundError(file)
 
 
-def _to_legacy_skeleton(source: AnimatedSkeletonData) -> LegacySkeleton:
+def _to_legacy_skeleton(source) -> LegacySkeleton:
     target = LegacySkeleton()
     by_name = {}
 
@@ -115,7 +115,13 @@ def _to_legacy_skeleton(source: AnimatedSkeletonData) -> LegacySkeleton:
             )
         by_name[parent_name].add_child(by_name[str(bone.name)])
 
-    for animation in source.get_animations():
+    get_animations = getattr(source, "get_animations", None)
+    animations = (
+        get_animations()
+        if callable(get_animations)
+        else list(getattr(source, "_animations", ()))
+    )
+    for animation in animations:
         legacy_animation = target.create_animation(
             str(animation.name), float(animation.length)
         )
