@@ -2,12 +2,14 @@
 
 Run with the official ``bpy`` Python module. This intentionally exercises the
 actual Blender collector/importer glue rather than only the bpy-free binary
-models: shape-key pose export/import and Batch Selected export are covered.
+models: shape-key pose export/import, Batch Selected export, and the standalone
+visual-keying skeleton bake used by the pilot animation workflow are covered.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+import math
 import sys
 import tempfile
 
@@ -18,6 +20,7 @@ if str(REPO_ROOT) not in sys.path:
 import bpy
 
 from bz98tools.ogrefast import backend
+from bz98tools.bzrmodelporter.ogreskeleton_serializer import SkeletonSerializer
 
 
 class _Operator:
@@ -172,6 +175,108 @@ def _test_batch_export(temp_dir: Path):
     print("[PASS] Blender 5.2 Batch Selected pure export")
 
 
+def _animated_single_bone_rig():
+    armature_data = bpy.data.armatures.new("PilotRigData")
+    armature = bpy.data.objects.new("PilotRig", armature_data)
+    bpy.context.scene.collection.objects.link(armature)
+    _select_only(armature)
+
+    bpy.ops.object.mode_set(mode="EDIT")
+    edit_bone = armature_data.edit_bones.new("root")
+    edit_bone.head = (0.0, 0.0, 0.0)
+    edit_bone.tail = (0.0, 1.0, 0.0)
+    bpy.ops.object.mode_set(mode="OBJECT")
+    armature_data.bones["root"]["OGREID"] = 0
+
+    pose_bone = armature.pose.bones["root"]
+    pose_bone.rotation_mode = "QUATERNION"
+
+    bpy.context.scene.render.fps = 30
+    bpy.context.scene.render.fps_base = 1.0
+    bpy.context.scene.frame_step = 1
+
+    action = bpy.data.actions.new("PilotMove")
+    armature.animation_data_create()
+    armature.animation_data.action = action
+
+    pose_bone.location = (0.0, 0.0, 0.0)
+    pose_bone.rotation_quaternion = (1.0, 0.0, 0.0, 0.0)
+    pose_bone.keyframe_insert(data_path="location", frame=1)
+    pose_bone.keyframe_insert(data_path="rotation_quaternion", frame=1)
+
+    pose_bone.location = (1.0, 0.0, 0.0)
+    angle = math.radians(45.0) * 0.5
+    pose_bone.rotation_quaternion = (math.cos(angle), math.sin(angle), 0.0, 0.0)
+    pose_bone.keyframe_insert(data_path="location", frame=31)
+    pose_bone.keyframe_insert(data_path="rotation_quaternion", frame=31)
+
+    bpy.context.scene.frame_set(1)
+    return armature
+
+
+def _test_visual_keying_skeleton_bake(temp_dir: Path):
+    _clear_scene()
+    armature = _animated_single_bone_rig()
+    _select_only(armature)
+
+    # Import the historical collector unchanged. ogrefast package startup must
+    # have installed the pure compatibility facade before this star import.
+    import kenshi_blender_tool
+    from bz98tools.ogrefast import ogre_exporter
+
+    if not getattr(kenshi_blender_tool, "__bz98_pure_backend__", False):
+        raise AssertionError("Blender 5.2 did not install the pure kenshi facade")
+    if ogre_exporter.KenshiObjectSerializer is not kenshi_blender_tool.KenshiObjectSerializer:
+        raise AssertionError("legacy Ogre exporter did not bind to the pure facade")
+
+    path = temp_dir / "pilot_bake.skeleton"
+    operator = _Operator()
+    result = ogre_exporter.save_skeleton(
+        operator=operator,
+        context=bpy.context,
+        filepath=str(path),
+        apply_transform=False,
+        export_animation=True,
+        export_all_bones=False,
+        export_version="V_1_10",
+        is_visual_keying=True,
+        use_scale_keyframe=False,
+    )
+    errors = [message for levels, message in operator.messages if "ERROR" in levels]
+    if result != {"FINISHED"} or errors or not path.is_file():
+        raise AssertionError(
+            f"pure visual skeleton bake failed: result={result} errors={errors} reports={operator.messages}"
+        )
+
+    with path.open("rb") as stream:
+        skeleton = SkeletonSerializer(stream).read()
+    animations = list(skeleton.animations())
+    if [animation.name for animation in animations] != ["PilotMove"]:
+        raise AssertionError(
+            f"unexpected baked animations: {[animation.name for animation in animations]}"
+        )
+    animation = animations[0]
+    if abs(float(animation.duration) - 1.0) > 1e-5:
+        raise AssertionError(f"baked duration changed: {animation.duration}")
+
+    tracks = list(animation.tracks())
+    if len(tracks) != 1 or tracks[0].target_bone.name != "root":
+        raise AssertionError("visual bake did not preserve the root animation track")
+    keyframes = tracks[0].keyframe_list
+    if len(keyframes) != 31:
+        raise AssertionError(f"expected 31 baked samples, got {len(keyframes)}")
+    first = keyframes[0].translation
+    last = keyframes[-1].translation
+    first_len = math.sqrt(first.x * first.x + first.y * first.y + first.z * first.z)
+    last_len = math.sqrt(last.x * last.x + last.y * last.y + last.z * last.z)
+    if first_len > 1e-5 or abs(last_len - 1.0) > 1e-4:
+        raise AssertionError(
+            f"baked translation magnitude changed: first={first_len} last={last_len}"
+        )
+
+    print("[PASS] Blender 5.2 pure visual-keying .skeleton bake")
+
+
 def main():
     print("BLENDER_VERSION", bpy.app.version_string)
     if bpy.app.version[:2] != (5, 2):
@@ -180,6 +285,7 @@ def main():
     temp_dir = Path(tempfile.mkdtemp(prefix="bz98_blender52_"))
     _test_shape_key_roundtrip(temp_dir)
     _test_batch_export(temp_dir)
+    _test_visual_keying_skeleton_bake(temp_dir)
     print("BLENDER 5.2 PURE OGRE SMOKE PASSED")
 
 
