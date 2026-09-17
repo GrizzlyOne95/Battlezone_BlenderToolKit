@@ -29,6 +29,12 @@ class OgreMeshSerializer:
         if version is not MeshVersion.V_1_10:
             raise NotImplementedError(f"unsupported mesh version: {version}")
 
+        # Match OgreMeshUpgrader/Ogre 1.11.6's recommended vertex-stream
+        # organisation before serializing. This is a pure byte repack: vertex
+        # attribute values are unchanged, but animated meshes get the stream
+        # split Battlezone 98 Redux expects.
+        mesh = auto_organise_mesh(mesh)
+
         writer = BinaryWriter()
         # Serializer::writeFileHeader writes a 16-bit stream ID followed by a
         # newline-terminated version string. It is not a normal sized chunk.
