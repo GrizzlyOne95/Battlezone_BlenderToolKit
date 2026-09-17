@@ -32,3 +32,23 @@ jobs:
 
       - name: Run bpy-free semantic test suite
         run: python tests/run_tests.py
+
+      - name: Validate Blender add-on package layout
+        if: matrix.python-version == '3.12'
+        shell: bash
+        run: |
+          archive="Battlezone_BlenderToolKit-ci.zip"
+          zip -r "$archive" bz98tools/
+          python - "$archive" <<'PY'
+          import sys
+          import zipfile
+
+          archive = sys.argv[1]
+          with zipfile.ZipFile(archive) as zf:
+              names = set(zf.namelist())
+          if "bz98tools/__init__.py" not in names:
+              raise SystemExit("Blender add-on archive is missing bz98tools/__init__.py")
+          if any(name.startswith("BZ98RBlenderToolKit/") for name in names):
+              raise SystemExit("Archive incorrectly wraps bz98tools in the repository directory")
+          print(f"Validated Blender add-on archive: {archive}")
+          PY
