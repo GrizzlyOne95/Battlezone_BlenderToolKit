@@ -15,8 +15,27 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Zip addon
-        run: zip -r bz98tools.zip bz98tools/
+      - name: Package addon
+        shell: bash
+        run: |
+          archive="Battlezone_BlenderToolKit-${GITHUB_REF_NAME}.zip"
+          zip -r "$archive" bz98tools/
+          python - "$archive" <<'PY'
+          import sys
+          import zipfile
+
+          archive = sys.argv[1]
+          with zipfile.ZipFile(archive) as zf:
+              names = set(zf.namelist())
+          required = {"bz98tools/__init__.py"}
+          missing = sorted(required - names)
+          if missing:
+              raise SystemExit(f"Invalid Blender add-on archive; missing: {missing}")
+          if any(name.startswith("BZ98RBlenderToolKit/") for name in names):
+              raise SystemExit("Invalid archive layout: repository directory wrapped around bz98tools")
+          print(f"Validated Blender add-on archive: {archive}")
+          PY
+          echo "archive=$archive" >> "$GITHUB_ENV"
 
       - name: Resolve release notes
         id: notes
@@ -33,7 +52,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: bz98tools.zip
+          files: ${{ env.archive }}
           name: Release ${{ github.ref_name }}
           body_path: ${{ steps.notes.outputs.body_path }}
           draft: false
