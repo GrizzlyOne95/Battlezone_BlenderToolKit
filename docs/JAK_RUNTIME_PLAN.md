@@ -126,3 +126,21 @@ Do NOT recreate BZ2 `LandAnimalProcess` before the model/animation path is
 proven. Original BZ2 tuning (`mcjak01.odf`: cool 125, yum 75, goto-close 15,
 flee 75, goto2attack 15, crowded 30) is preserved in the source ODF for later
 Lua behavior work.
+
+## 8. Deployment log (ISDF Chronicles addon)
+
+Deployed (new files only, 8.3-compliant stems): `jakpilot.{odf,inf,mesh,
+skeleton,material}`, `jakbite.odf`, `jakbitb.odf`; `jak{,_n,_s}.tga`
+already present byte-identical.
+
+- `jakpilot.vdf` is a byte copy of stock `StockODFFiles/aspilo.vdf`
+  (same as the prior `jak.vdf`). It supplies the legacy shell: collision
+  parts, 9-slot legacy ANIM table, and Person object init. Without it the
+  Jak rendered static and pitched 90° (feet forward, head up) -- the
+  missing VDF broke animation init and the root orientation frame.
+- `geometryScale = 100` in `jakpilot.odf` restores BZ2-true sizing
+  (prior `jak.mesh` bounds 2.17 x 5.81 x 2.54 prove raw units render as
+  meters; `ivangel.odf` proves geometryScale is honored on Ogre meshes).
+- Retest checklist: spawn `jakpilot`, confirm upright posture, idle motion,
+  walk on move orders, death on kill, then the sniper-FSM attack sequence
+  from section 2.
