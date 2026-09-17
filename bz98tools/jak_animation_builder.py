@@ -563,6 +563,118 @@ def _remove_imported_objects(objects, *, keep: Sequence[object] = ()):
             pass
 
 
+# The XSI-authored Jak bind pose stands nose-up in Blender space (spine
+# along +Z, legs toward -Y). Stock pilot rigs stand along +Z with toes
+# toward -Y, and Redux renders Ogre data in that same frame, so an
+# uncorrected Jak exports pitched 90° (head up, feet forward -- confirmed
+# in game). This rigid +90° X rotation lays the creature horizontal with
+# head toward Blender -Y (stock forward) and legs toward -Z (down).
+# It is applied to rest pose, mesh data and root-bone curves together so
+# skinning and animation stay consistent.
+_STAND_UP_FIX_ANGLE_RADIANS = 1.5707963267948966  # pi / 2
+
+
+def _stand_up_fix_matrix():
+    from mathutils import Matrix
+
+    return Matrix.Rotation(_STAND_UP_FIX_ANGLE_RADIANS, 4, "X")
+
+
+def _canonical_root_bones(canonical) -> List[str]:
+    return [bone.name for bone in canonical.data.bones if bone.parent is None]
+
+
+def _apply_stand_up_fix(context, canonical, canonical_objects, actions: Mapping[str, object]):
+    """Rigidly pitch the Jak rig from nose-up to horizontal quadruped stance."""
+
+    from mathutils import Quaternion, Vector
+
+    rotation = _stand_up_fix_matrix()
+    rotation_quat = rotation.to_quaternion()
+    rotation_3x3 = rotation.to_3x3()
+
+    # Rest pose: rigidly transform every edit bone (preserves roll via
+    # EditBone.transform).
+    try:
+        context.view_layer.objects.active = canonical
+        bpy.ops.object.mode_set(mode="EDIT")
+        for edit_bone in canonical.data.edit_bones:
+            edit_bone.transform(rotation)
+    finally:
+        try:
+            bpy.ops.object.mode_set(mode="OBJECT")
+        except Exception:
+            pass
+
+    # Mesh data: rotate verts and loop normals (rigid rotation preserves the
+    # skinning relationship with the rotated rest pose).
+    for obj in canonical_objects:
+        if getattr(obj, "type", None) != "MESH":
+            continue
+        mesh = obj.data
+        for vertex in mesh.vertices:
+            vertex.co = rotation @ vertex.co
+        try:
+            mesh.update()
+            mesh.calc_normals_split()
+        except Exception:
+            pass
+
+    # Baked actions: root bones are armature-space, so their location and
+    # rotation keys rotate with the rig. Child bones are parent-relative and
+    # stay untouched.
+    for root in _canonical_root_bones(canonical):
+        location_curves = {}
+        rotation_curves = {}
+        for action in actions.values():
+            for curve in action.fcurves:
+                if curve.data_path != f'pose.bones["{root}"].location':
+                    if curve.data_path != f'pose.bones["{root}"].rotation_quaternion':
+                        continue
+                    rotation_curves.setdefault(action.name, {})[curve.array_index] = curve
+                else:
+                    location_curves.setdefault(action.name, {})[curve.array_index] = curve
+        for action in actions.values():
+            curves = location_curves.get(action.name)
+            if curves and len(curves) == 3:
+                count = len(curves[0].keyframe_points)
+                for index in range(count):
+                    frame = curves[0].keyframe_points[index].co[0]
+                    value = Vector(
+                        (
+                            curves[0].keyframe_points[index].co[1],
+                            curves[1].keyframe_points[index].co[1],
+                            curves[2].keyframe_points[index].co[1],
+                        )
+                    )
+                    rotated = rotation_3x3 @ value
+                    curves[0].keyframe_points[index].co[1] = rotated[0]
+                    curves[1].keyframe_points[index].co[1] = rotated[1]
+                    curves[2].keyframe_points[index].co[1] = rotated[2]
+                    for curve in curves.values():
+                        curve.update()
+            curves = rotation_curves.get(action.name)
+            if curves and len(curves) == 4:
+                count = len(curves[0].keyframe_points)
+                for index in range(count):
+                    value = Quaternion(
+                        (
+                            curves[0].keyframe_points[index].co[1],
+                            curves[1].keyframe_points[index].co[1],
+                            curves[2].keyframe_points[index].co[1],
+                            curves[3].keyframe_points[index].co[1],
+                        )
+                    )
+                    rotated = rotation_quat @ value
+                    rotated.normalize()
+                    curves[0].keyframe_points[index].co[1] = rotated[0]
+                    curves[1].keyframe_points[index].co[1] = rotated[1]
+                    curves[2].keyframe_points[index].co[1] = rotated[2]
+                    curves[3].keyframe_points[index].co[1] = rotated[3]
+                    for curve in curves.values():
+                        curve.update()
+
+
 def _copy_action(source_action, dest_name: str):
     action = source_action.copy()
     action.name = dest_name
@@ -647,6 +759,9 @@ def build_jak_animation_set(
     animation FBXs are validated against that bind pose before their evaluated
     pose is baked to a clean Action.  The older ``jak_skel.fbx`` idle is
     world/armature-space retargeted by bone name onto the canonical rig.
+    The source bind pose stands nose-up, so a rigid +90° X posture fix lays
+    the baked rig horizontal (head toward stock -Y forward, legs down)
+    before aliases and NLA tracks are created.
 
     Returns ``(canonical_armature, report)``.  The imported canonical mesh
     objects remain in the scene; temporary source FBX objects are removed.
@@ -754,6 +869,10 @@ def build_jak_animation_set(
             )
         finally:
             _remove_imported_objects(imported)
+
+        # The source bind pose stands nose-up; lay the baked rig horizontal
+        # before creating aliases so every exported clip shares the posture.
+        _apply_stand_up_fix(context, canonical, canonical_objects, actions)
 
         # Match the original BZ2 logical animation table, plus only the Redux
         # compatibility aliases we have actually observed.  Additional exact
