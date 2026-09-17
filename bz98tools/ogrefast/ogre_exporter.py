@@ -758,7 +758,17 @@ def save(
 
         log_file = _get_log_file()
         serializer = KenshiObjectSerializer(logfile=log_file)
-        armature = selectedObjects[0].find_armature()
+        # Bone-parented meshes (e.g. eyes parented to head bones) resolve
+        # no armature on their own; scan every selected mesh so mixed
+        # modifier/parent rigs still find their armature.
+        armature = None
+        for selected_object in selectedObjects:
+            try:
+                armature = selected_object.find_armature()
+            except Exception:
+                armature = None
+            if armature is not None:
+                break
 
         folder, filename = os.path.split(filepath)
         mesh_data = serializer.create_mesh(filename)
