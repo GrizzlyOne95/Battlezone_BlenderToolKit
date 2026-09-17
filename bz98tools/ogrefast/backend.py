@@ -1,4 +1,6 @@
 import os
+import shutil
+import subprocess
 
 from . import probe_native_backend
 
@@ -19,6 +21,122 @@ def _map_tangent_format(
     if export_binormals:
         return "ALL" if tangent_parity else "TANGENT_3"
     return "TANGENT_4"
+
+
+def _mesh_output_path(filepath):
+    path = os.fspath(filepath)
+    return path if path.lower().endswith(".mesh") else f"{path}.mesh"
+
+
+def _resolve_mesh_upgrader(xml_converter=None):
+    """Locate the BZR-compatible OgreMeshUpgrader next to the configured tools.
+
+    Blender's XML converter setting normally points at the bundled ogretools
+    directory, so prefer a sibling upgrader before falling back to the copy
+    shipped with the add-on itself.
+    """
+
+    candidates = []
+    if xml_converter:
+        converter_path = os.path.abspath(os.fspath(xml_converter))
+        converter_dir = (
+            converter_path if os.path.isdir(converter_path) else os.path.dirname(converter_path)
+        )
+        candidates.extend(
+            (
+                os.path.join(converter_dir, "OgreMeshUpgrader.exe"),
+                os.path.join(converter_dir, "OgreMeshUpgrader"),
+            )
+        )
+
+    bundled_dir = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ogretools"
+    )
+    candidates.extend(
+        (
+            os.path.join(bundled_dir, "OgreMeshUpgrader.exe"),
+            os.path.join(bundled_dir, "OgreMeshUpgrader"),
+        )
+    )
+
+    seen = set()
+    for candidate in candidates:
+        normalized = os.path.normcase(os.path.abspath(candidate))
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def _upgrade_mesh_for_bzr(operator, filepath, xml_converter=None):
+    """Run OgreMeshUpgrader in-place so BZR receives its expected VB layout.
+
+    Redux's Ogre 1.10 renderer is unusually sensitive to the post-upgrader
+    vertex-buffer organization used by stock assets. A directly serialized
+    mesh can be structurally valid yet render with broken textures/UVs until
+    OgreMeshUpgrader reorganizes the streams. Keep that target-specific step
+    outside the pure serializer and apply it to every successful fast export.
+    """
+
+    mesh_path = os.path.abspath(_mesh_output_path(filepath))
+    if not os.path.isfile(mesh_path):
+        operator.report({"ERROR"}, f"Fast Ogre export did not produce {mesh_path}")
+        return False
+
+    upgrader = _resolve_mesh_upgrader(xml_converter)
+    if upgrader is None:
+        operator.report(
+            {"WARNING"},
+            "OgreMeshUpgrader was not found; run the exported .mesh through the BZR Ogre tools before testing textures/UVs.",
+        )
+        return True
+
+    command = [upgrader, mesh_path]
+    if os.name != "nt" and upgrader.lower().endswith(".exe"):
+        wine = shutil.which("wine")
+        if wine is None:
+            operator.report(
+                {"WARNING"},
+                "OgreMeshUpgrader.exe is available but Wine is not; run the exported .mesh through OgreMeshUpgrader before BZR testing.",
+            )
+            return True
+        command.insert(0, wine)
+
+    try:
+        result = subprocess.run(
+            command,
+            cwd=os.path.dirname(mesh_path) or None,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except Exception as exc:
+        operator.report({"ERROR"}, f"OgreMeshUpgrader failed to start: {exc}")
+        return False
+
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        if detail:
+            detail = detail.splitlines()[-1]
+            operator.report(
+                {"ERROR"},
+                f"OgreMeshUpgrader failed with exit code {result.returncode}: {detail}",
+            )
+        else:
+            operator.report(
+                {"ERROR"},
+                f"OgreMeshUpgrader failed with exit code {result.returncode}",
+            )
+        return False
+
+    if not os.path.isfile(mesh_path):
+        operator.report({"ERROR"}, "OgreMeshUpgrader removed the exported mesh unexpectedly")
+        return False
+
+    print(f"OgreMeshUpgrader post-process complete: {mesh_path}")
+    return True
 
 
 def _selected_mesh_objects(context):
@@ -374,6 +492,8 @@ def export_mesh(
                 renormalize_weights=renormalize_weights,
             )
             if result == {"FINISHED"}:
+                if not _upgrade_mesh_for_bzr(operator, filepath, xml_converter):
+                    return {"CANCELLED"}
                 _write_materials(
                     filepath,
                     selected_objects,
@@ -419,6 +539,8 @@ def export_mesh(
                 ),
             )
             if result == {"FINISHED"}:
+                if not _upgrade_mesh_for_bzr(operator, filepath, xml_converter):
+                    return {"CANCELLED"}
                 _write_materials(
                     filepath,
                     selected_objects,
