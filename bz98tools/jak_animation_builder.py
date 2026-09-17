@@ -580,6 +580,50 @@ def _stand_up_fix_matrix():
     return Matrix.Rotation(_STAND_UP_FIX_ANGLE_RADIANS, 4, "X")
 
 
+# Eye meshes ship parented to the armature object with no deform weights, so
+# an Ogre skeleton-bound mesh would carry submeshes with no blend
+# weights/indices -- the Redux renderer dereferences those unconditionally
+# and crashes with an access violation on spawn. Rigidly attaching the eyes
+# to the head bone (full head weight + bone parenting with preserved world
+# transform) keeps the qualified rest look while making every exported
+# vertex validly weighted.
+JAK_EYE_OBJECTS = ("eye_l", "eye_r")
+JAK_EYE_BONE = "head"
+
+
+def _attach_eye_meshes(context, canonical, canonical_objects):
+    heads = [obj for obj in canonical_objects if obj.name in JAK_EYE_OBJECTS]
+    if not heads or JAK_EYE_BONE not in canonical.data.bones:
+        return
+    for obj in heads:
+        group = obj.vertex_groups.get(JAK_EYE_BONE) or obj.vertex_groups.new(
+            name=JAK_EYE_BONE
+        )
+        group.add(
+            [vertex.index for vertex in obj.data.vertices], 1.0, "REPLACE"
+        )
+    try:
+        context.view_layer.objects.active = canonical
+        bpy.ops.object.mode_set(mode="POSE")
+        canonical.data.bones.active = canonical.data.bones[JAK_EYE_BONE]
+        bpy.ops.object.mode_set(mode="OBJECT")
+    except Exception:
+        return
+    for obj in heads:
+        try:
+            bpy.ops.object.select_all(action="DESELECT")
+            obj.select_set(True)
+            canonical.select_set(True)
+            context.view_layer.objects.active = canonical
+            bpy.ops.object.parent_set(type="BONE", keep_transform=True)
+        except Exception:
+            continue
+    try:
+        bpy.ops.object.select_all(action="DESELECT")
+    except Exception:
+        pass
+
+
 def _canonical_root_bones(canonical) -> List[str]:
     return [bone.name for bone in canonical.data.bones if bone.parent is None]
 
@@ -873,6 +917,8 @@ def build_jak_animation_set(
         # The source bind pose stands nose-up; lay the baked rig horizontal
         # before creating aliases so every exported clip shares the posture.
         _apply_stand_up_fix(context, canonical, canonical_objects, actions)
+        # Eyes must carry valid bone weights or the Ogre renderer crashes.
+        _attach_eye_meshes(context, canonical, canonical_objects)
 
         # Match the original BZ2 logical animation table, plus only the Redux
         # compatibility aliases we have actually observed.  Additional exact
