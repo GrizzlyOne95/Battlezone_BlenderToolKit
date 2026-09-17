@@ -1,7 +1,7 @@
-# Battlezone 98R Blender ToolKit
+# Battlezone Blender ToolKit
 # Copyright (C) 2024–2026 "GrizzlyOne95" and contributors
 #
-# This file is part of BZ98R Blender ToolKit, which is distributed
+# This file is part of Battlezone Blender ToolKit, which is distributed
 # under the terms of the GNU General Public License v3.0.
 # See the LICENSE file or <https://www.gnu.org/licenses/>.
 
@@ -31,8 +31,13 @@ from . import makeobj_compat_ui as _makeobj_compat_ui
 from . import pilot_animation_reference_ui as _pilot_animation_reference_ui
 from . import pilot_animation_ui as _pilot_animation_ui
 
-# Addon release version.
+# Public addon identity and release version. Keep the package name ``bz98tools``
+# stable for Blender installs and existing package-relative imports.
 bl_info = dict(bl_info)
+bl_info["name"] = "Battlezone Blender Toolkit"
+bl_info["description"] = (
+    "Import, export, validate, and author classic Battlezone and Battlezone 98 Redux assets."
+)
 bl_info["version"] = (1, 4, 10)
 
 
