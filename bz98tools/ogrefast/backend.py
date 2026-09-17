@@ -71,13 +71,12 @@ def _resolve_mesh_upgrader(xml_converter=None):
 
 
 def _upgrade_mesh_for_bzr(operator, filepath, xml_converter=None):
-    """Run OgreMeshUpgrader in-place so BZR receives its expected VB layout.
+    """Retain OgreMeshUpgrader compatibility for the native CP311 export path.
 
-    Redux's Ogre 1.10 renderer is unusually sensitive to the post-upgrader
-    vertex-buffer organization used by stock assets. A directly serialized
-    mesh can be structurally valid yet render with broken textures/UVs until
-    OgreMeshUpgrader reorganizes the streams. Keep that target-specific step
-    outside the pure serializer and apply it to every successful fast export.
+    The pure serializer now mirrors Ogre 1.11.6's automatic vertex-buffer
+    organisation internally and does not call this helper. The historical
+    native extension path keeps the external post-process until it is
+    separately proven safe without it.
     """
 
     mesh_path = os.path.abspath(_mesh_output_path(filepath))
