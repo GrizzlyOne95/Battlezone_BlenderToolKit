@@ -539,8 +539,9 @@ def export_mesh(
                 ),
             )
             if result == {"FINISHED"}:
-                if not _upgrade_mesh_for_bzr(operator, filepath, xml_converter):
-                    return {"CANCELLED"}
+                # The pure serializer already mirrors Ogre 1.11.6's automatic
+                # vertex-buffer reorganisation, so no external MeshUpgrader
+                # process is required for BZR-compatible streams.
                 _write_materials(
                     filepath,
                     selected_objects,
