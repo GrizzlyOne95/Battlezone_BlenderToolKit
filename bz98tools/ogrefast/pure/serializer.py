@@ -13,6 +13,7 @@ from .model import (
     PoseData,
     SubMeshData,
 )
+from .vertex_reorg import auto_organise_mesh
 
 
 class OgreMeshSerializer:
