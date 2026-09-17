@@ -33,6 +33,19 @@ def _find_direct_child(data, start, end, wanted):
     return None
 
 
+def _find_direct_children(data, start, end, wanted):
+    matches = []
+    offset = start
+    while offset < end:
+        chunk_id, length, payload_start, chunk_end = _chunk(data, offset)
+        if chunk_id == wanted:
+            matches.append((offset, length, payload_start, chunk_end))
+        if length < 6:
+            raise AssertionError(f"invalid chunk length {length} at {offset}")
+        offset = chunk_end
+    return matches
+
+
 class OgreMeshSerializerTests(unittest.TestCase):
     def _triangle(self, *, name="body", skeleton_name=""):
         # Interleaved position + normal + UV: 3f + 3f + 2f = 32 bytes.
@@ -139,6 +152,36 @@ class OgreMeshSerializerTests(unittest.TestCase):
         self.assertIsNotNone(skeleton)
         _, _, skel_payload, _ = skeleton
         self.assertEqual(data[skel_payload:].split(b"\n", 1)[0], b"avtank.skeleton")
+
+    def test_skeletal_serializer_emits_auto_organised_vertex_streams(self):
+        data = OgreMeshSerializer().dumps(
+            self._triangle(skeleton_name="avtank.skeleton")
+        )
+        _, _, mesh_payload, mesh_end = _chunk(data, len(_HEADER))
+        submesh = _find_direct_child(
+            data, mesh_payload + 1, mesh_end, chunks.M_SUBMESH
+        )
+        self.assertIsNotNone(submesh)
+        _, _, sub_payload, sub_end = submesh
+        material_end = data.index(b"\n", sub_payload) + 1
+        geometry = _find_direct_child(
+            data, material_end + 12, sub_end, chunks.M_GEOMETRY
+        )
+        self.assertIsNotNone(geometry)
+        _, _, geom_payload, geom_end = geometry
+        buffers = _find_direct_children(
+            data,
+            geom_payload + 4,
+            geom_end,
+            chunks.M_GEOMETRY_VERTEX_BUFFER,
+        )
+        self.assertEqual(
+            [
+                struct.unpack_from("<HH", data, payload)
+                for _, _, payload, _ in buffers
+            ],
+            [(0, 24), (1, 8)],
+        )
 
     def test_invalid_vertex_buffer_size_is_rejected(self):
         mesh = self._triangle()
