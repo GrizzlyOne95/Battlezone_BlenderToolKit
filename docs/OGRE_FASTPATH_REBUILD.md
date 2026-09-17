@@ -103,3 +103,23 @@ The pure backend currently fails closed or leaves the legacy path in place for f
 ## Final validation before merge
 
 Format-level compatibility and Blender 5.2 fast-path execution are now covered. The remaining release gate is Battlezone 98 Redux itself: export the representative real pair with Blender 5.2, load it in BZR, and check geometry orientation, both material/UV channels, skinning, and all expected pilot animation playback before this branch becomes the default production path.
+
+
+## BZR vertex-buffer organisation
+
+The pure serializer mirrors Ogre 1.11.6
+`VertexDeclaration::getAutoOrganisedDeclaration()` and
+`VertexData::reorganiseBuffers()` before writing `.mesh` geometry.
+
+For a skeletally animated BZR mesh this normally separates position/normal
+data from the remaining vertex attributes. The real pilot case changes from a
+single 72-byte interleaved stream to a 24-byte position/normal stream plus a
+48-byte colour/UV/binormal/tangent stream. Attribute payloads are copied
+byte-for-byte by semantic + semantic index; UVs, normals, tangents, colours,
+and positions are not numerically transformed during this step.
+
+This replaces the `OgreMeshUpgrader.exe` post-process for the pure Python
+export path. The native CP311 path retains its external upgrader compatibility
+step until that path is separately proven safe without it. Edge-list
+generation remains outside the pure serializer and is not implicitly enabled
+by vertex-stream organisation.
