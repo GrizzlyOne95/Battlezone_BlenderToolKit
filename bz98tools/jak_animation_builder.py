@@ -569,8 +569,13 @@ def _remove_imported_objects(objects, *, keep: Sequence[object] = ()):
 # uncorrected Jak exports pitched 90° (head up, feet forward -- confirmed
 # in game). This rigid +90° X rotation lays the creature horizontal with
 # head toward Blender -Y (stock forward) and legs toward -Z (down).
-# It is applied to rest pose, mesh data and root-bone curves together so
-# skinning and animation stay consistent.
+#
+# Only rest pose and mesh data move. Baked pose curves stay exactly as
+# sampled: a rigid rest rotation preserves every parent-relative offset,
+# and root bones are no exception -- their matrix_basis values are already
+# relative to the (rotated) rest, so "correcting" them a second time
+# double-rotates the whole animal (handstand in game, proven numerically:
+# idle hip must stay near identity, not acquire a 90° X quaternion).
 _STAND_UP_FIX_ANGLE_RADIANS = 1.5707963267948966  # pi / 2
 
 
@@ -580,20 +585,50 @@ def _stand_up_fix_matrix():
     return Matrix.Rotation(_STAND_UP_FIX_ANGLE_RADIANS, 4, "X")
 
 
-# Eye meshes ship parented to the armature object with no deform weights, so
-# an Ogre skeleton-bound mesh would carry submeshes with no blend
-# weights/indices -- the Redux renderer dereferences those unconditionally
-# and crashes with an access violation on spawn. Rigidly attaching the eyes
-# to the head bone (full head weight + bone parenting with preserved world
-# transform) keeps the qualified rest look while making every exported
-# vertex validly weighted.
+# The FBX Model hierarchy nests the armature and meshes under helper nodes
+# carrying unit-conversion scale and rotation (hp_dummyroot_1: 0.01 scale,
+# 90° X rotation). That chain must not leak into the export frame: the
+# visual-bake exporter evaluates world matrices, so any leftover chain
+# transform pitches/scales the whole animal in game (proven by a nose-down
+# export). Normalize every canonical object to the scene root with identity
+# local transforms right after import. DATA is already in consistent source
+# units (meters); only the object framing changes, so sampling, validation
+# and retargeting (all rest-relative or world-compensated) are unaffected.
+def _normalize_canonical_frame(canonical_objects):
+    for obj in canonical_objects:
+        try:
+            obj.parent = None
+        except Exception:
+            pass
+        try:
+            obj.matrix_basis.identity()
+        except Exception:
+            pass
+        try:
+            obj.matrix_parent_inverse.identity()
+        except Exception:
+            pass
+
+
+# Eye meshes ship with a 0.01 object-scale quirk and an authored offset that
+# matches no rig frame, so they render as microscopic dust wherever they
+# land. They also ship with no deform weights, and an Ogre skeleton-bound
+# mesh with weightless submeshes crashes the Redux renderer (null
+# blend-index dereference on spawn, proven by minidump disassembly). Eye
+# DATA is already true-scale meters (2.8 cm eyeballs); only the object
+# framing is wrong. Place each eye explicitly at the head bone tail with a
+# small lateral offset, reset rotation/scale, and bind it 100% to the head
+# bone (plus bone parenting so game and viewport agree).
 JAK_EYE_OBJECTS = ("eye_l", "eye_r")
 JAK_EYE_BONE = "head"
+JAK_EYE_LATERAL_OFFSET = 0.05
 
 
 def _attach_eye_meshes(context, canonical, canonical_objects):
+    if JAK_EYE_BONE not in canonical.data.bones:
+        return
     heads = [obj for obj in canonical_objects if obj.name in JAK_EYE_OBJECTS]
-    if not heads or JAK_EYE_BONE not in canonical.data.bones:
+    if not heads:
         return
     for obj in heads:
         group = obj.vertex_groups.get(JAK_EYE_BONE) or obj.vertex_groups.new(
@@ -602,6 +637,20 @@ def _attach_eye_meshes(context, canonical, canonical_objects):
         group.add(
             [vertex.index for vertex in obj.data.vertices], 1.0, "REPLACE"
         )
+    head_tail = canonical.data.bones[JAK_EYE_BONE].tail_local.copy()
+    for obj in heads:
+        try:
+            side = -1.0 if obj.name == "eye_l" else 1.0
+            obj.location = (
+                head_tail[0] + side * JAK_EYE_LATERAL_OFFSET,
+                head_tail[1],
+                head_tail[2],
+            )
+            obj.rotation_mode = "QUATERNION"
+            obj.rotation_quaternion = (1.0, 0.0, 0.0, 0.0)
+            obj.scale = (1.0, 1.0, 1.0)
+        except Exception:
+            pass
     try:
         context.view_layer.objects.active = canonical
         bpy.ops.object.mode_set(mode="POSE")
@@ -610,10 +659,12 @@ def _attach_eye_meshes(context, canonical, canonical_objects):
     except Exception:
         return
     for obj in heads:
+        # Parent ONLY the eye: the armature must be active but unselected,
+        # otherwise it gets parented to a mesh itself and corrupts the
+        # whole rig's world frame (proven by a nose-down export).
         try:
             bpy.ops.object.select_all(action="DESELECT")
             obj.select_set(True)
-            canonical.select_set(True)
             context.view_layer.objects.active = canonical
             bpy.ops.object.parent_set(type="BONE", keep_transform=True)
         except Exception:
@@ -624,18 +675,14 @@ def _attach_eye_meshes(context, canonical, canonical_objects):
         pass
 
 
-def _canonical_root_bones(canonical) -> List[str]:
-    return [bone.name for bone in canonical.data.bones if bone.parent is None]
-
-
 def _apply_stand_up_fix(context, canonical, canonical_objects, actions: Mapping[str, object]):
-    """Rigidly pitch the Jak rig from nose-up to horizontal quadruped stance."""
+    """Rigidly pitch the Jak rest pose from nose-up to horizontal stance.
 
-    from mathutils import Quaternion, Vector
+    ``actions`` is accepted for signature symmetry with the bake pipeline
+    but intentionally left untouched (see note above).
+    """
 
     rotation = _stand_up_fix_matrix()
-    rotation_quat = rotation.to_quaternion()
-    rotation_3x3 = rotation.to_3x3()
 
     # Rest pose: rigidly transform every edit bone (preserves roll via
     # EditBone.transform).
@@ -650,8 +697,8 @@ def _apply_stand_up_fix(context, canonical, canonical_objects, actions: Mapping[
         except Exception:
             pass
 
-    # Mesh data: rotate verts and loop normals (rigid rotation preserves the
-    # skinning relationship with the rotated rest pose).
+    # Mesh data: rotate verts and recompute loop normals (rigid rotation
+    # preserves the skinning relationship with the rotated rest pose).
     for obj in canonical_objects:
         if getattr(obj, "type", None) != "MESH":
             continue
@@ -663,60 +710,6 @@ def _apply_stand_up_fix(context, canonical, canonical_objects, actions: Mapping[
             mesh.calc_normals_split()
         except Exception:
             pass
-
-    # Baked actions: root bones are armature-space, so their location and
-    # rotation keys rotate with the rig. Child bones are parent-relative and
-    # stay untouched.
-    for root in _canonical_root_bones(canonical):
-        location_curves = {}
-        rotation_curves = {}
-        for action in actions.values():
-            for curve in action.fcurves:
-                if curve.data_path != f'pose.bones["{root}"].location':
-                    if curve.data_path != f'pose.bones["{root}"].rotation_quaternion':
-                        continue
-                    rotation_curves.setdefault(action.name, {})[curve.array_index] = curve
-                else:
-                    location_curves.setdefault(action.name, {})[curve.array_index] = curve
-        for action in actions.values():
-            curves = location_curves.get(action.name)
-            if curves and len(curves) == 3:
-                count = len(curves[0].keyframe_points)
-                for index in range(count):
-                    frame = curves[0].keyframe_points[index].co[0]
-                    value = Vector(
-                        (
-                            curves[0].keyframe_points[index].co[1],
-                            curves[1].keyframe_points[index].co[1],
-                            curves[2].keyframe_points[index].co[1],
-                        )
-                    )
-                    rotated = rotation_3x3 @ value
-                    curves[0].keyframe_points[index].co[1] = rotated[0]
-                    curves[1].keyframe_points[index].co[1] = rotated[1]
-                    curves[2].keyframe_points[index].co[1] = rotated[2]
-                    for curve in curves.values():
-                        curve.update()
-            curves = rotation_curves.get(action.name)
-            if curves and len(curves) == 4:
-                count = len(curves[0].keyframe_points)
-                for index in range(count):
-                    value = Quaternion(
-                        (
-                            curves[0].keyframe_points[index].co[1],
-                            curves[1].keyframe_points[index].co[1],
-                            curves[2].keyframe_points[index].co[1],
-                            curves[3].keyframe_points[index].co[1],
-                        )
-                    )
-                    rotated = rotation_quat @ value
-                    rotated.normalize()
-                    curves[0].keyframe_points[index].co[1] = rotated[0]
-                    curves[1].keyframe_points[index].co[1] = rotated[1]
-                    curves[2].keyframe_points[index].co[1] = rotated[2]
-                    curves[3].keyframe_points[index].co[1] = rotated[3]
-                    for curve in curves.values():
-                        curve.update()
 
 
 def _copy_action(source_action, dest_name: str):
@@ -835,6 +828,9 @@ def build_jak_animation_set(
         canonical = _find_jak_armature(canonical_objects)
         canonical.name = armature_name
         canonical.data.name = f"{armature_name}_Data"
+        # Drop the FBX Model-chain object transforms (unit-scale/rotation on
+        # helper nodes) so the export frame equals the DATA frame.
+        _normalize_canonical_frame(canonical_objects)
 
         # Bake walk from the canonical import before touching temporary clips.
         walk_source_action = _find_armature_action(canonical)
