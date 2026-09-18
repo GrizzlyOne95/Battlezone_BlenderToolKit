@@ -88,3 +88,17 @@ def test_cli_exposes_integration_ready_inputs():
         "--rest-tolerance",
     ):
         assert option in source
+
+
+def test_stand_up_fix_never_rewrites_pose_curves():
+    # Regression test: rotating baked root-bone keys a second time
+    # double-rotates the whole animal (handstand in game). The posture fix
+    # may only move rest pose and mesh data; sampled curves stay untouched.
+    backend = _read(BACKEND)
+    start = backend.find("def _apply_stand_up_fix")
+    assert start != -1
+    end = backend.find("\ndef ", start + 1)
+    body = backend[start:end if end != -1 else len(backend)]
+    assert "keyframe_points" not in body
+    assert "rotation_quaternion" not in body
+    assert "edit_bone.transform" in body or "edit_bones" in body
