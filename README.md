@@ -8,7 +8,7 @@ It combines legacy model editing, Redux mesh export, terrain tools, validation, 
 
 ## Install
 
-1. Download the newest `Battlezone_BlenderToolKit-vX.Y.Z.zip` from [Releases](https://github.com/GrizzlyOne95/BZ98RBlenderToolKit/releases).
+1. Download the newest `Battlezone_BlenderToolKit-vX.Y.Z.zip` from [Releases](https://github.com/GrizzlyOne95/Battlezone_BlenderToolKit/releases).
 2. In Blender, open `Edit > Preferences > Add-ons`.
 3. Click `Install...` or `Install From Disk`.
 4. Select the downloaded zip.
@@ -19,9 +19,10 @@ The release archive intentionally contains the internal add-on folder `bz98tools
 
 ## Supported Blender Versions
 
-- Blender 4.5 LTS is the primary target.
-- Blender 5.1 is supported for the main import/export workflows.
-- The optional native Ogre mesh/skeleton fast path is available on Windows Blender 4.5.x. Blender 5.1 falls back to XML conversion until a Python 3.13 native backend is available.
+- Blender 4.5 LTS remains supported for the established legacy and Redux workflows.
+- Blender 5.2.2 is supported for the rebuilt pure-Python Redux mesh/skeleton fast path.
+- On compatible Windows/CPython 3.11 runtimes, the historical native Ogre backend remains available as a fast-path implementation and compatibility oracle.
+- Blender 5.2.2 no longer requires the CPython-3.11-only native Ogre extension for normal Redux mesh/skeleton import and export.
 
 ## Main Features
 
@@ -42,18 +43,18 @@ The release archive intentionally contains the internal add-on folder `bz98tools
 
 Use the wiki for workflows and modeling reference:
 
-- [Getting Started](https://github.com/GrizzlyOne95/BZ98RBlenderToolKit/wiki/Getting-Started)
-- [Importing Models and Stock MAP Textures](https://github.com/GrizzlyOne95/BZ98RBlenderToolKit/wiki/Importing-Models-and-Stock-MAP-Textures)
-- [Legacy VDF SDF GEO Modeling Guide](https://github.com/GrizzlyOne95/BZ98RBlenderToolKit/wiki/Legacy-VDF-SDF-GEO-Modeling-Guide)
-- [Validation Checks](https://github.com/GrizzlyOne95/BZ98RBlenderToolKit/wiki/Validation-Checks)
-- [Animation Tools and Animation Slots](https://github.com/GrizzlyOne95/BZ98RBlenderToolKit/wiki/Animation-Tools-and-Animation-Slots)
-- [Map Tools and Custom World Terrain Painting](https://github.com/GrizzlyOne95/BZ98RBlenderToolKit/wiki/Map-Tools-and-Custom-World-Terrain-Painting)
-- [Redux Mesh Skeleton Export](https://github.com/GrizzlyOne95/BZ98RBlenderToolKit/wiki/Redux-Mesh-Skeleton-Export)
-- [Cockpit GEO Workflow](https://github.com/GrizzlyOne95/BZ98RBlenderToolKit/wiki/Cockpit-GEO-Workflow)
-- [Organic Redux Skin Walkthrough](https://github.com/GrizzlyOne95/BZ98RBlenderToolKit/wiki/Organic-Redux-Skin-Walkthrough)
-- [Collision Helpers and SDF Collision Data](https://github.com/GrizzlyOne95/BZ98RBlenderToolKit/wiki/Collision-Helpers-and-SDF-Collision-Data)
-- [Advanced VDF Editing Spinners and Raw Transforms](https://github.com/GrizzlyOne95/BZ98RBlenderToolKit/wiki/Advanced-VDF-Editing-Spinners-and-Raw-Transforms)
-- [Troubleshooting](https://github.com/GrizzlyOne95/BZ98RBlenderToolKit/wiki/Troubleshooting)
+- [Getting Started](https://github.com/GrizzlyOne95/Battlezone_BlenderToolKit/wiki/Getting-Started)
+- [Importing Models and Stock MAP Textures](https://github.com/GrizzlyOne95/Battlezone_BlenderToolKit/wiki/Importing-Models-and-Stock-MAP-Textures)
+- [Legacy VDF SDF GEO Modeling Guide](https://github.com/GrizzlyOne95/Battlezone_BlenderToolKit/wiki/Legacy-VDF-SDF-GEO-Modeling-Guide)
+- [Validation Checks](https://github.com/GrizzlyOne95/Battlezone_BlenderToolKit/wiki/Validation-Checks)
+- [Animation Tools and Animation Slots](https://github.com/GrizzlyOne95/Battlezone_BlenderToolKit/wiki/Animation-Tools-and-Animation-Slots)
+- [Map Tools and Custom World Terrain Painting](https://github.com/GrizzlyOne95/Battlezone_BlenderToolKit/wiki/Map-Tools-and-Custom-World-Terrain-Painting)
+- [Redux Mesh Skeleton Export](https://github.com/GrizzlyOne95/Battlezone_BlenderToolKit/wiki/Redux-Mesh-Skeleton-Export)
+- [Cockpit GEO Workflow](https://github.com/GrizzlyOne95/Battlezone_BlenderToolKit/wiki/Cockpit-GEO-Workflow)
+- [Organic Redux Skin Walkthrough](https://github.com/GrizzlyOne95/Battlezone_BlenderToolKit/wiki/Organic-Redux-Skin-Walkthrough)
+- [Collision Helpers and SDF Collision Data](https://github.com/GrizzlyOne95/Battlezone_BlenderToolKit/wiki/Collision-Helpers-and-SDF-Collision-Data)
+- [Advanced VDF Editing Spinners and Raw Transforms](https://github.com/GrizzlyOne95/Battlezone_BlenderToolKit/wiki/Advanced-VDF-Editing-Spinners-and-Raw-Transforms)
+- [Troubleshooting](https://github.com/GrizzlyOne95/Battlezone_BlenderToolKit/wiki/Troubleshooting)
 
 Versioned technical notes stay in the repository:
 
@@ -65,13 +66,14 @@ Versioned technical notes stay in the repository:
 
 ## Latest Highlights
 
+- `v1.5.0`: adds Blender 5.2.2 / Python 3.13 Redux mesh/skeleton support through a rebuilt pure-Python Ogre binary path, including multi-UV preservation, rigging/animation support, BZR-compatible vertex-buffer organization, and topology/custom-normal fidelity fixes.
 - `v1.4.10`: added the runtime semantic-verification evidence kit and stricter reproducibility controls for advanced VDF/GEO validation.
 - `v1.4.8`: added import texture source options for stock `.map` folders and ZFS archives.
 - `v1.4.7`: fixed Animation Tools mirror dialog invocation so `Mirror From` and `Mirror To` selectors open from the sidebar.
 - `v1.4.6`: fixed popup info buttons such as `What Gets Checked`.
 - `v1.4.5`: added custom world atlas terrain painting, compact validation reports, expanded legacy guide validation, and removed unsupported Game Playback tooling.
 
-See [Releases](https://github.com/GrizzlyOne95/BZ98RBlenderToolKit/releases) and the `docs/RELEASE_NOTES_*.md` files for full version history.
+See [Releases](https://github.com/GrizzlyOne95/Battlezone_BlenderToolKit/releases) and the `docs/RELEASE_NOTES_*.md` files for full version history.
 
 ## Credits
 
