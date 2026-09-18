@@ -1,19 +1,21 @@
 # Battlezone Blender Toolkit
 
-Full import/export suite for Battlezone 1998 Redux and The Red Odyssey.
+Full Blender import/export and authoring suite for classic **Battlezone (1998)**, **The Red Odyssey**, and **Battlezone 98 Redux** workflows.
 
-The Battlezone Blender Toolkit is a Blender add-on for working with classic Battlezone model formats (`.vdf`, `.sdf`, `.geo`, `.map`), Redux model formats (`.mesh`, `.skeleton`, `.material`), ZFS archives, and BZMapIO terrain workflows (`.hg2`).
+The Battlezone Blender Toolkit works with classic Battlezone model formats (`.vdf`, `.sdf`, `.geo`, `.map`), Redux model formats (`.mesh`, `.skeleton`, `.material`), ZFS archives, and BZMapIO terrain workflows (`.hg2`).
 
-It combines legacy model editing, Redux mesh export, terrain tools, validation, and workflow helpers into one Blender-based toolset.
+It combines legacy model editing, Redux mesh export, terrain tools, validation, and workflow helpers into one Blender-based toolset. Redux-specific features are included where the later engine requires them, but the toolkit itself is not Redux-only.
 
 ## Install
 
-1. Download the newest `bz98tools.zip` from [Releases](https://github.com/GrizzlyOne95/BZ98RBlenderToolKit/releases).
+1. Download the newest `Battlezone_BlenderToolKit-vX.Y.Z.zip` from [Releases](https://github.com/GrizzlyOne95/BZ98RBlenderToolKit/releases).
 2. In Blender, open `Edit > Preferences > Add-ons`.
 3. Click `Install...` or `Install From Disk`.
 4. Select the downloaded zip.
-5. Enable `Battlezone GEO/VDF/SDF Formats`.
+5. Enable `Battlezone Blender Toolkit`.
 6. Restart Blender when replacing an already-loaded version.
+
+The release archive intentionally contains the internal add-on folder `bz98tools/`. That package name is retained for Blender-install and import compatibility even though the public product name is **Battlezone Blender Toolkit**.
 
 ## Supported Blender Versions
 
@@ -63,6 +65,7 @@ Versioned technical notes stay in the repository:
 
 ## Latest Highlights
 
+- `v1.4.10`: added the runtime semantic-verification evidence kit and stricter reproducibility controls for advanced VDF/GEO validation.
 - `v1.4.8`: added import texture source options for stock `.map` folders and ZFS archives.
 - `v1.4.7`: fixed Animation Tools mirror dialog invocation so `Mirror From` and `Mirror To` selectors open from the sidebar.
 - `v1.4.6`: fixed popup info buttons such as `What Gets Checked`.
