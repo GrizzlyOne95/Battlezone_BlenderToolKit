@@ -242,7 +242,7 @@ def create_mesh(
     create_materials: bool = True,
     use_filename: bool = False,
     select_encoding="utf-8",
-    cleanup_vertices: str = "DEFAULT",
+    cleanup_vertices: str = "PRESERVE",
     submesh_name_delimiter: str = "",
 ):
     mesh_objects: List[Object] = []
@@ -398,11 +398,18 @@ def create_mesh(
                 split = []
                 split_append = split.append
                 polyIndex = 0
-                for face in face_array:
+                for face_index, face in enumerate(face_array):
                     if match_face(face, vertices, me, polyIndex):
                         polyIndex += 1
-                        for vx in face:
-                            split_append(normals[vx])
+                        # submesh.get_normals() is CORNER/loop-domain data in
+                        # original index-buffer order. If cleanup removed a
+                        # face, retain the three normals belonging to the
+                        # surviving original face; indexing by vertex id here
+                        # scrambles custom normals on indexed meshes.
+                        loop_start = face_index * 3
+                        split_append(normals[loop_start])
+                        split_append(normals[loop_start + 1])
+                        split_append(normals[loop_start + 2])
 
                 if len(split) == len(me.loops):
                     _try_apply_custom_split_normals(operator, me, split, submesh_name)
