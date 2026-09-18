@@ -38,7 +38,7 @@ bl_info["name"] = "Battlezone Blender Toolkit"
 bl_info["description"] = (
     "Import, export, validate, and author classic Battlezone and Battlezone 98 Redux assets."
 )
-bl_info["version"] = (1, 4, 10)
+bl_info["version"] = (1, 5, 0)
 
 
 def register():
