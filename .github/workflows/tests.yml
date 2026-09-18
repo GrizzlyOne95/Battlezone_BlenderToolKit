@@ -102,3 +102,39 @@ jobs:
 
       - name: Recover native pose transform contract
         run: python tests/native_pose_oracle.py
+
+  release-candidate:
+    runs-on: ubuntu-latest
+    needs:
+      - unit
+      - blender-5-smoke
+      - native-ogre-oracle
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Package Blender add-on release candidate
+        shell: bash
+        run: |
+          archive="Battlezone_BlenderToolKit-v1.5.0-rc.zip"
+          zip -r "$archive" bz98tools/
+          python - "$archive" <<'PY'
+          import sys
+          import zipfile
+
+          archive = sys.argv[1]
+          with zipfile.ZipFile(archive) as zf:
+              names = set(zf.namelist())
+          if "bz98tools/__init__.py" not in names:
+              raise SystemExit("Release candidate is missing bz98tools/__init__.py")
+          print(f"Validated release-candidate archive: {archive}")
+          PY
+
+      - name: Upload release candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: Battlezone_BlenderToolKit-v1.5.0-rc
+          path: Battlezone_BlenderToolKit-v1.5.0-rc.zip
+          if-no-files-found: error
+          retention-days: 14
