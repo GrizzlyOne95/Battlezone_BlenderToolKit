@@ -1,0 +1,125 @@
+# Pure-Python OGRE Fast Path Rebuild
+
+This branch replaces the CPython-ABI-bound `kenshi_blender_tool` dependency for Ogre mesh/skeleton workflows with a Blender-independent Python implementation while retaining the old CPython 3.11 backend as a compatibility oracle and preferred backend where it is available.
+
+## Architecture
+
+Existing Blender collector code continues to use the historical `kenshi_blender_tool` API. `bz98tools.ogrefast` now resolves that import name to:
+
+- the bundled native CPython extension when its ABI is compatible; or
+- a pure-Python compatibility facade on newer Python/Blender runtimes.
+
+Bones and animation channels continue to use the established collector semantics. The pure mesh collector extends that path where the compiled API was limiting, including preservation of multiple Ogre texture-coordinate sets.
+
+## Implemented
+
+- OGRE `MeshSerializer_v1.100` direct binary mesh output.
+- Direct binary `.mesh` import.
+- Triangle-list submeshes with 16-bit and 32-bit indices.
+- Vertex declarations and buffers for positions, normals, multiple UV sets, colors, tangents and binormals.
+- Legacy Blender/Ogre coordinate and UV conversion.
+- Material/submesh names and mesh bounds.
+- Vertex splitting/deduplication using all authored UV sets.
+- Skeleton links and vertex bone assignments.
+- Direct `.skeleton` read/write using the repository's existing Ogre skeleton serializer.
+- Bone hierarchy/bind-pose import and export.
+- Skeleton animation import/export for the normal no-scale-key path.
+- Visual-keying/baked animation matrix export used by the pilot animation workflow.
+- Shape-key/Ogre pose import and export with per-submesh pose targets.
+- Batch Selected fast export.
+- A unified `kenshi_blender_tool` compatibility facade so existing collectors can run unchanged on Blender 5.x/Python 3.13.
+- Native-only PhysX collision cooking remains explicit and unsupported by the pure facade rather than silently emulated.
+
+## Validation
+
+Automated coverage currently includes:
+
+- bpy-free semantic tests on Python 3.11, 3.12 and 3.13;
+- Windows/Python 3.11 native-oracle checks using the bundled old Ogre backend;
+- native-vs-pure static mesh semantic comparison;
+- native animation transform oracle coverage;
+- native/pure pose wire-format and cross-reader coverage;
+- multi-UV wire-format/readback coverage where a vertex differs only in UV set 1, ensuring optimization cannot incorrectly merge it; and
+- real Blender 5.2.2 / Python 3.13 smoke tests covering shape-key mesh round-trip, Batch Selected export, visual-keying `.skeleton` animation bake, the pilot-animation bake helper, and rigged two-UV fast-path export.
+
+The latest fully green matrix before the one-click helper addition is GitHub Actions run #127.
+
+## Representative real-asset acceptance profile
+
+A real Battlezone pilot pair (`aspilo.mesh` + linked `aspilo.skeleton`) is now used as an external/manual acceptance fixture. The original files are intentionally not committed to this public repository.
+
+The source pair exercises substantially more than the synthetic fixtures:
+
+- `MeshSerializer_v1.100` mesh and `Serializer_v1.80` skeleton;
+- 2 dedicated-geometry triangle-list submeshes (`asp11ctr` and `gunmesh`);
+- 9,970 total mesh vertices;
+- 45,681 indices;
+- 14,604 vertex/bone assignments, with no vertex exceeding the existing three-weight exporter limit;
+- 2 UV sets on each submesh;
+- vertex colors and tangents;
+- linked `aspilo.skeleton`;
+- 71 bones and 67 parent relations; and
+- 19 skeleton animations with no scale-key frames and no linked external animation sources.
+
+Those characteristics all fall inside the proven pure fast-path feature set. `tests/blender52_real_asset_smoke.py` accepts an external `.mesh` and `.skeleton` pair, forbids the XML fallback, imports the pair in Blender 5.2, verifies the armature/weights/materials/two UV sets/actions, re-exports through the pure fast path, and requires the resulting binary pair to preserve two submeshes, two UV sets, 71 bones and all 19 animation names.
+
+The Python harness can be run directly:
+
+```text
+python tests/blender52_real_asset_smoke.py /path/to/aspilo.mesh /path/to/aspilo.skeleton --output-dir artifacts/ogre-fastpath-acceptance/aspilo
+```
+
+### One-click Windows acceptance
+
+For the normal Windows test workflow, use the PowerShell helper instead:
+
+```powershell
+.\scripts\Test-OgreFastPath52.ps1 "C:\path\to\aspilo.mesh" "C:\path\to\aspilo.skeleton.bin"
+```
+
+If the two paths are omitted, the script prompts for them. It:
+
+1. locates Python 3.13 (`py -3.13` preferred);
+2. creates/reuses `.venv-ogre52`;
+3. installs `bpy==5.2.2` only when needed;
+4. runs the real-asset import -> export -> binary validation with XML fallback forbidden;
+5. writes the validated files to `artifacts\ogre-fastpath-acceptance\aspilo\`;
+6. prints SHA-256 hashes for both outputs; and
+7. opens Explorer with `aspilo_fast52.mesh` selected unless `-NoOpen` is supplied.
+
+The Drive-downloaded skeleton may keep a local `.skeleton.bin` filename; the harness stages it under the exact `aspilo.skeleton` resource name referenced by the mesh.
+
+## Intentional fallback / remaining gaps
+
+The pure backend currently fails closed or leaves the legacy path in place for features that have not been proven safe:
+
+- animation scale-key export/import;
+- mesh animation chunks distinct from skeleton animation;
+- linked external skeleton-animation sources;
+- Ogre LOD generation and edge-list authoring;
+- native PhysX collision serialization/cooking; and
+- historical mesh versions beyond the BZR-targeted v1.10 path where behavior has not been validated.
+
+## Final validation before merge
+
+Format-level compatibility and Blender 5.2 fast-path execution are now covered. The remaining release gate is Battlezone 98 Redux itself: export the representative real pair with Blender 5.2, load it in BZR, and check geometry orientation, both material/UV channels, skinning, and all expected pilot animation playback before this branch becomes the default production path.
+
+
+## BZR vertex-buffer organisation
+
+The pure serializer mirrors Ogre 1.11.6
+`VertexDeclaration::getAutoOrganisedDeclaration()` and
+`VertexData::reorganiseBuffers()` before writing `.mesh` geometry.
+
+For a skeletally animated BZR mesh this normally separates position/normal
+data from the remaining vertex attributes. The real pilot case changes from a
+single 72-byte interleaved stream to a 24-byte position/normal stream plus a
+48-byte colour/UV/binormal/tangent stream. Attribute payloads are copied
+byte-for-byte by semantic + semantic index; UVs, normals, tangents, colours,
+and positions are not numerically transformed during this step.
+
+This replaces the `OgreMeshUpgrader.exe` post-process for the pure Python
+export path. The native CP311 path retains its external upgrader compatibility
+step until that path is separately proven safe without it. Edge-list
+generation remains outside the pure serializer and is not implicitly enabled
+by vertex-stream organisation.

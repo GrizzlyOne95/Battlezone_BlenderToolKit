@@ -85,9 +85,43 @@ def probe_native_backend(force=False):
 
     try:
         _prepare_native_import()
-        importlib.import_module("kenshi_blender_tool")
-        _PROBE_RESULT = (True, None)
+        module = importlib.import_module("kenshi_blender_tool")
+        if getattr(module, "__bz98_pure_backend__", False):
+            _PROBE_RESULT = (
+                False,
+                "pure kenshi_blender_tool compatibility facade is active",
+            )
+        else:
+            _PROBE_RESULT = (True, None)
     except Exception as exc:
         _PROBE_RESULT = (False, str(exc))
 
     return _PROBE_RESULT
+
+
+def ensure_kenshi_blender_tool():
+    """Return the native module or install the pure drop-in compatibility facade.
+
+    Existing Blender collector code imports ``kenshi_blender_tool`` directly.
+    Installing the pure module under that historical import name lets the same
+    collector run on Python ABIs where the old ``.pyd`` cannot load, while
+    keeping CPython 3.11/native behavior unchanged.
+    """
+
+    existing = sys.modules.get("kenshi_blender_tool")
+    if existing is not None:
+        return existing
+
+    native_available, native_reason = probe_native_backend()
+    if native_available:
+        return importlib.import_module("kenshi_blender_tool")
+
+    facade = importlib.import_module(f"{__name__}.pure.kenshi_facade")
+    facade.__bz98_native_unavailable_reason__ = native_reason
+    sys.modules["kenshi_blender_tool"] = facade
+    return facade
+
+
+# Install the compatibility surface before any ogrefast importer/exporter
+# submodule executes its historical ``from kenshi_blender_tool import *``.
+ensure_kenshi_blender_tool()

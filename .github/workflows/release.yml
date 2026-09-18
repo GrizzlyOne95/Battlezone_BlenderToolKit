@@ -9,8 +9,94 @@ permissions:
   contents: write
 
 jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install test dependencies
+        run: python -m pip install numpy bpy==5.2.2
+
+      - name: Regenerate synthetic fixtures
+        run: python tests/fixtures_builder.py
+
+      - name: Run semantic test suite
+        run: python tests/run_tests.py
+
+      - name: Exercise pure Ogre path in Blender 5.2.2
+        run: python tests/blender52_smoke.py
+
+      - name: Exercise rigged multi-UV path in Blender 5.2.2
+        run: python tests/blender52_multi_uv_smoke.py
+
+      - name: Verify tag matches addon version
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          python - "$version" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+
+          expected = tuple(int(part) for part in sys.argv[1].split("."))
+          text = Path("bz98tools/__init__.py").read_text(encoding="utf-8")
+          match = re.search(
+              r'bl_info\["version"\]\s*=\s*\((\d+)\s*,\s*(\d+)\s*,\s*(\d+)\)',
+              text,
+          )
+          if not match:
+              raise SystemExit("Could not find addon release version")
+          actual = tuple(int(part) for part in match.groups())
+          if actual != expected:
+              raise SystemExit(
+                  f"Tag v{'.'.join(map(str, expected))} does not match "
+                  f"bl_info version {actual}"
+              )
+          notes = Path(f"docs/RELEASE_NOTES_v{sys.argv[1]}.md")
+          if not notes.is_file():
+              raise SystemExit(f"Missing release notes: {notes}")
+          print(f"Validated release version {actual} and {notes}")
+          PY
+
+  native-ogre-oracle:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Validate PowerShell acceptance helper syntax
+        shell: pwsh
+        run: |
+          $null = [ScriptBlock]::Create((Get-Content -Raw scripts/Test-OgreFastPath52.ps1))
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install test dependencies
+        run: python -m pip install numpy
+
+      - name: Load pure mesh with bundled native OGRE backend
+        run: python tests/native_ogre_oracle.py
+
+      - name: Recover native animation transform contract
+        run: python tests/native_animation_oracle.py
+
+      - name: Recover native pose transform contract
+        run: python tests/native_pose_oracle.py
+
   release:
     runs-on: ubuntu-latest
+    needs:
+      - validate
+      - native-ogre-oracle
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -32,7 +118,9 @@ jobs:
           if missing:
               raise SystemExit(f"Invalid Blender add-on archive; missing: {missing}")
           if any(name.startswith("BZ98RBlenderToolKit/") for name in names):
-              raise SystemExit("Invalid archive layout: repository directory wrapped around bz98tools")
+              raise SystemExit(
+                  "Invalid archive layout: repository directory wrapped around bz98tools"
+              )
           print(f"Validated Blender add-on archive: {archive}")
           PY
           echo "archive=$archive" >> "$GITHUB_ENV"
@@ -43,11 +131,7 @@ jobs:
         run: |
           version="${GITHUB_REF_NAME#v}"
           notes_file="docs/RELEASE_NOTES_v${version}.md"
-          if [[ -f "$notes_file" ]]; then
-            echo "body_path=$notes_file" >> "$GITHUB_OUTPUT"
-          else
-            echo "body_path=README.md" >> "$GITHUB_OUTPUT"
-          fi
+          echo "body_path=$notes_file" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
