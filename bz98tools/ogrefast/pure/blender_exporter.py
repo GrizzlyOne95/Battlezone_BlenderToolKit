@@ -137,13 +137,18 @@ def _collect_submesh(
     )
     mesh = temp_object.to_mesh()
     try:
-        bm = bmesh.new()
-        try:
-            bm.from_mesh(mesh)
-            bmesh.ops.triangulate(bm, faces=bm.faces)
-            bm.to_mesh(mesh)
-        finally:
-            bm.free()
+        # Imported Ogre meshes are already triangle lists and can carry
+        # exact custom split normals. A gratuitous BMesh round-trip here can
+        # discard or recalculate that shading data, so triangulate only when
+        # Blender geometry actually contains non-triangles.
+        if any(len(poly.vertices) != 3 for poly in mesh.polygons):
+            bm = bmesh.new()
+            try:
+                bm.from_mesh(mesh)
+                bmesh.ops.triangulate(bm, faces=bm.faces)
+                bm.to_mesh(mesh)
+            finally:
+                bm.free()
 
         uv_name = mesh.uv_layers.active.name if mesh.uv_layers.active else None
         effective_tangent_format = tangent_format if uv_name else "TANGENT_0"
