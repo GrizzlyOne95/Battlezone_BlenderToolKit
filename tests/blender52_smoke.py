@@ -148,6 +148,102 @@ def _test_shape_key_roundtrip(temp_dir: Path):
     print("[PASS] Blender 5.2 shape-key pure roundtrip")
 
 
+def _test_indexed_custom_normal_roundtrip(temp_dir: Path):
+    _clear_scene()
+
+    mesh = bpy.data.meshes.new("normal_seamsMesh")
+    mesh.from_pydata(
+        [
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (0.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (-1.0, 0.0, 0.0),
+        ],
+        [],
+        [(0, 1, 2), (3, 4, 5)],
+    )
+    mesh.update()
+    for poly in mesh.polygons:
+        poly.use_smooth = True
+
+    expected_normals = [
+        (0.0, 0.0, 1.0),
+        (0.0, 0.0, 1.0),
+        (0.0, 0.0, 1.0),
+        (0.0, 0.0, -1.0),
+        (0.0, 0.0, -1.0),
+        (0.0, 0.0, -1.0),
+    ]
+    mesh.normals_split_custom_set(expected_normals)
+    mesh.update()
+
+    obj = bpy.data.objects.new("normal_seams", mesh)
+    bpy.context.scene.collection.objects.link(obj)
+    _select_only(obj)
+
+    path = temp_dir / "normal_seams.mesh"
+    operator = _Operator()
+    result = backend.export_mesh(
+        operator,
+        bpy.context,
+        str(path),
+        _legacy_forbidden,
+        **_export_kwargs(),
+    )
+    if result != {"FINISHED"} or not path.is_file():
+        raise AssertionError(
+            f"custom-normal export failed: {result} {operator.messages}"
+        )
+
+    _clear_scene()
+    operator = _Operator()
+    result = backend.import_mesh(
+        operator,
+        bpy.context,
+        str(path),
+        _legacy_forbidden,
+        xml_converter=None,
+        keep_xml=False,
+        import_normals=True,
+        normal_mode="custom",
+        import_shapekeys=False,
+        import_animations=False,
+        round_frames=True,
+        use_selected_skeleton=False,
+        import_materials=False,
+    )
+    if result != {"FINISHED"}:
+        raise AssertionError(
+            f"custom-normal import failed: {result} {operator.messages}"
+        )
+
+    imported = bpy.data.objects.get("normal_seams")
+    if imported is None:
+        raise AssertionError("custom-normal roundtrip did not recreate object")
+    if len(imported.data.vertices) != 6:
+        raise AssertionError(
+            "Ogre import changed topology by merging duplicate-position vertices: "
+            f"{len(imported.data.vertices)}"
+        )
+    if len(imported.data.loops) != 6:
+        raise AssertionError(
+            f"expected 6 imported loops, got {len(imported.data.loops)}"
+        )
+
+    actual = [tuple(float(v) for v in loop.normal) for loop in imported.data.loops]
+    for index, (got, expected) in enumerate(zip(actual, expected_normals)):
+        dot = sum(a * b for a, b in zip(got, expected))
+        if dot < 0.999:
+            raise AssertionError(
+                f"custom split normal {index} changed across pure roundtrip: "
+                f"got={got} expected={expected} dot={dot}"
+            )
+
+    print("[PASS] Blender 5.2 indexed custom-normal/topology pure roundtrip")
+
+
 def _test_batch_export(temp_dir: Path):
     _clear_scene()
     alpha = _triangle("alpha")
@@ -333,6 +429,7 @@ def main():
 
     temp_dir = Path(tempfile.mkdtemp(prefix="bz98_blender52_"))
     _test_shape_key_roundtrip(temp_dir)
+    _test_indexed_custom_normal_roundtrip(temp_dir)
     _test_batch_export(temp_dir)
     _test_visual_keying_skeleton_bake(temp_dir)
     _test_pilot_ui_baked_replacement(temp_dir)
