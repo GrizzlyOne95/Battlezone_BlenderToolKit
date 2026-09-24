@@ -329,6 +329,17 @@ def load(
             )
 
         for Model in OBJList.values():
+            if Model.geo.parent.lower() == Model.geo.name.lower():
+                # A part that names itself as its parent (older exports of a LOD2
+                # part parented to its own LOD1 slot) loads as a WORLD child.
+                _add_import_diagnostic(
+                    scene,
+                    "WARNING",
+                    "Hierarchy",
+                    Model.geo.name,
+                    "Part names itself as its parent; imported as a WORLD child. Re-exporting writes a valid parent.",
+                )
+                continue
             # Are we not parented to the world and is there a parent that exists?
             if (
                 Model.geo.parent.lower() != "world"

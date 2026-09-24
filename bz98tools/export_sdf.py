@@ -15,10 +15,12 @@ import os
 
 from . import sdf_classes
 from . import export_geo
+from . import export_transforms
 
 # Reload it just in case something changed!
 importlib.reload(sdf_classes)
 importlib.reload(export_geo)
+importlib.reload(export_transforms)
 
 
 # Fixes failures to go by battlezone naming conventions.
@@ -223,31 +225,14 @@ def export(
 
         GEO.name = fixgeoname(object.name, GEO.lod).lower()
         GEO.matrix = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-        if object.parent != None:
-            if (
-                len(object.parent.name.lower()) >= 5
-                and len(object.parent.name.lower()) <= 8
-            ):
-                if object.parent.name.lower()[3] in ["1", "2", "3"]:
-                    GEO.parent = fixgeoname(object.parent.name, GEO.lod).lower()
-                else:
-                    GEO.parent = "WORLD"
-            else:
-                # Discard the object. It has less than 5 characters and is incorrectly named.
-                GEO.parent = "WORLD"
-        else:
-            GEO.parent = "WORLD"
+        GEO.parent = export_transforms.export_parent_name(object, GEO.lod, fixgeoname)
+        rest_euler, _scale, Translation = export_transforms.rest_local(object)
         euler = mathutils.Euler((0.0, math.radians(45.0), 0.0), "YZX")
-        euler[:] = (
-            object.rotation_euler.x,
-            object.rotation_euler.z,
-            object.rotation_euler.y,
-        )
+        euler[:] = (rest_euler.x, rest_euler.z, rest_euler.y)
         thematrix = euler.to_matrix()
         GEO.matrix[0:3] = thematrix[0][0:3]
         GEO.matrix[3:6] = thematrix[1][0:3]
         GEO.matrix[6:9] = thematrix[2][0:3]
-        Translation = object.matrix_local.to_translation()
         GEO.matrix[9:12] = Translation.x, Translation.z, Translation.y
 
         if object.GEOPropertyGroup.GenerateCollision:
@@ -338,16 +323,24 @@ def export(
                     keyvalue = akeyframe.co[1]
                     if curve.data_path == "rotation_euler":
                         if keyframe not in bo.rotanim:
-                            bo.rotanim[keyframe] = [0.0, 0.0, 0.0]
+                            bo.rotanim[keyframe] = list(blobject.rotation_euler)
                         bo.rotanim[keyframe][curve.array_index] = keyvalue
                     if curve.data_path == "location":
                         if keyframe not in bo.posanim:
-                            bo.posanim[keyframe] = [0.0, 0.0, 0.0]
+                            bo.posanim[keyframe] = list(blobject.location)
                         bo.posanim[keyframe][curve.array_index] = keyvalue
                     if curve.data_path == "scale":
                         if keyframe not in bo.scaleanim:
                             bo.scaleanim[keyframe] = [float(v) for v in blobject.scale]
                         bo.scaleanim[keyframe][curve.array_index] = keyvalue
+
+            export_transforms.euler_keys_to_xyz(bo.rotanim, blobject.rotation_mode)
+
+    # Parts written against their LOD1 slot's parent carry the composed keys.
+    for bo in blenderobjects.values():
+        if export_transforms.lod_slot(bo.object) is not None:
+            bo.rotanim, bo.posanim = export_transforms.slot_keys(bo.object, _iter_action_fcurves)
+            bo.posanim_is_local = True
 
     """
     Read the element data in blender and get it ready for writing later.
@@ -423,7 +416,7 @@ def export(
             ANIMRotations.append(newrotation)
         for key, array in object.posanim.items():
             tx, ty, tz = array[0], array[2], array[1]
-            if object.object.parent != None:
+            if object.object.parent != None and not getattr(object, "posanim_is_local", False):
                 # Get the parent inverse if it exists and add it on to the animation to create an accurate offset for animations.
                 ObjectInverse = object.object.matrix_parent_inverse.to_translation()
                 tx = ObjectInverse.x + array[0]
