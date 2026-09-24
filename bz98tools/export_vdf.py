@@ -19,12 +19,14 @@ from . import vdf_classes
 from . import vdf_file
 from . import semantics
 from . import export_geo
+from . import export_transforms
 
 # Reload it just in case something changed!
 importlib.reload(vdf_classes)
 importlib.reload(vdf_file)
 importlib.reload(semantics)
 importlib.reload(export_geo)
+importlib.reload(export_transforms)
 
 
 # Fixes failures to go by battlezone naming conventions.
@@ -349,19 +351,7 @@ def export(
 
             GEO.name = fixgeoname(object.name, GEO.lod).lower()
             GEO.matrix = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-            if object.parent != None:
-                if (
-                    len(object.parent.name.lower()) >= 5
-                    and len(object.parent.name.lower()) <= 8
-                ):
-                    if object.parent.name.lower()[3] in ["1", "2", "3"]:
-                        GEO.parent = fixgeoname(object.parent.name, GEO.lod).lower()
-                    else:
-                        GEO.parent = "WORLD"
-                else:
-                    GEO.parent = "WORLD"
-            else:
-                GEO.parent = "WORLD"
+            GEO.parent = export_transforms.export_parent_name(object, GEO.lod, fixgeoname)
 
             use_raw_matrix = bool(
                 getattr(object.GEOPropertyGroup, "UseRawVDFMatrix", False)
@@ -390,15 +380,11 @@ def export(
                 # --------------------------------------------------
                 # Transform with SCALE baked in (right/up/front/pos)
                 # --------------------------------------------------
+                rest_euler, (sx, sy, sz), Translation = export_transforms.rest_local(object)
                 euler = mathutils.Euler((0.0, math.radians(45.0), 0.0), "YZX")
-                euler[:] = (
-                    object.rotation_euler.x,
-                    object.rotation_euler.z,
-                    object.rotation_euler.y,
-                )
+                euler[:] = (rest_euler.x, rest_euler.z, rest_euler.y)
                 rot_matrix = euler.to_matrix()  # 3x3
 
-                sx, sy, sz = object.scale
                 scale_mat = mathutils.Matrix(
                     (
                         (sx, 0.0, 0.0),
@@ -412,7 +398,6 @@ def export(
                 GEO.matrix[0:3] = thematrix[0][0:3]
                 GEO.matrix[3:6] = thematrix[1][0:3]
                 GEO.matrix[6:9] = thematrix[2][0:3]
-                Translation = object.matrix_local.to_translation()
                 GEO.matrix[9:12] = Translation.x, Translation.z, Translation.y
 
             GEO.type = object.GEOPropertyGroup.GEOType
@@ -487,7 +472,7 @@ def export(
                     if data_path == "rotation_euler" and not prefer_quat:
                         has_euler_keys = True
                         if keyframe not in object.rotanim:
-                            object.rotanim[keyframe] = [0.0, 0.0, 0.0]
+                            object.rotanim[keyframe] = list(blobject.rotation_euler)
                         object.rotanim[keyframe][curve.array_index] = keyvalue
                     elif data_path == "rotation_quaternion":
                         if keyframe not in quat_anim:
@@ -495,7 +480,7 @@ def export(
                         quat_anim[keyframe][curve.array_index] = keyvalue
                     elif data_path == "location":
                         if keyframe not in object.posanim:
-                            object.posanim[keyframe] = [0.0, 0.0, 0.0]
+                            object.posanim[keyframe] = list(blobject.location)
                         object.posanim[keyframe][curve.array_index] = keyvalue
                     elif data_path == "scale":
                         if keyframe not in object.scaleanim:
@@ -504,6 +489,8 @@ def export(
                             ]
                         object.scaleanim[keyframe][curve.array_index] = keyvalue
 
+            if has_euler_keys and not prefer_quat:
+                export_transforms.euler_keys_to_xyz(object.rotanim, blobject.rotation_mode)
             if quat_anim and (prefer_quat or not has_euler_keys):
                 from mathutils import Quaternion
 
@@ -511,6 +498,14 @@ def export(
                     q = Quaternion(quat_vals)
                     eul = q.to_euler("XYZ")
                     object.rotanim[frame] = [eul.x, eul.y, eul.z]
+
+    # Parts written against their LOD1 slot's parent carry the composed keys.
+    for object in blenderobjects.values():
+        if export_transforms.lod_slot(object.object) is not None:
+            object.rotanim, object.posanim = export_transforms.slot_keys(
+                object.object, _iter_action_fcurves
+            )
+            object.posanim_is_local = True
 
     """
     Read the element data in blender and get it ready for writing later.
@@ -584,7 +579,7 @@ def export(
             ANIMRotations.append(newrotation)
         for key, array in object.posanim.items():
             tx, ty, tz = array[0], array[2], array[1]
-            if object.object.parent != None:
+            if object.object.parent != None and not getattr(object, "posanim_is_local", False):
                 ObjectInverse = object.object.matrix_parent_inverse.to_translation()
                 tx = ObjectInverse.x + array[0]
                 ty = ObjectInverse.z + array[2]
@@ -793,7 +788,12 @@ def export(
         model.anim_rotations = ANIMRotations
         model.anim_translations2 = ANIMTranslations
         model.anim_positions = ANIMPositions
-    elif "anim" in model.plan:
+        if not any(kind == "anim" for kind, _ in model.plan):
+            # Fresh plans have no ANIM slot: add it after VGEO with its EXIT,
+            # the stock order (vgeo, anim, exit, exit).
+            at = next((i + 1 for i, (kind, _) in enumerate(model.plan) if kind == "vgeo"), len(model.plan))
+            model.plan[at:at] = [("anim", None), ("exit", None)]
+    elif any(kind == "anim" for kind, _ in model.plan):
         # Drop the anim block plus its terminator when there is nothing to write.
         cleaned = []
         skip_next_exit = False
