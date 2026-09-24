@@ -6125,6 +6125,7 @@ class ExportGEO(bpy.types.Operator, ExportHelper):
                 "ogre_name",
                 "ogre_suffix",
                 "ogre_flat_colors",
+                "ogre_normal_mode",
                 "ogre_bounds_mult",
                 "ogre_act_path",
                 "ogre_config_path",
@@ -6247,6 +6248,13 @@ class ExportVDF(bpy.types.Operator, ExportHelper):
         name="Flat Colors",
         description="Porter --flatcolors. Force flat per-face color texturing.",
         default=False,
+    )
+
+    ogre_normal_mode: EnumProperty(
+        name="Normal Porter Mode",
+        description="Porter --normalmode. Specifies how to handle normals.",
+        items=NORMAL_MODE_ITEMS,
+        default="CORRECT",
     )
 
     ogre_bounds_mult: FloatVectorProperty(
@@ -6451,6 +6459,7 @@ class ExportVDF(bpy.types.Operator, ExportHelper):
                 "ogre_name",
                 "ogre_suffix",
                 "ogre_flat_colors",
+                "ogre_normal_mode",
                 "ogre_bounds_mult",
                 "ogre_act_path",
                 "ogre_config_path",
@@ -6621,6 +6630,13 @@ class ExportSDF(bpy.types.Operator, ExportHelper):
         default=False,
     )
 
+    ogre_normal_mode: EnumProperty(
+        name="Normal Porter Mode",
+        description="Porter --normalmode. Specifies how to handle normals.",
+        items=NORMAL_MODE_ITEMS,
+        default="CORRECT",
+    )
+
     ogre_bounds_mult: FloatVectorProperty(
         name="Bounds Scale",
         description="Porter --boundsmult. Scale factors for the mesh bounds (X, Y, Z).",
@@ -6719,6 +6735,7 @@ class ExportSDF(bpy.types.Operator, ExportHelper):
                 "ogre_name",
                 "ogre_suffix",
                 "ogre_flat_colors",
+                "ogre_normal_mode",
                 "ogre_bounds_mult",
                 "ogre_act_path",
                 "ogre_config_path",
