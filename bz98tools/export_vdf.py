@@ -773,6 +773,8 @@ def export(
     if ANIMElements and ExportAnimations:
         model.anim_present = True
         model.anim_header = vdf_classes.ANIMHeader()
+        # Stock headers name the unit ("avrecy."), not a bare ".".
+        model.anim_header.name = os.path.splitext(os.path.basename(filepath))[0][:15] + "."
         if getattr(scene_props, "UseAdvancedAnimHeader", False):
             model.anim_header.null2 = int(scene_props.AnimNull2)
             model.anim_header.unknown2 = int(scene_props.AnimUnknown2)
