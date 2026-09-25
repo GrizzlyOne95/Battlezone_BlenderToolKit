@@ -2004,6 +2004,24 @@ def _dds_uncompressed_rgba_bytes(width, height, rgba_bytes):
     return bytes(header) + bytes(bgra)
 
 
+def _texture_source_exists(asset_resolver, tex_name):
+    """True if a .png or .map for this texture can be found. Faces whose
+    texture is missing (e.g. stock .map files Redux no longer ships) fall
+    back to flat colours instead of pointing at a DDS that never gets written."""
+    base = os.path.splitext(tex_name)[0]
+    return (
+        asset_resolver.get_resource_path(base + ".png") is not None
+        or asset_resolver.get_map_path(base) is not None
+    )
+
+
+def _flat_color_rgba(color_list):
+    """One texel per flat colour, as (width, height, RGBA bytes); no Pillow."""
+    rgb = np.asarray(color_list, dtype=np.uint8).reshape(1, len(color_list), 3)
+    alpha = np.full((1, len(color_list), 1), 255, np.uint8)
+    return len(color_list), 1, np.concatenate([rgb, alpha], axis=2).tobytes()
+
+
 def _write_dds_uncompressed_rgba(width, height, rgba_bytes, out_path):
     """
     Write uncompressed 32-bit RGBA DDS (A8R8G8B8 layout).
@@ -2505,7 +2523,11 @@ def port_bwd2(target_filepath, asset_resolver, settings):
             super_name = "BZBaseCockpit"
         else:
             super_name = "BZBase"
-        if igeom.tex_name is None or settings.only_flat_colors_enabled():
+        if (
+            igeom.tex_name is None
+            or settings.only_flat_colors_enabled()
+            or not _texture_source_exists(asset_resolver, igeom.tex_name)
+        ):
             print(
                 f"Use flat colors: {igeom.name}: {igeom.tex_name}, {settings.only_flat_colors_enabled()}"
             )
@@ -2596,9 +2618,7 @@ def port_bwd2(target_filepath, asset_resolver, settings):
                 uv[1] = 0.5
 
         # Generate the flat color texture
-        color_array = np.array(color_list)
-        color_array.shape = (1, color_count, 3)
-        imodel.flat_img = Image.fromarray(color_array, mode="RGB")
+        imodel.flat_rgba = _flat_color_rgba(color_list)
 
         # ------------------#
     #    Create Extra    #
@@ -2846,16 +2866,13 @@ def _png_to_rgba_bytes(png_path):
             )
             return None, None, None
 
-        buf = bytearray(expected_len)
-        for i, f in enumerate(pixels):
-            v = int(f * 255.0 + 0.5)
-            if v < 0:
-                v = 0
-            elif v > 255:
-                v = 255
-            buf[i] = v
+        # Blender stores rows bottom-up; DDS (and the .map/PIL paths) are
+        # top-down, so flip the rows or the texture lands upside down on
+        # the exported UVs.
+        arr = np.asarray(pixels, dtype=np.float32).reshape(height, width, 4)[::-1]
+        buf = np.clip(arr * 255.0 + 0.5, 0, 255).astype(np.uint8)
 
-        return width, height, bytes(buf)
+        return width, height, buf.tobytes()
 
     finally:
         # Clean up the temporary image from the .blend
@@ -2910,13 +2927,9 @@ def write_textures(imodel, asset_resolver, suppress_write):
         # ----------------------------------------------------
         if (
             getattr(imodel, "flat_name", None) == tex_name
-            and getattr(imodel, "flat_img", None) is not None
+            and getattr(imodel, "flat_rgba", None) is not None
         ):
-            # imodel.flat_img should be a PIL image created earlier;
-            # only runs if Pillow is installed and flat-colors are in use.
-            img = imodel.flat_img.convert("RGBA")
-            width, height = img.size
-            rgba_bytes = img.tobytes()
+            width, height, rgba_bytes = imodel.flat_rgba
             asset_resolver.write_bytes_if_changed(
                 dds_path,
                 _dds_uncompressed_rgba_bytes(width, height, rgba_bytes),
@@ -2998,7 +3011,11 @@ def port_geo(target_filepath, asset_resolver, settings):
     # Establish geometry groups (corresponds to submeshes)
     if igeom is not None:
         super_name = "BZBase"
-        if igeom.tex_name is None or settings.only_flat_colors_enabled():
+        if (
+            igeom.tex_name is None
+            or settings.only_flat_colors_enabled()
+            or not _texture_source_exists(asset_resolver, igeom.tex_name)
+        ):
             print(
                 f"Use flat colors: {igeom.name}: {igeom.tex_name}, {settings.only_flat_colors_enabled()}"
             )
@@ -3044,9 +3061,7 @@ def port_geo(target_filepath, asset_resolver, settings):
                     uv[1] = 0.5
 
             # Generate the flat color texture
-            color_array = np.array(color_list)
-            color_array.shape = (1, color_count, 3)
-            imodel.flat_img = Image.fromarray(color_array, mode="RGB")
+            imodel.flat_rgba = _flat_color_rgba(color_list)
 
         # ------------------------#
     # Construct the OGRE model #
