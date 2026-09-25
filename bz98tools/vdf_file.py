@@ -324,6 +324,16 @@ def _serialize_anim_block(parsed):
     header.rotationcount = len(parsed.anim_rotations)
     header.translation2count = len(parsed.anim_translations2)
     header.positioncount = len(parsed.anim_positions)
+    # The section length covers the header and every record; the game uses it
+    # to read the chunk, so a stale or header-only length hides the keys.
+    header.sectionlength = (
+        header.binlength
+        + header.elementscount * 148
+        + header.orientationscount * 132
+        + header.rotationcount * 20
+        + header.translation2count * 16
+        + header.positioncount * 16
+    )
     out = bytearray(vdf_classes.serialize_section(header))
     for element in parsed.anim_elements:
         out += vdf_classes.serialize_section(element)
