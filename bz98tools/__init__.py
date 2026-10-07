@@ -33,12 +33,16 @@ from . import pilot_animation_ui as _pilot_animation_ui
 
 # Public addon identity and release version. Keep the package name ``bz98tools``
 # stable for Blender installs and existing package-relative imports.
-bl_info = dict(bl_info)
-bl_info["name"] = "Battlezone Blender Toolkit"
-bl_info["description"] = (
-    "Import, export, validate, and author classic Battlezone and Battlezone 98 Redux assets."
-)
-bl_info["version"] = (1, 5, 0)
+# Must stay a literal dict: Blender reads it with ast.literal_eval to list the addon.
+bl_info = {
+    "name": "Battlezone Blender Toolkit",
+    "description": "Import, export, validate, and author classic Battlezone and Battlezone 98 Redux assets.",
+    "author": "GrizzlyOne95, Commando950, DivisionByZero, Business Lawyer, Kindrad; inspired by Lucius64",
+    "version": (1, 5, 0),
+    "blender": (4, 5, 1),
+    "category": "Import-Export",
+    "wiki_url": "https://commando950.neocities.org/docs/BZBlenderAddon/",
+}
 
 
 def register():
