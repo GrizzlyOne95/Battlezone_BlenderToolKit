@@ -39,7 +39,10 @@ from bz98tools.bzrmodelporter.bzbwd2 import (  # noqa: E402
     spin_orientation_key,
     transform_from_orientation_key,
 )
-from bz98tools.bzrmodelporter.bzbwd2_serializer import SDFSerializer  # noqa: E402
+from bz98tools.bzrmodelporter.bzbwd2_serializer import (  # noqa: E402
+    SDFSerializer,
+    VDFSerializer,
+)
 from bz98tools.bzrmodelporter.ogremesh_serializer import (  # noqa: E402
     MeshChunkID,
     MeshSerializer,
@@ -232,6 +235,65 @@ class SDFFidelityTests(unittest.TestCase):
         self.assertEqual(_write_sdf(_read_sdf(data)), data)
 
 
+# -- VDF fixtures ---------------------------------------------------------------
+
+
+def stock_style_vdf(spcs_tag=b"SCPS"):
+    """A VDF laid out like the stock files: a VCHK chunk, EXIT groups
+    between sections and the SPCS chunk spelled "SCPS"."""
+    vdfc = (
+        b"xvdf".ljust(16, b"\0")
+        + struct.pack("<2I", 0, 0)
+        + struct.pack("<5f", 100, 200, 400, 800, 1600)
+        + struct.pack("<3f", 10.0, 0.5, 0.25)
+        + struct.pack("<I", 0)
+    )
+    return (
+        _bwd2_chunk(b"BWD2")
+        + _bwd2_chunk(b"REV", struct.pack("<I", 7))
+        + _bwd2_chunk(b"VDFC", vdfc)
+        + _bwd2_chunk(b"EXIT")
+        + _bwd2_chunk(b"VGEO", struct.pack("<I", 0))
+        + _bwd2_chunk(b"VCHK", b"vchk-payload")
+        + _bwd2_chunk(b"EXIT")
+        + _bwd2_chunk(b"EXIT")
+        + _bwd2_chunk(b"COLP", struct.pack("<12f", *range(12)))
+        + _bwd2_chunk(b"EXIT")
+        + _bwd2_chunk(spcs_tag, struct.pack("<3I", 1, 2, 3))
+        + _bwd2_chunk(b"EXIT")
+    )
+
+
+def _vdf_round_trip(data):
+    vdf = VDFSerializer(io.BytesIO(data)).read()
+    out = io.BytesIO()
+    VDFSerializer(out).write(vdf)
+    return vdf, out.getvalue()
+
+
+class VDFFidelityTests(unittest.TestCase):
+    def test_scps_spelling_and_vchk_round_trip(self):
+        data = stock_style_vdf()
+        vdf, out = _vdf_round_trip(data)
+        self.assertEqual(vdf.spcs_tag, "SCPS")
+        self.assertEqual(list(vdf.spcs_data), [1, 2, 3])
+        self.assertEqual(vdf.vchk_data, b"vchk-payload")
+        self.assertEqual(vdf.exit_counts, [1, 2, 1, 1])
+        self.assertEqual(out, data)
+
+    def test_spcs_spelling_round_trips(self):
+        data = stock_style_vdf(spcs_tag=b"SPCS")
+        self.assertEqual(_vdf_round_trip(data)[1], data)
+
+    def test_exit_counts_follow_the_file(self):
+        data = stock_style_vdf()
+        cut = data.index(b"COLP")
+        trimmed = data[:cut] + data[cut:].replace(b"EXIT\x08\x00\x00\x00", b"", 1)
+        vdf, out = _vdf_round_trip(trimmed)
+        self.assertEqual(vdf.exit_counts, [1, 2, 0, 1])
+        self.assertEqual(out, trimmed)
+
+
 # -- SDF animation authoring ----------------------------------------------------
 
 
@@ -368,7 +430,7 @@ def _bone_assignment(chunk_id, vertex, bone, weight):
     return _ogre_chunk(chunk_id, struct.pack("<IHf", vertex, bone, weight))
 
 
-def ogre_mesh(*, name_table=None, lod=False, extras=False, manual_edges=False):
+def ogre_mesh(*, name_table=None, lod=False, extras=False, manual_edges=False, alias=False):
     """A one-triangle skinned v1.100 mesh. Bone assignments are stored in
     an order a (vertex, bone) sort would change."""
     geometry = _ogre_chunk(
@@ -399,7 +461,13 @@ def ogre_mesh(*, name_table=None, lod=False, extras=False, manual_edges=False):
         + _bone_assignment(MeshChunkID.SUBMESH_BONE_ASSIGNMENT, 2, 0, 1.0)
         + _bone_assignment(MeshChunkID.SUBMESH_BONE_ASSIGNMENT, 0, 1, 0.25)
         + _bone_assignment(MeshChunkID.SUBMESH_BONE_ASSIGNMENT, 0, 0, 0.75)
-        + _bone_assignment(MeshChunkID.SUBMESH_BONE_ASSIGNMENT, 1, 1, 1.0),
+        + _bone_assignment(MeshChunkID.SUBMESH_BONE_ASSIGNMENT, 1, 1, 1.0)
+        # Ogre writes texture aliases after the bone assignments.
+        + (
+            _ogre_chunk(MeshChunkID.SUBMESH_TEXTURE_ALIAS, b"xdiffuse\nxtest.dds\n")
+            if alias
+            else b""
+        ),
     )
     body = b"\x01" + submesh + _ogre_chunk(MeshChunkID.MESH_SKELETON_LINK, b"xtest.skeleton\n")
     if lod:
@@ -464,6 +532,12 @@ class MeshFidelityTests(unittest.TestCase):
             [chunk_id for chunk_id, _ in mesh.raw_chunks],
             [MeshChunkID.MESH_LOD_LEVEL, MeshChunkID.POSES, MeshChunkID.ANIMATIONS, MeshChunkID.EXTREMES],
         )
+        self.assertEqual(out, data)
+
+    def test_texture_alias_round_trips_in_ogre_order(self):
+        data = ogre_mesh(alias=True)
+        mesh, out = _mesh_round_trip(data)
+        self.assertEqual(mesh.get_submesh(0).texture_alias_map, {"xdiffuse": "xtest.dds"})
         self.assertEqual(out, data)
 
     def test_manual_edge_list_round_trips(self):

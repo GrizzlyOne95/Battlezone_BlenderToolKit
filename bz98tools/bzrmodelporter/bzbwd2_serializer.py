@@ -340,12 +340,8 @@ class VDFSerializer(BWD2BaseSerializer):
             self.seek_next_chunk()
             chunk_name = self.read_chunk_header()
 
-        for _ in range(3):
-            if chunk_name == "EXIT":
-                self.seek_next_chunk()
-                chunk_name = self.read_chunk_header()
-            else:
-                break
+        exit_counts = [0, 0, 0, 0]
+        exit_counts[0], chunk_name = self.read_exit_chunks(chunk_name)
         if chunk_name == "VGEO":
             self.read_vgeo(vdf)
             self.seek_next_chunk()
@@ -363,12 +359,7 @@ class VDFSerializer(BWD2BaseSerializer):
             self.seek_next_chunk()
             chunk_name = self.read_chunk_header()
 
-        for _ in range(2):
-            if chunk_name == "EXIT":
-                self.seek_next_chunk()
-                chunk_name = self.read_chunk_header()
-            else:
-                break
+        exit_counts[1], chunk_name = self.read_exit_chunks(chunk_name)
 
         if chunk_name == "COLP":
             colp = CollisionPlanes()
@@ -377,21 +368,16 @@ class VDFSerializer(BWD2BaseSerializer):
             self.seek_next_chunk()
             chunk_name = self.read_chunk_header()
 
-        if chunk_name == "EXIT":  # Unknown how many EXIT chunks are acceptable here
-            self.seek_next_chunk()
-            chunk_name = self.read_chunk_header()
+        exit_counts[2], chunk_name = self.read_exit_chunks(chunk_name)
 
-        if chunk_name == "SPCS":
+        if chunk_name in ("SPCS", "SCPS"):
+            vdf.spcs_tag = chunk_name
             self.read_spcs(vdf)
             self.seek_next_chunk()
             chunk_name = self.read_chunk_header()
 
-        for _ in range(2):  # Unknown how many EXIT chunks are acceptable here
-            if chunk_name == "EXIT":
-                self.seek_next_chunk()
-                chunk_name = self.read_chunk_header()
-            else:
-                break
+        exit_counts[3], chunk_name = self.read_exit_chunks(chunk_name)
+        vdf.exit_counts = exit_counts
 
         return vdf
 
@@ -445,7 +431,8 @@ class VDFSerializer(BWD2BaseSerializer):
             )  # UINT_SIZE + VECTOR3_SIZE + FLOAT_SIZE = 4 + 12 + 4 = 20
 
     def read_vchk(self, vdf):
-        pass  # Unknown
+        # Layout unknown; keep the payload so it is written back.
+        vdf.vchk_data = self.read_raw(self.current_chunk_size - CHUNK_HEADER_SIZE)
 
     def read_colp(self, colp):
         colp.front = self.read_float()
@@ -474,19 +461,26 @@ class VDFSerializer(BWD2BaseSerializer):
         self.write_uint(vdf._revision)
 
         # Write rest of VDF
+        after_vdfc, after_vgeo, after_colp, after_spcs = vdf.exit_counts
         self.write_vdfc(vdf)
-        self.write_exit()
+        self.write_exits(after_vdfc)
         self.write_vgeo(vdf)
         if vdf.anim_obj is not None:
             self.write_anim(vdf.anim_obj)
-        self.write_exit()
-        self.write_exit()
+        if vdf.vchk_data is not None:
+            self.write_chunk_header("VCHK", CHUNK_HEADER_SIZE + len(vdf.vchk_data))
+            self.write_raw(vdf.vchk_data)
+        self.write_exits(after_vgeo)
         if vdf.collision_planes is not None:
             self.write_colp(vdf.collision_planes)
-        self.write_exit()
+        self.write_exits(after_colp)
         if vdf.spcs_data is not None:
             self.write_spcs(vdf)
-        self.write_exit()
+        self.write_exits(after_spcs)
+
+    def write_exits(self, count):
+        for _ in range(count):
+            self.write_exit()
 
     def write_vdfc(self, vdf):
         self.write_chunk_header("VDFC", self.calc_vdfc_size())
@@ -611,7 +605,7 @@ class VDFSerializer(BWD2BaseSerializer):
         self.write_float(colp.bottom)
 
     def write_spcs(self, vdf):
-        self.write_chunk_header("SPCS", self.calc_spcs_size())
+        self.write_chunk_header(vdf.spcs_tag, self.calc_spcs_size())
         self.write_uint_array(vdf.spcs_data, 3)
 
     # -#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#

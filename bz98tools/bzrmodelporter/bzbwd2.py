@@ -781,6 +781,15 @@ class VDF(BWD2):
 
         self.collision_planes = None
         self.spcs_data = None
+        # Stock VDFs mostly spell this chunk "SCPS"; the reader keeps the
+        # file's spelling. New VDFs use "SPCS", as before.
+        self.spcs_tag = "SPCS"
+        # VCHK chunk payload, kept verbatim (its layout is not decoded).
+        self.vchk_data = None
+        # EXIT chunks after VDFC, after VGEO/ANIM/VCHK, after COLP and after
+        # SPCS. The reader records what the file had; new VDFs keep the old
+        # writer's layout.
+        self.exit_counts = [1, 2, 1, 1]
 
     def get_cockpit_object(self, index, raw=False):
         return self.get_object(self.GEO.LOD.COCKPIT, self.GEO.REP.PRIMARY, index, raw)

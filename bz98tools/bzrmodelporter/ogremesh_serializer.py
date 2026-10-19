@@ -610,15 +610,16 @@ class MeshSerializer(OgreBaseSerializer):
         if not submesh.use_shared_vertices:
             self.write_geometry(submesh.vertex_data)  # GEOMETRY
 
-        for alias_name, texture_name in submesh.texture_alias_map.items():
-            self.write_submesh_texture_alias(alias_name, texture_name)
-
         self.write_submesh_operation(submesh)  # SUBMESH_OPERATION
 
         if mesh is None:
             mesh = submesh.parent
         for vba in self.ordered_bone_assignments(mesh, submesh):
             self.write_submesh_bone_assignment(vba)  # SUBMESH_BONE_ASSIGNMENT
+
+        # SUBMESH_TEXTURE_ALIAS, last, as Ogre's MeshSerializer writes them
+        for alias_name, texture_name in submesh.texture_alias_map.items():
+            self.write_submesh_texture_alias(alias_name, texture_name)
 
         self.pop_chunk(MeshChunkID.SUBMESH)
 
