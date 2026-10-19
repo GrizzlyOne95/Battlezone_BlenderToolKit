@@ -63,6 +63,7 @@ Versioned technical notes stay in the repository:
 - [Runtime test kit](docs/RUNTIME_TEST_KIT.md)
 - [Experimental binary fields](docs/EXPERIMENTAL_BINARY_FIELDS.md)
 - [Organic Redux Skin source walkthrough copy](docs/ORGANIC_REDUX_SKIN_WALKTHROUGH.md)
+- [Redux cockpits and walker units: findings](docs/REDUX_COCKPITS_AND_WALKERS.md)
 
 ## Latest Highlights
 
