@@ -7,7 +7,9 @@ from typing import Any
 # under the terms of the GNU General Public License v3.0.
 # See the LICENSE file or <https://www.gnu.org/licenses/>.
 
-from .spacial import Vector3, Transform
+import math
+
+from .spacial import Vector3, Quaternion, Transform
 
 VDF_REVISION = 7
 SDF_REVISION = 8
@@ -245,6 +247,7 @@ class GeoObject:
         self.name = "NULL"
         self.transform = Transform()
         self.parentname = "NULL"
+        self.parent = "NULL"  # Parent name as written to the file
         self.center_pos = Vector3()
         self.radius = 0
         self.half_size = Vector3()
@@ -254,6 +257,8 @@ class GeoObject:
         self.ddr = 0
         self.target = Vector3()
         self.time = 0.0
+
+        self.raw_strings = {}  # Raw fixed-width string bytes kept by the reader
 
     def set_parentname(self, parentname):
         self.parentname = parentname
@@ -265,6 +270,37 @@ class GeoObject:
     def set_parent(self, obj):
         self.parentname = obj.name
         self.parent = obj
+
+    def parent_name(self):
+        """Return the parent name as stored in the file, whether `parent` is a
+        name or a GeoObject."""
+        if isinstance(self.parent, GeoObject):
+            return self.parent.name
+        if self.parent is None:
+            return "NULL"
+        return self.parent
+
+    def make_null(self, class_id=None, zero_transform=True):
+        """Turn this record into an unused (NULL) slot, the way stock and CR
+        files store the LOD/rep variants they do not use: name and parent
+        "NULL", an all-zero transform and class_id NONE by default."""
+        self.name = "NULL"
+        self.parentname = "NULL"
+        self.parent = "NULL"
+        self.transform = (
+            Transform(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            if zero_transform
+            else Transform()
+        )
+        self.center_pos = Vector3()
+        self.radius = 0
+        self.half_size = Vector3()
+        self.class_id = ClassID.NONE if class_id is None else class_id
+        self.object_flags = 0
+        self.ddr = 0
+        self.target = Vector3()
+        self.time = 0.0
+        return self
 
     def is_null(self):
         return self.name.lower() == "null"
@@ -322,11 +358,27 @@ class AnimObj:
         # # # # # # # # # # # # # # # # # # #
         self._anim_ptr = 0  # Unused!
         self._mesh_ptr = 0  #
-        self._orientation_keyframes_ptr = 0  #
-        self._scale_keyframes_ptr = 0  #
-        self._position_keyframes_ptr = 0  #
+        self._orientation_keyframe_ptr = 0  #
+        self._scale_keyframe_ptr = 0  #
+        self._position_keyframe_ptr = 0  #
         self._obj = 0  #
         self._entity = 0  #
+
+        self.raw_strings = {}  # Raw fixed-width name bytes kept by the reader
+
+    # Older spellings of the unused pointer fields, kept so existing callers work.
+    _orientation_keyframes_ptr = property(
+        lambda self: self._orientation_keyframe_ptr,
+        lambda self, v: setattr(self, "_orientation_keyframe_ptr", v),
+    )
+    _scale_keyframes_ptr = property(
+        lambda self: self._scale_keyframe_ptr,
+        lambda self, v: setattr(self, "_scale_keyframe_ptr", v),
+    )
+    _position_keyframes_ptr = property(
+        lambda self: self._position_keyframe_ptr,
+        lambda self, v: setattr(self, "_position_keyframe_ptr", v),
+    )
 
     def create_animation(self, index):
         anim = Animation()
@@ -374,6 +426,61 @@ class AnimObj:
         self.position_keyframe_list.append(keyframe)
         return keyframe
 
+    def add_animation(self, index, start, length, loop=0, speed=15.0):
+        """Create an animation (timeline slice) the game selects by `index`."""
+        anim = self.create_animation(index)
+        anim.start = start
+        anim.length = length
+        anim.loop = loop
+        anim.speed = speed
+        return anim
+
+    def add_mesh_keys(
+        self,
+        name,
+        orientations=(),
+        positions=(),
+        scales=(),
+        frame_transform=None,
+        inverse_transform=None,
+        flags=0,
+    ):
+        """Create an animation mesh for GEO `name` and append its keys.
+
+        Each key list holds (frame, value) pairs: a Quaternion in ANIM key
+        convention for orientations (see orientation_key_from_transform) and
+        a Vector3 for positions and scales. The mesh's start/length fields
+        are set to the appended ranges. `frame_transform` is the part's rest
+        transform (normally its GEO transform) and `inverse_transform`
+        defaults to its inverse.
+        """
+        mesh = self.create_animation_mesh(name)
+        mesh.flags = flags
+        if frame_transform is not None:
+            mesh.frame_transform = frame_transform.copy()
+            if inverse_transform is None:
+                inverse_transform = invert_rigid_transform(frame_transform)
+        if inverse_transform is not None:
+            mesh.inverse_transform = inverse_transform.copy()
+
+        mesh.orientation_start = len(self.orientation_keyframe_list)
+        for frame, orientation in orientations:
+            self.create_orientation_keyframe(frame, orientation)
+        mesh.orientation_length = (
+            len(self.orientation_keyframe_list) - mesh.orientation_start
+        )
+
+        mesh.scale_start = len(self.scale_keyframe_list)
+        for frame, scale in scales:
+            self.create_scale_keyframe(frame, scale)
+        mesh.scale_length = len(self.scale_keyframe_list) - mesh.scale_start
+
+        mesh.position_start = len(self.position_keyframe_list)
+        for frame, position in positions:
+            self.create_position_keyframe(frame, position)
+        mesh.position_length = len(self.position_keyframe_list) - mesh.position_start
+        return mesh
+
     def slice_mesh_orientation_keyframes(self, mesh):
         return self.orientation_keyframe_list[
             mesh.orientation_start : mesh.orientation_start + mesh.orientation_length
@@ -388,6 +495,62 @@ class AnimObj:
         return self.position_keyframe_list[
             mesh.position_start : mesh.position_start + mesh.position_length
         ]
+
+
+def invert_rigid_transform(t):
+    """Inverse of a rotation+translation Transform (rotation transposed)."""
+    inv = Transform(t.rx, t.ux, t.fx, t.ry, t.uy, t.fy, t.rz, t.uz, t.fz)
+    inv.px = -(inv.rx * t.px + inv.ux * t.py + inv.fx * t.pz)
+    inv.py = -(inv.ry * t.px + inv.uy * t.py + inv.fy * t.pz)
+    inv.pz = -(inv.rz * t.px + inv.uz * t.py + inv.fz * t.pz)
+    return inv
+
+
+def orientation_key_from_transform(transform):
+    """Return the ANIM orientation key (a Quaternion as stored in the file)
+    for a part whose rest/frame transform is `transform`.
+
+    Redux ANIM keys store Transform.compute_orientation() with x and y
+    negated: (w, -x, -y, +z). Checked against the stock SDFs shipped with
+    Redux: 46 of 47 constant orientation keys match their anim mesh's
+    frame_transform this way (up to the sign of the whole quaternion); the
+    remaining key (ablpows alt11tpc) stores the unmirrored quaternion.
+    """
+    q = transform.compute_orientation()
+    return Quaternion(q.w, -q.x, -q.y, q.z)
+
+
+def transform_from_orientation_key(orientation, position=None):
+    """Inverse of orientation_key_from_transform: the rotation Transform an
+    ANIM orientation key describes, optionally translated to `position`."""
+    q = Quaternion(orientation.w, -orientation.x, -orientation.y, orientation.z)
+    t = q.to_transform()
+    if position is not None:
+        t.px, t.py, t.pz = position.x, position.y, position.z
+    return t
+
+
+def axis_rotation_transform(axis, angle):
+    """Rotation Transform of `angle` radians about `axis` (a Vector3 or an
+    (x, y, z) tuple in part space), using the right-hand rule."""
+    if isinstance(axis, Vector3):
+        x, y, z = axis.x, axis.y, axis.z
+    else:
+        x, y, z = axis
+    mag = math.sqrt(x * x + y * y + z * z)
+    if mag == 0:
+        raise ValueError("rotation axis must be non-zero")
+    s = math.sin(angle / 2) / mag
+    return Quaternion(math.cos(angle / 2), x * s, y * s, z * s).to_transform()
+
+
+def spin_orientation_key(rest_transform, axis, angle):
+    """Return the ANIM orientation key for a part turned `angle` radians
+    about its own local `axis` from `rest_transform` (rest @ R(axis, angle)).
+    Stock spinning parts (for example in lbleog and ibdrop) turn about a
+    principal local axis this way."""
+    turned = rest_transform @ axis_rotation_transform(axis, angle)
+    return orientation_key_from_transform(turned)
 
 
 class Animation:
@@ -418,6 +581,7 @@ class AnimationMesh:
         self.scale_length = 0
         self.position_start = 0
         self.position_length = 0
+        self.raw_strings = {}  # Raw fixed-width string bytes kept by the reader
 
     def get_positions(self):
         p_start = self.position_start
@@ -492,6 +656,7 @@ class BWD2:
         self.obj_parentmap = {}
 
         self.anim_obj = None
+        self.raw_strings = {}  # Raw fixed-width string bytes kept by the reader
 
     def get_end_object(self):
         return self.object_list[-1][-1][-1]
@@ -530,11 +695,34 @@ class BWD2:
     def primary_objects(self, raw=False):
         return self.objects(self.GEO.LOD.PRIMARY, self.GEO.REP.PRIMARY, raw)
 
-    def append_object(self):
+    @property
+    def revision(self):
+        """REV chunk value. The reader keeps the file's value; Redux ignores it."""
+        return self._revision
+
+    @revision.setter
+    def revision(self, value):
+        self._revision = int(value)
+
+    def append_object(self, name=None, parent=None):
+        """Append one GEO index (a record in every LOD/rep slot) and return
+        the new primary record. Every record gets `.parent` ("NULL" unless
+        `parent` is given for the primary); `name` names the primary."""
         for lod, reps in enumerate(self.object_list):
             for rep, geoobjs in enumerate(reps):
-                geoobjs.append(self.GeoObjectClass(self, lod, rep, len(geoobjs)))
+                obj = self.GeoObjectClass(self, lod, rep, len(geoobjs))
+                obj.parent = "NULL"
+                geoobjs.append(obj)
         self.objcount += 1
+        primary = self.get_primary_object(self.objcount - 1, raw=True)
+        if name is not None:
+            primary.name = name
+            if name.lower() != "null" and name.lower() != "world":
+                self.obj_namemap[name] = primary
+        if parent is not None:
+            primary.parent = parent.name if isinstance(parent, GeoObject) else parent
+            primary.parentname = primary.parent
+        return primary
 
     def insert_object(self, index):
         for lod, reps in enumerate(self.object_list):
@@ -615,6 +803,15 @@ class SDF(BWD2):
     def __init__(self):
         super().__init__()
         self.struct_class = 0
-        self.ddr = 0.0  # Type?
+        self.ddr = 0  # Written as a uint
         self.death_animation = ""
         self.death_audio = ""
+        # The two death strings share one 26-byte region. Stock files split
+        # it 13/13; CR's files store a 14-byte animation and 12-byte audio
+        # name. The reader detects the split; set this to author one.
+        self.death_animation_width = 13
+        # EXIT chunks between SDFC and SGEO, and after SGEO/ANIM. The reader
+        # records what the file had; new SDFs keep the old writer's layout.
+        self.exit_count_after_sdfc = 0
+        self.exit_count = 3
+        self.sgeo_trailing_bytes = b""  # Bytes past the declared SGEO records
