@@ -15,6 +15,7 @@ from .baseserializer import (
     UINT_SIZE,
     BaseSerializer,
 )
+from .spacial import Vector3, Quaternion
 
 CHUNK_HEADER_SIZE = USHORT_SIZE + UINT_SIZE
 
@@ -39,13 +40,27 @@ class OgreBaseSerializer(BaseSerializer):
     ChunkID = None
 
     def __init__(
-        self, stream, endian="little", validate_chunk_sizes=False, log_chunks=False
+        self,
+        stream,
+        endian="little",
+        validate_chunk_sizes=False,
+        log_chunks=False,
+        ogre_space=False,
     ):
+        """`ogre_space=True` reads and writes vectors and quaternions exactly
+        as Ogre stores them (x, y, z and x, y, z, w). The default converts
+        them to BZ space by mirroring x."""
         super().__init__(stream, endian)
         self.validate_chunk_sizes = validate_chunk_sizes
         self.log_chunks = log_chunks
         self.chunk_stack = []
         self.version = None
+        self.ogre_space = ogre_space
+        if ogre_space:
+            self.read_vector3 = self.read_vector3_ogre
+            self.write_vector3 = self.write_vector3_ogre
+            self.read_quaternion = self.read_quaternion_ogre
+            self.write_quaternion = self.write_quaternion_ogre
 
     def push_chunk(self, chunk_addr, chunk_id, chunk_size):
         ci = ChunkInfo(chunk_addr, chunk_id, chunk_size)
@@ -149,3 +164,18 @@ class OgreBaseSerializer(BaseSerializer):
     write_vector3 = BaseSerializer.write_vector3_luf
     read_quaternion = BaseSerializer.read_quaternion_lufs_left
     write_quaternion = BaseSerializer.write_quaternion_lufs_left
+
+    def read_vector3_ogre(self):
+        return Vector3(*struct.unpack(self.endiansymbol + "3f", self.read_raw(12)))
+
+    def write_vector3_ogre(self, val):
+        self.stream.write(struct.pack(self.endiansymbol + "3f", val.x, val.y, val.z))
+
+    def read_quaternion_ogre(self):
+        x, y, z, w = struct.unpack(self.endiansymbol + "4f", self.read_raw(16))
+        return Quaternion(w, x, y, z)
+
+    def write_quaternion_ogre(self, val):
+        self.stream.write(
+            struct.pack(self.endiansymbol + "4f", val.x, val.y, val.z, val.w)
+        )

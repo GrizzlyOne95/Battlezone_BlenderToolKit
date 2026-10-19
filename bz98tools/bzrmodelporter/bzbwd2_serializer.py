@@ -43,9 +43,35 @@ from .baseserializer import (
 )
 
 CHUNK_HEADER_SIZE = 4 + UINT_SIZE
+SDFC_DEATH_FIELDS_SIZE = 26  # death animation + death audio names
 
 START_OF_STREAM = 0
 CURRENT_STREAM_POSITION = 1
+
+
+def decode_fixed_string(raw):
+    return raw.partition(b"\0")[0].decode("latin-1")
+
+
+def split_death_fields(raw):
+    """Split the 26-byte SDFC death-name region into (animation, audio,
+    animation width). Stock files use 13/13. When that split leaves the
+    audio name empty but text follows the animation name (CR's files use
+    14/12), the audio name starts at that text."""
+    width = 13
+    animation = decode_fixed_string(raw[:width])
+    audio = decode_fixed_string(raw[width:])
+    if not audio:
+        end = raw.find(b"\0")
+        if end >= 0:
+            start = end
+            while start < len(raw) and raw[start] == 0:
+                start += 1
+            if start < len(raw) and start > width:
+                width = start
+                animation = decode_fixed_string(raw[:width])
+                audio = decode_fixed_string(raw[width:])
+    return animation, audio, width
 
 
 class BWD2BaseSerializer(BZBaseSerializer):
@@ -71,11 +97,42 @@ class BWD2BaseSerializer(BZBaseSerializer):
             self.current_chunk_addr + self.current_chunk_size, START_OF_STREAM
         )
 
+    def read_exit_chunks(self, chunk_name):
+        """Skip consecutive EXIT chunks; return (count, next chunk name)."""
+        count = 0
+        while chunk_name == "EXIT":
+            count += 1
+            self.seek_next_chunk()
+            chunk_name = self.read_chunk_header()
+        return count, chunk_name
+
+    def read_fixed_string(self, owner, key, length):
+        """Read a fixed-width NUL-padded string and keep its raw bytes in
+        owner.raw_strings[key], so bytes after the terminator round-trip."""
+        raw = self.read_raw(length)
+        owner.raw_strings[key] = raw
+        return decode_fixed_string(raw)
+
+    def write_fixed_string(self, owner, key, value, length):
+        """Write `value` in `length` bytes. If the reader kept raw bytes that
+        still decode to `value`, write those so the field is byte-identical."""
+        raw = getattr(owner, "raw_strings", {}).get(key)
+        if raw is not None and len(raw) == length and decode_fixed_string(raw) == value:
+            self.write_raw(raw)
+            return
+        self.write_padded_string(value, length, key)
+
+    def write_padded_string(self, value, length, label="string"):
+        encoded = value.encode("latin-1")
+        if len(encoded) > length:
+            raise ValueError(f"{label} {value!r} does not fit in {length} bytes")
+        self.write_raw(encoded.ljust(length, b"\0"))
+
     # -#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
     # -# Read Methods
 
     def read_anim(self, anim_obj):
-        anim_obj.name = self.read_string(16)
+        anim_obj.name = self.read_fixed_string(anim_obj, "name", 16)
         animation_count = self.read_uint()
         mesh_count = self.read_uint()
         orientation_keyframe_count = self.read_uint()
@@ -101,8 +158,9 @@ class BWD2BaseSerializer(BZBaseSerializer):
 
         # List of animation meshes
         for i in range(mesh_count):
-            name = self.read_string(8)
-            anim_mesh = anim_obj.create_animation_mesh(name)
+            raw_name = self.read_raw(8)
+            anim_mesh = anim_obj.create_animation_mesh(decode_fixed_string(raw_name))
+            anim_mesh.raw_strings["name"] = raw_name
             anim_mesh.flags = self.read_uint()
             anim_mesh.inverse_transform = self.read_transform()
             anim_mesh.frame_transform = self.read_transform()
@@ -149,7 +207,7 @@ class BWD2BaseSerializer(BZBaseSerializer):
 
     def write_anim(self, anim_obj):
         self.write_chunk_header("ANIM", self.calc_anim_size(anim_obj))
-        self.write_string(anim_obj.name, 16)
+        self.write_fixed_string(anim_obj, "name", anim_obj.name, 16)
         self.write_uint(len(anim_obj.animation_map))
         self.write_uint(len(anim_obj.mesh_map))
         self.write_uint(len(anim_obj.orientation_keyframe_list))
@@ -178,7 +236,7 @@ class BWD2BaseSerializer(BZBaseSerializer):
 
     def write_mesh_map(self, mesh_map):
         for name, animation_mesh in mesh_map.items():
-            self.write_string(name, 8)
+            self.write_fixed_string(animation_mesh, "name", name, 8)
             self.write_uint(animation_mesh.flags)
             self.write_transform(animation_mesh.inverse_transform)
             self.write_transform(animation_mesh.frame_transform)
@@ -338,7 +396,7 @@ class VDFSerializer(BWD2BaseSerializer):
         return vdf
 
     def read_vdfc(self, vdf):
-        vdf.name = self.read_string(16)
+        vdf.name = self.read_fixed_string(vdf, "name", 16)
         vdf.entity_class = self.read_uint()
         vdf.vehicle_size = self.read_uint()
         vdf.lod_dist_list[:] = self.read_float_array(5)
@@ -353,11 +411,19 @@ class VDFSerializer(BWD2BaseSerializer):
         for lod, rep, index in itertools.product(
             range(VGEO.LOD.COUNT), range(VGEO.REP.COUNT), range(geo_count)
         ):
-            name = self.read_string(8)
+            raw_name = self.read_raw(8)
             transform = self.read_transform()
-            parent = self.read_string(8)
+            raw_parent = self.read_raw(8)
 
-            geo_object = vdf.create_geo_object(lod, rep, index, name, parent)
+            geo_object = vdf.create_geo_object(
+                lod,
+                rep,
+                index,
+                decode_fixed_string(raw_name),
+                decode_fixed_string(raw_parent),
+            )
+            geo_object.raw_strings["name"] = raw_name
+            geo_object.raw_strings["parent"] = raw_parent
             geo_object.transform = transform
 
             geo_object.center_pos = self.read_vector3()
@@ -424,7 +490,7 @@ class VDFSerializer(BWD2BaseSerializer):
 
     def write_vdfc(self, vdf):
         self.write_chunk_header("VDFC", self.calc_vdfc_size())
-        self.write_string(vdf.name, 16)
+        self.write_fixed_string(vdf, "name", vdf.name, 16)
         self.write_uint(vdf.entity_class)  # unused?
         self.write_uint(vdf.vehicle_size)  # unused?
         self.write_float_array(vdf.lod_dist_list, 5)  # unused?
@@ -439,9 +505,11 @@ class VDFSerializer(BWD2BaseSerializer):
         prev_geo_object = None
         for geo_object in vdf.all_geo_objects(raw=True):
             start_addr = self.stream.tell()
-            self.write_string(geo_object.name, 8)
+            self.write_fixed_string(geo_object, "name", geo_object.name, 8)
             self.write_transform(geo_object.transform)
-            self.write_string(geo_object.parent, 8)
+            self.write_fixed_string(
+                geo_object, "parent", geo_object.parent_name(), 8
+            )
             self.write_vector3(geo_object.center_pos)
             self.write_float(geo_object.radius)
             self.write_vector3(geo_object.half_size)
@@ -643,12 +711,7 @@ class SDFSerializer(BWD2BaseSerializer):
             self.seek_next_chunk()
             chunk_name = self.read_chunk_header()
 
-        for _ in range(3):
-            if chunk_name == "EXIT":
-                self.seek_next_chunk()
-                chunk_name = self.read_chunk_header()
-            else:
-                break
+        sdf.exit_count_after_sdfc, chunk_name = self.read_exit_chunks(chunk_name)
 
         if chunk_name == "SGEO":
             self.read_sgeo(sdf)
@@ -662,33 +725,22 @@ class SDFSerializer(BWD2BaseSerializer):
             self.seek_next_chunk()
             chunk_name = self.read_chunk_header()
 
-        for _ in range(2):
-            if chunk_name == "EXIT":
-                self.seek_next_chunk()
-                chunk_name = self.read_chunk_header()
-            else:
-                break
-
-        if chunk_name == "EXIT":  # Unknown how many EXIT chunks are acceptable here
-            self.seek_next_chunk()
-            chunk_name = self.read_chunk_header()
-
-        for _ in range(2):  # Unknown how many EXIT chunks are acceptable here
-            if chunk_name == "EXIT":
-                self.seek_next_chunk()
-                chunk_name = self.read_chunk_header()
-            else:
-                break
+        sdf.exit_count, chunk_name = self.read_exit_chunks(chunk_name)
 
         return sdf
 
     def read_sdfc(self, sdf):
-        sdf.name = self.read_string(16)
+        sdf.name = self.read_fixed_string(sdf, "name", 16)
         sdf.struct_class = self.read_uint()
         sdf.lod_dist_list[:] = self.read_float_array(5)
         sdf.ddr = self.read_uint()  # Type?
-        sdf.death_animation = self.read_string(13)
-        sdf.death_audio = self.read_string(13)
+        raw = self.read_raw(SDFC_DEATH_FIELDS_SIZE)
+        sdf.raw_strings["death_fields"] = raw
+        (
+            sdf.death_animation,
+            sdf.death_audio,
+            sdf.death_animation_width,
+        ) = split_death_fields(raw)
 
     def read_sgeo(self, sdf):
         geo_count = self.read_uint()
@@ -696,11 +748,19 @@ class SDFSerializer(BWD2BaseSerializer):
         for lod, rep, index in itertools.product(
             range(SGEO.LOD.COUNT), range(SGEO.REP.COUNT), range(geo_count)
         ):
-            name = self.read_string(8)
+            raw_name = self.read_raw(8)
             transform = self.read_transform()
-            parent = self.read_string(8)
+            raw_parent = self.read_raw(8)
 
-            geo_object = sdf.create_geo_object(lod, rep, index, name, parent)
+            geo_object = sdf.create_geo_object(
+                lod,
+                rep,
+                index,
+                decode_fixed_string(raw_name),
+                decode_fixed_string(raw_parent),
+            )
+            geo_object.raw_strings["name"] = raw_name
+            geo_object.raw_strings["parent"] = raw_parent
             geo_object.transform = transform
 
             geo_object.center_pos = self.read_vector3()
@@ -716,6 +776,10 @@ class SDFSerializer(BWD2BaseSerializer):
                 self.read_float()
             )  # Purpose unknown. Maybe an I76 holdover?
 
+        # Keep any bytes the chunk holds past the declared records.
+        extra = self.current_chunk_addr + self.current_chunk_size - self.stream.tell()
+        sdf.sgeo_trailing_bytes = self.read_raw(extra) if extra > 0 else b""
+
     # -#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
     # -# Write Methods
 
@@ -727,21 +791,41 @@ class SDFSerializer(BWD2BaseSerializer):
 
         # Write rest of SDF
         self.write_sdfc(sdf)
+        for _ in range(sdf.exit_count_after_sdfc):
+            self.write_exit()
         self.write_sgeo(sdf)
         if sdf.anim_obj is not None:
             self.write_anim(sdf.anim_obj)
-        self.write_exit()
-        self.write_exit()
-        self.write_exit()
+        for _ in range(sdf.exit_count):
+            self.write_exit()
 
     def write_sdfc(self, sdf):
+        if sdf.name is None:
+            raise ValueError("SDF.name must be set before writing")
+        if len(sdf.lod_dist_list) != 5:
+            raise ValueError("SDF.lod_dist_list must hold 5 distances")
         self.write_chunk_header("SDFC", self.calc_sdfc_size())
-        self.write_string(sdf.name, 16)
+        self.write_fixed_string(sdf, "name", sdf.name, 16)
         self.write_uint(sdf.struct_class)  # unused?
         self.write_float_array(sdf.lod_dist_list, 5)  # unused?
-        self.write_uint(sdf.ddr)
-        self.write_string(sdf.death_animation, 13)
-        self.write_string(sdf.death_audio, 13)
+        self.write_uint(int(sdf.ddr))
+        self.write_death_fields(sdf)
+
+    def write_death_fields(self, sdf):
+        width = sdf.death_animation_width
+        if not 0 < width < SDFC_DEATH_FIELDS_SIZE:
+            raise ValueError(f"death_animation_width {width} is outside 1..25")
+        raw = sdf.raw_strings.get("death_fields")
+        if raw is not None and len(raw) == SDFC_DEATH_FIELDS_SIZE:
+            animation = decode_fixed_string(raw[:width])
+            audio = decode_fixed_string(raw[width:])
+            if (animation, audio) == (sdf.death_animation, sdf.death_audio):
+                self.write_raw(raw)
+                return
+        self.write_padded_string(sdf.death_animation, width, "death_animation")
+        self.write_padded_string(
+            sdf.death_audio, SDFC_DEATH_FIELDS_SIZE - width, "death_audio"
+        )
 
     def write_sgeo(self, sdf):
         self.write_chunk_header("SGEO", self.calc_sgeo_size(sdf))
@@ -750,9 +834,11 @@ class SDFSerializer(BWD2BaseSerializer):
             range(SGEO.LOD.COUNT), range(SGEO.REP.COUNT), range(sdf.objcount)
         ):
             geo_object = sdf.get_object(lod, rep, index, raw=True)
-            self.write_string(geo_object.name, 8)
+            self.write_fixed_string(geo_object, "name", geo_object.name, 8)
             self.write_transform(geo_object.transform)
-            self.write_string(geo_object.parent, 8)
+            self.write_fixed_string(
+                geo_object, "parent", geo_object.parent_name(), 8
+            )
             self.write_vector3(geo_object.center_pos)
             self.write_float(geo_object.radius)
             self.write_vector3(geo_object.half_size)
@@ -761,6 +847,7 @@ class SDFSerializer(BWD2BaseSerializer):
             self.write_uint(geo_object.ddr)
             self.write_vector3(geo_object.target)
             self.write_float(geo_object.time)
+        self.write_raw(sdf.sgeo_trailing_bytes)
 
     # -#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
     # -# Calc Methods
@@ -772,8 +859,7 @@ class SDFSerializer(BWD2BaseSerializer):
             + UINT_SIZE  # struct_class
             + 5 * FLOAT_SIZE  # lod_dist_list
             + UINT_SIZE  # ddr
-            + 13  # death_animation
-            + 13  # death_sound
+            + SDFC_DEATH_FIELDS_SIZE  # death_animation + death_sound
         )
 
     def calc_sgeo_size(self, sdf):
@@ -796,4 +882,5 @@ class SDFSerializer(BWD2BaseSerializer):
             * SGEO.LOD.COUNT
             * SGEO.REP.COUNT
             * sdf.objcount
+            + len(sdf.sgeo_trailing_bytes)
         )

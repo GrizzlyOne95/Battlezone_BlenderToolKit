@@ -551,11 +551,16 @@ class VertexData:
         return f"VertexData()"
 
 
+_bone_assignment_sequence = itertools.count()
+
+
 class VertexBoneAssignment:
     def __init__(self, vertex_index=0, bone_index=0, weight=1.0):
         self.vertex_index = vertex_index
         self.bone_index = bone_index
         self.weight = weight
+        # Creation order, so a writer can keep the order assignments were read in.
+        self.sequence = next(_bone_assignment_sequence)
 
     def __str__(self):
         return f"{self.vertex_index}->{self.bone_index}: {self.weight}"
@@ -627,6 +632,14 @@ class SubMesh:
 
     def bone_assignments_unsorted(self):
         return itertools.chain.from_iterable(self.bone_assignment_map.values())
+
+    def bone_assignments_in_creation_order(self):
+        """Bone assignments in the order they were created (file order for
+        a mesh the serializer read)."""
+        return sorted(
+            itertools.chain.from_iterable(self.bone_assignment_map.values()),
+            key=lambda vba: vba.sequence,
+        )
 
     def bone_assignments_by_vertex_index(self, vertex_index):
         if vertex_index not in self.bone_assignment_map:
@@ -724,6 +737,7 @@ class EdgeTriangle:
 
 class EdgeData:
     def __init__(self):
+        self.is_manual = False  # Manual LOD edge lists carry no data
         self.is_closed = False
         self.triangles = []
         self.edge_groups = []
@@ -744,6 +758,17 @@ class Mesh:
         )  # Maps vertex indices from VBAs onto lists of those VertexBoneAssignment objects.
         self.name_table = {}
         self.edge_lists = {}  # Map LOD index to EdgeData
+        # When True the writer keeps bone assignments in creation order
+        # instead of sorting them by (vertex, bone). MeshSerializer.read sets
+        # it so a read mesh writes back unchanged.
+        self.preserve_bone_assignment_order = False
+        # Chunks this toolkit does not model (LOD levels, poses, animations,
+        # extremes), kept verbatim as (chunk_id, bytes incl. header) in file
+        # order and written back where Ogre's MeshSerializer puts them.
+        self.raw_chunks = []
+        # Write SUBMESH_NAME_TABLE even when no submesh is named. The reader
+        # sets it when the file had the chunk; new meshes write it only for names.
+        self.write_empty_name_table = False
 
     def create_shared_vertex_data(self, vertex_count=0):
         self.shared_vertex_data = VertexData(vertex_count)
@@ -793,6 +818,14 @@ class Mesh:
 
     def bone_assignments_unsorted(self):
         return itertools.chain.from_iterable(self.bone_assignment_map.values())
+
+    def bone_assignments_in_creation_order(self):
+        """Bone assignments in the order they were created (file order for
+        a mesh the serializer read)."""
+        return sorted(
+            itertools.chain.from_iterable(self.bone_assignment_map.values()),
+            key=lambda vba: vba.sequence,
+        )
 
     def all_bone_assignments_unsorted(self):
         return itertools.chain(

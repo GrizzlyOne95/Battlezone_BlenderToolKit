@@ -182,6 +182,7 @@ class MeshSerializer(OgreBaseSerializer):
 
     def read_mesh(self, mesh):
         mesh.skeletally_animated = self.read_bool()
+        mesh.preserve_bone_assignment_order = True
 
         while True:
             try:
@@ -208,6 +209,7 @@ class MeshSerializer(OgreBaseSerializer):
                 self.read_mesh_bounds(mesh)
 
             elif chunk_id == MeshChunkID.SUBMESH_NAME_TABLE:
+                mesh.write_empty_name_table = True
                 self.read_submesh_name_table(mesh)
 
             elif chunk_id == MeshChunkID.EDGE_LISTS:
@@ -363,9 +365,21 @@ class MeshSerializer(OgreBaseSerializer):
         mesh.create_bone_assignment(vertex_index, bone_index, weight)
         self.pop_chunk(MeshChunkID.MESH_BONE_ASSIGNMENT)
 
+    def read_raw_chunk(self, mesh, chunk_id):
+        """Keep the current chunk verbatim in mesh.raw_chunks."""
+        size = self.current_chunk_size()
+        if size < CHUNK_HEADER_SIZE:
+            raise ValueError(
+                f"{MeshChunkID.label(chunk_id, full=True)} chunk at "
+                f"@0x{self.current_chunk_address():X} has invalid size {size}"
+            )
+        body = self.read_raw(size - CHUNK_HEADER_SIZE)
+        header = self.encode_chunk_header(chunk_id, size)
+        mesh.raw_chunks.append((chunk_id, header + body))
+        self.pop_chunk(chunk_id)
+
     def read_mesh_lod_level(self, mesh):
-        self.stream.seek(self.current_chunk_size(), CURRENT_STREAM_POSITION)
-        self.pop_chunk(MeshChunkID.MESH_LOD_LEVEL)
+        self.read_raw_chunk(mesh, MeshChunkID.MESH_LOD_LEVEL)
 
     def read_mesh_bounds(self, mesh):
         mesh.aabb = AxisAlignedBoundingBox()
@@ -403,12 +417,12 @@ class MeshSerializer(OgreBaseSerializer):
             if chunk_id == MeshChunkID.EDGE_LIST_LOD:
                 lod_index = self.read_ushort()
                 is_manual = self.read_bool()
+                edge_data = EdgeData()
+                mesh.edge_lists[lod_index] = edge_data
                 if not is_manual:
-                    edge_data = EdgeData()
                     self.read_edge_list_lod_info(edge_data)
-                    mesh.edge_lists[lod_index] = edge_data
                 else:
-                    self.stream.seek(self.current_chunk_size() - 3, CURRENT_STREAM_POSITION)
+                    edge_data.is_manual = True
                     self.pop_chunk(MeshChunkID.EDGE_LIST_LOD)
             else:
                 self.rollback_chunk_header()
@@ -470,16 +484,13 @@ class MeshSerializer(OgreBaseSerializer):
         self.pop_chunk(MeshChunkID.EDGE_LIST_LOD)
 
     def read_poses(self, mesh):
-        self.stream.seek(self.current_chunk_size(), CURRENT_STREAM_POSITION)
-        self.pop_chunk(MeshChunkID.POSES)
+        self.read_raw_chunk(mesh, MeshChunkID.POSES)
 
     def read_animations(self, mesh):
-        self.stream.seek(self.current_chunk_size(), CURRENT_STREAM_POSITION)
-        self.pop_chunk(MeshChunkID.ANIMATIONS)
+        self.read_raw_chunk(mesh, MeshChunkID.ANIMATIONS)
 
     def read_table_extremes(self, mesh):
-        self.stream.seek(self.current_chunk_size(), CURRENT_STREAM_POSITION)
-        self.pop_chunk(MeshChunkID.EXTREMES)
+        self.read_raw_chunk(mesh, MeshChunkID.EXTREMES)
 
     # -#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#-#
     # -# Write Methods
@@ -511,16 +522,39 @@ class MeshSerializer(OgreBaseSerializer):
         if mesh.shared_vertex_data != None:
             self.write_geometry(mesh.shared_vertex_data)  # GEOMETRY
         for submesh in mesh.submesh_list:
-            self.write_submesh(submesh)  # SUBMESH
+            self.write_submesh(submesh, mesh)  # SUBMESH
         if mesh.skeleton_name != None:
             self.write_skeleton_link(mesh.skeleton_name)  # MESH_SKELETON_LINK
-            for vba in mesh.bone_assignments():
+            for vba in self.ordered_bone_assignments(mesh, mesh):
                 self.write_mesh_bone_assignment(vba)  # MESH_BONE_ASSIGNMENT
 
+        self.write_raw_chunks(mesh, lod=True)  # MESH_LOD_LEVEL (kept from read)
         self.write_bounds_info(mesh)  # MESH_BOUNDS
         self.write_submesh_name_table(mesh)  # SUBMESH_NAME_TABLE
         self.write_edge_list(mesh)  # EDGE_LISTS
+        self.write_raw_chunks(mesh, lod=False)  # POSES, ANIMATIONS, EXTREMES
         self.pop_chunk(MeshChunkID.MESH)
+
+    @staticmethod
+    def ordered_bone_assignments(mesh, owner):
+        if mesh.preserve_bone_assignment_order:
+            return owner.bone_assignments_in_creation_order()
+        return owner.bone_assignments()
+
+    @staticmethod
+    def selected_raw_chunks(mesh, lod):
+        for chunk_id, data in mesh.raw_chunks:
+            if (chunk_id == MeshChunkID.MESH_LOD_LEVEL) == lod:
+                yield data
+
+    def write_raw_chunks(self, mesh, lod):
+        for data in self.selected_raw_chunks(mesh, lod):
+            self.write_raw(data)
+
+    def encode_chunk_header(self, chunk_id, size):
+        return chunk_id.to_bytes(USHORT_SIZE, self.endian) + size.to_bytes(
+            UINT_SIZE, self.endian
+        )
 
     def write_geometry(self, vertex_data):
         # GEOMETRY
@@ -563,7 +597,7 @@ class MeshSerializer(OgreBaseSerializer):
 
         self.pop_chunk(MeshChunkID.GEOMETRY)
 
-    def write_submesh(self, submesh):
+    def write_submesh(self, submesh, mesh=None):
         # SUBMESH
         size = self.calc_submesh_size(submesh)
         self.write_chunk_header(MeshChunkID.SUBMESH, size)
@@ -581,7 +615,9 @@ class MeshSerializer(OgreBaseSerializer):
 
         self.write_submesh_operation(submesh)  # SUBMESH_OPERATION
 
-        for vba in submesh.bone_assignments():
+        if mesh is None:
+            mesh = submesh.parent
+        for vba in self.ordered_bone_assignments(mesh, submesh):
             self.write_submesh_bone_assignment(vba)  # SUBMESH_BONE_ASSIGNMENT
 
         self.pop_chunk(MeshChunkID.SUBMESH)
@@ -641,8 +677,16 @@ class MeshSerializer(OgreBaseSerializer):
         self.write_float(mesh.bound_radius)  # bound radius
         self.pop_chunk(MeshChunkID.MESH_BOUNDS)
 
+    @staticmethod
+    def writes_submesh_name_table(mesh):
+        if mesh.write_empty_name_table:
+            return True
+        return any(name != None for name in mesh.name_table.values())
+
     def write_submesh_name_table(self, mesh):
-        # SUBMESH_NAME_TABLE
+        # SUBMESH_NAME_TABLE, only when a submesh is named (Ogre does the same)
+        if not self.writes_submesh_name_table(mesh):
+            return
         size = self.calc_submesh_name_table_size(mesh)
         self.write_chunk_header(MeshChunkID.SUBMESH_NAME_TABLE, size)
         for index, name in mesh.name_table.items():
@@ -675,8 +719,9 @@ class MeshSerializer(OgreBaseSerializer):
         size = self.calc_edge_list_lod_size(edge_data)
         self.write_chunk_header(MeshChunkID.EDGE_LIST_LOD, size)
         self.write_ushort(lod_index)
-        self.write_bool(False)  # is_manual
-        self.write_edge_list_lod_info(edge_data)
+        self.write_bool(edge_data.is_manual)  # is_manual
+        if not edge_data.is_manual:
+            self.write_edge_list_lod_info(edge_data)
         self.pop_chunk(MeshChunkID.EDGE_LIST_LOD)
 
     def write_edge_list_lod_info(self, edge_data):
@@ -736,8 +781,10 @@ class MeshSerializer(OgreBaseSerializer):
             )  # MESH_BONE_ASSIGNMENT
 
         size += BOUNDS_INFO_SIZE  # MESH_BOUNDS
-        size += self.calc_submesh_name_table_size(mesh)  # SUBMESH_NAME_TABLE
+        if self.writes_submesh_name_table(mesh):
+            size += self.calc_submesh_name_table_size(mesh)  # SUBMESH_NAME_TABLE
         size += self.calc_edge_list_size(mesh)  # EDGE_LISTS
+        size += sum(len(data) for _, data in mesh.raw_chunks)  # kept chunks
 
         return size
 
@@ -844,6 +891,8 @@ class MeshSerializer(OgreBaseSerializer):
 
     def calc_edge_list_lod_size(self, edge_data):
         size = CHUNK_HEADER_SIZE + USHORT_SIZE + BOOL_SIZE  # lod_index, is_manual
+        if edge_data.is_manual:
+            return size
         # edge_list_lod_info
         size += BOOL_SIZE + 2 * UINT_SIZE  # is_closed, tri_count, eg_count
         size += len(edge_data.triangles) * (
