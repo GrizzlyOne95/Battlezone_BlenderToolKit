@@ -353,7 +353,7 @@ def split_fix(data, smooth_deg, skip=None, flip=True, cluster_deg=8.0):
         if not used:
             continue
         alltri = np.concatenate([tris[i] for i in used])
-        corner = smooth_normals(pos, alltri, smooth_deg)
+        corner = smooth_normals(pos, alltri, smooth_deg, stored=nrm)
         cv = alltri.reshape(-1)
         remap = cv.copy()
         new_n = {}  # vertex index -> normal

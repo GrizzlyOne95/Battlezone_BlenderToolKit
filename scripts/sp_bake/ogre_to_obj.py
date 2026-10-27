@@ -166,8 +166,10 @@ def audit_part(part, skew_deg):
     return res
 
 
-def smooth_normals(pos, tri, smooth_deg):
+def smooth_normals(pos, tri, smooth_deg, stored=None, keep_deg=15.0):
     """Angle-weighted normals, split where faces differ by more than smooth_deg.
+    With stored (per-vertex normals), corners whose stored normals already
+    differ by more than keep_deg are never averaged: existing hard edges stay.
     Returns per-corner normals (len(tri)*3, 3)."""
     fn, area2 = face_normals(pos, tri)
     # weld by position so seams in the Ogre buffer don't break smoothing
@@ -184,7 +186,8 @@ def smooth_normals(pos, tri, smooth_deg):
             np.linalg.norm(e1, axis=1) * np.linalg.norm(e2, axis=1), 1e-20)
         ang[:, k] = np.arccos(np.clip(cosv, -1, 1))
     cos_lim = np.cos(np.radians(smooth_deg))
-    out = np.zeros((len(tri), 3, 3))
+    cos_keep = np.cos(np.radians(keep_deg))
+    out =np.zeros((len(tri), 3, 3))
     # group corners by welded vertex, then accumulate only compatible faces
     flat_v = corners.reshape(-1)
     flat_f = np.repeat(np.arange(len(tri)), 3)
@@ -196,6 +199,10 @@ def smooth_normals(pos, tri, smooth_deg):
         n = fn[f]
         w = ang[f, k][:, None]
         compat = (n @ n.T) >= cos_lim  # (g,g)
+        if stored is not None:
+            sn = stored[tri[f, k]]
+            sn = sn / np.maximum(np.linalg.norm(sn, axis=1), 1e-20)[:, None]
+            compat &= (sn @ sn.T) >= cos_keep
         acc = compat @ (n * w)
         acc /= np.maximum(np.linalg.norm(acc, axis=1), 1e-20)[:, None]
         out[f, k] = acc
