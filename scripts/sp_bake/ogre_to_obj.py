@@ -201,8 +201,10 @@ def smooth_normals(pos, tri, smooth_deg, stored=None, keep_deg=15.0):
         compat = (n @ n.T) >= cos_lim  # (g,g)
         if stored is not None:
             sn = stored[tri[f, k]]
-            sn = sn / np.maximum(np.linalg.norm(sn, axis=1), 1e-20)[:, None]
-            compat &= (sn @ sn.T) >= cos_keep
+            ln = np.linalg.norm(sn, axis=1)
+            sn = sn / np.maximum(ln, 1e-20)[:, None]
+            bad = ln < 0.5  # missing stored normal: no edge to keep
+            compat &= ((sn @ sn.T) >= cos_keep) | bad[:, None] | bad[None, :]
         acc = compat @ (n * w)
         acc /= np.maximum(np.linalg.norm(acc, axis=1), 1e-20)[:, None]
         out[f, k] = acc
