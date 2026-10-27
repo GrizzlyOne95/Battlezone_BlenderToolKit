@@ -53,7 +53,7 @@ Extra maps: `-Maps AO,Curvature,Thickness,Position,WorldSpaceNormal`.
 
 ## Normal audit (`normals_audit.csv`)
 
-Stock BZR meshes **deliberately** use heavily smoothed vertex normals. On avtank, large flat faces carry normals bent 30–50°. The `_N` maps are mostly flat detail baked against those normals. So "different from the face normal" is not in itself a bug, and the audit only fails a mesh automatically on objective errors:
+Stock BZR meshes use heavily smoothed vertex normals. On avtank, large flat faces carry normals bent 30–50°, and the `_N` maps are mostly flat detail baked against those normals. `fix_mesh_normals.py` / `fix_all.py` rebuild them hard-edged (60° split, corners kept where stored normals already disagree by more than 15°, splits under `--min-area 1e-4` of the bbox diagonal² merged back, which costs about +8% vertices). So "different from the face normal" is not in itself a bug, and the audit only fails a mesh automatically on objective errors:
 - **degenerate**: zero, NaN or non-unit normals;
 - **flipped**: corners whose normal points behind its own triangle;
 - **skewed**: more than 75° off.
@@ -67,3 +67,11 @@ Smoothing that looks wrong (for example avapc's smeared panels) is a judgement c
 - **Overlapping or mirrored UV islands.** These share texels, so they get one AO value. Mirrored halves of a symmetric model are fine; unrelated overlaps are not.
 - **Shared materials.** A material such as `avheadlight00` that is used by many meshes is baked once per mesh. Each output goes in that mesh's folder.
 - **Normal maps and AO.** Painter does not document whether the Normal mesh map changes the AO bake. Curvature (from the normal map) definitely uses it.
+
+## Derived normal maps (`derive_normals.py`)
+
+Many buildings ship with `flat_N.dds`. `derive_normals.py --bake <bake dir> --assets <BZ_ASSETS> [--extra <addon>] [--only abbarr]` writes `<diffuse stem>_N.dds` (DXT1 + mips, BZBase green = DirectX) for each such material. It combines two sources:
+- **Rounded edges.** `bevel_bake.py` runs a Cycles Bevel-shader bake of the mesh against itself, with radius `--bevel` × bbox diagonal.
+- **Recessed paint detail.** With `--relief recess`, texels darker than a lower-envelope local level sink: painted notches, seams and holes. Bright decals (stars, stripes) and their outlines stay flat. `--detail` sets the strength. This is a heuristic, so dark grime sinks too.
+
+`normalmap_preview.py` renders a lit sheet: the top row uses flat_N and the bottom row the derived map. Overlapping UVs share a texel, so `derive_report.json` lists the overlap per material.
