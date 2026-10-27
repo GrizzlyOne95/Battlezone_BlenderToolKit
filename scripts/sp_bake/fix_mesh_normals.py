@@ -303,14 +303,16 @@ def _put(arrs, src, off, vals):
 def split_fix(data, smooth_deg, skip=None, flip=True, cluster_deg=8.0):
     d = bytes(data)
     subs_info, lods, edges = parse(d)
-    if edges:
-        raise ValueError("mesh has edge lists; split mode would leave them stale")
     p = _str_end(d, 2)
     _, ms, me = next(_chunks(d, p, len(d)))
     mesh = _node(d, ms, me)
+    report = {"submeshes": [], "lod_levels": len(lods)}
+    if edges:
+        # stencil-shadow edge lists index the old vertices; Ogre rebuilds them on demand
+        mesh["kids"] = [k for k in mesh["kids"] if k["id"] != M_EDGE_LISTS]
+        report["edge_lists_dropped"] = True
     sub_nodes = [k for k in mesh["kids"] if k["id"] == M_SUBMESH]
     shared_node = next((k for k in mesh["kids"] if k["id"] == M_GEOMETRY), None)
-    report = {"submeshes": [], "lod_levels": len(lods)}
 
     # group submeshes by the geometry they draw from
     groups = {}
