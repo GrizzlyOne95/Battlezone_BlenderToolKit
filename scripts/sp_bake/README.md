@@ -75,3 +75,14 @@ Many buildings ship with `flat_N.dds`. `derive_normals.py --bake <bake dir> --as
 - **Recessed paint detail.** With `--relief recess`, texels darker than a lower-envelope local level sink: painted notches, seams and holes. Bright decals (stars, stripes) and their outlines stay flat. `--detail` sets the strength. This is a heuristic, so dark grime sinks too.
 
 `normalmap_preview.py` renders a lit sheet: the top row uses flat_N and the bottom row the derived map. Overlapping UVs share a texel, so `derive_report.json` lists the overlap per material.
+
+## Shippable ACT maps (`act_pack.py`)
+
+`python act_pack.py --bake <out> --out <dir> --materials <CR>/Materials` turns the per-mesh `<material>_ACT.png` bakes into one `<material>_ACT.dds` per material (512 px DXT1 with mips) plus `cr_act_neutral.dds` (255, 128, 255).
+
+- **Coverage.** Coverage comes from rasterising the OBJ's UV triangles. Painter pads about 99% of the atlas, so the bake alone can't tell you which texels are real.
+- **Sealed-in islands.** UV islands with mean AO under `--enclosed` (default 0.2) are geometry sealed inside the hull: cockpit interiors, buried headlights. They bake near black, which would kill ambient light in the cockpit view, so they are set to neutral.
+- **Shared materials.** These take the per-texel median over their meshes.
+- **Gutters.** Gutters are filled from the nearest covered texel.
+
+Campaign Reimagined consumes them through `Tools/Apply-ActMaps.py` and the OpenShim `ACT_MAP_ENABLED` shader block.
