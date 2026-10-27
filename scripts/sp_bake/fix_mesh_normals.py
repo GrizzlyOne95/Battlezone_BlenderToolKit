@@ -300,7 +300,9 @@ def _put(arrs, src, off, vals):
     a[:, off:off + 4 * vals.shape[1]] = vals.astype("<f4").view(np.uint8).reshape(len(a), -1)
 
 
-def split_fix(data, smooth_deg, skip=None, flip=True, cluster_deg=8.0):
+def split_fix(data, smooth_deg, skip=None, flip=True, cluster_deg=8.0, min_area_frac=0.0):
+    """min_area_frac: a hard-edge split is only made when the faces on that side
+    of the vertex cover at least this fraction of the bounding-box diagonal squared."""
     d = bytes(data)
     subs_info, lods, edges = parse(d)
     p = _str_end(d, 2)
@@ -354,6 +356,8 @@ def split_fix(data, smooth_deg, skip=None, flip=True, cluster_deg=8.0):
             continue
         alltri = np.concatenate([tris[i] for i in used])
         corner = smooth_normals(pos, alltri, smooth_deg, stored=nrm)
+        farea = face_normals(pos, alltri)[1] / 2
+        min_area = min_area_frac * float(np.sum((pos.max(0) - pos.min(0)) ** 2))
         cv = alltri.reshape(-1)
         remap = cv.copy()
         new_n = {}  # vertex index -> normal
@@ -378,6 +382,18 @@ def split_fix(data, smooth_deg, skip=None, flip=True, cluster_deg=8.0):
             if not members_c:
                 remap[zero] = v  # only degenerate faces use it: keep the stored normal
                 continue
+            if min_area > 0 and len(members_c) > 1:
+                # a hard edge only shows where the faces on its sides are big;
+                # small fan clusters share the largest one's vertex (and normal)
+                areas = [farea[np.asarray(cs) // 3].sum() for cs in members_c]
+                big = int(np.argmax(areas))
+                keep = [j for j in range(len(members_c)) if j == big or areas[j] >= min_area]
+                if len(keep) < len(members_c):
+                    for j in range(len(members_c)):
+                        if j not in keep:
+                            members_c[big] += members_c[j]
+                    members_c = [members_c[big]] + [members_c[j] for j in keep if j != big]
+                    report["small_splits_merged"] = report.get("small_splits_merged", 0) + 1
             members_c[0] += zero
             for j, cs in enumerate(members_c):
                 m = corner[cs].sum(0)
@@ -451,12 +467,14 @@ def main():
     ap.add_argument("--skip-material", default="glass|headlight", help="regex; matching submeshes are untouched")
     ap.add_argument("--split", type=float, metavar="DEG",
                     help="rederive normals and duplicate vertices that span edges sharper than DEG")
+    ap.add_argument("--min-area", type=float, default=1e-4, metavar="FRAC",
+                    help="with --split: merge hard-edge splits smaller than FRAC * bbox diagonal^2 (0 = split all)")
     ap.add_argument("--keep-winding", action="store_true")
     ap.add_argument("--report", action="store_true", help="measure only, write nothing")
     a = ap.parse_args()
     skip = re.compile(a.skip_material, re.I) if a.skip_material else None
     if a.split is not None:
-        out, rep = split_fix(a.src.read_bytes(), a.split, skip, not a.keep_winding)
+        out, rep = split_fix(a.src.read_bytes(), a.split, skip, not a.keep_winding, min_area_frac=a.min_area)
     else:
         out, rep = fix(a.src.read_bytes(), a.recompute, skip, not a.keep_winding)
     print(json.dumps(rep, indent=1))

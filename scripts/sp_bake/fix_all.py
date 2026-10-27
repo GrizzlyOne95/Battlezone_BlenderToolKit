@@ -29,6 +29,7 @@ def main():
                     help="folder whose meshes replace stock ones of the same name")
     ap.add_argument("--only", nargs="*")
     ap.add_argument("--split", type=float, default=60.0)
+    ap.add_argument("--min-area", type=float, default=1e-4)
     ap.add_argument("--skip-material", default="glass|headlight")
     a = ap.parse_args()
 
@@ -51,7 +52,7 @@ def main():
                "override": not src.is_relative_to(a.stock)}
         shutil.copyfile(src, orig / src.name)
         try:
-            out, rep = split_fix(src.read_bytes(), a.split, skip)
+            out, rep = split_fix(src.read_bytes(), a.split, skip, min_area_frac=a.min_area)
         except Exception as exc:
             row["error"] = f"{type(exc).__name__}: {exc}"
             print(f"! {src.stem}: {row['error']}")
