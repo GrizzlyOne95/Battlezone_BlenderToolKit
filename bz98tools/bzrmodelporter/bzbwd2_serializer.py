@@ -89,8 +89,20 @@ class BWD2BaseSerializer(BZBaseSerializer):
         except EOFError:
             return None
         self.current_chunk_size = self.read_sint()
+        if self.current_chunk_size < 8:
+            # The size includes the 8-byte header, and the engine walks chunks
+            # by size, so anything smaller can never advance.
+            raise Exception(
+                f'Chunk "{chunk_name}" at address {self.current_chunk_addr} has invalid size {self.current_chunk_size}!'
+            )
 
         return chunk_name
+
+    def check_read_complete(self, chunk_name):
+        if chunk_name is not None:
+            raise Exception(
+                f'Unexpected chunk "{chunk_name}" at address {self.current_chunk_addr}; the file has an unsupported chunk order!'
+            )
 
     def seek_next_chunk(self):
         self.stream.seek(
@@ -393,6 +405,7 @@ class VDFSerializer(BWD2BaseSerializer):
             else:
                 break
 
+        self.check_read_complete(chunk_name)
         return vdf
 
     def read_vdfc(self, vdf):
@@ -727,6 +740,7 @@ class SDFSerializer(BWD2BaseSerializer):
 
         sdf.exit_count, chunk_name = self.read_exit_chunks(chunk_name)
 
+        self.check_read_complete(chunk_name)
         return sdf
 
     def read_sdfc(self, sdf):
