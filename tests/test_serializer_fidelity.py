@@ -39,7 +39,10 @@ from bz98tools.bzrmodelporter.bzbwd2 import (  # noqa: E402
     spin_orientation_key,
     transform_from_orientation_key,
 )
-from bz98tools.bzrmodelporter.bzbwd2_serializer import SDFSerializer  # noqa: E402
+from bz98tools.bzrmodelporter.bzbwd2_serializer import (  # noqa: E402
+    SDFSerializer,
+    VDFSerializer,
+)
 from bz98tools.bzrmodelporter.ogremesh_serializer import (  # noqa: E402
     MeshChunkID,
     MeshSerializer,
@@ -230,6 +233,29 @@ class SDFFidelityTests(unittest.TestCase):
         self.assertEqual(data.count(NULL_RECORD), 5)
         self.assertEqual(data.count(b"EXIT"), 2)
         self.assertEqual(_write_sdf(_read_sdf(data)), data)
+
+
+class ReaderFailLoudTests(unittest.TestCase):
+    HEADER = _bwd2_chunk(b"BWD2") + _bwd2_chunk(b"REV", struct.pack("<I", 8))
+
+    def test_stock_exit_layout_reads(self):
+        data = self.HEADER + _bwd2_chunk(b"EXIT") * 2
+        VDFSerializer(io.BytesIO(data)).read()
+
+    def test_undersized_chunk_is_rejected(self):
+        for serializer in (VDFSerializer, SDFSerializer):
+            data = self.HEADER + b"EXIT" + struct.pack("<i", 0)
+            with self.assertRaisesRegex(Exception, r'"EXIT" at address 20.*size 0'):
+                serializer(io.BytesIO(data)).read()
+
+    def test_unconsumed_chunk_order_is_rejected(self):
+        # A VGEO-less file whose EXITs are followed by a chunk it cannot place.
+        data = self.HEADER + _bwd2_chunk(b"EXIT") * 2 + _bwd2_chunk(b"JUNK")
+        with self.assertRaisesRegex(Exception, r'Unexpected chunk "JUNK"'):
+            VDFSerializer(io.BytesIO(data)).read()
+        data = self.HEADER + _bwd2_chunk(b"EXIT") + _bwd2_chunk(b"COLP")
+        with self.assertRaisesRegex(Exception, r'Unexpected chunk "COLP"'):
+            SDFSerializer(io.BytesIO(data)).read()
 
 
 # -- SDF animation authoring ----------------------------------------------------
