@@ -26,9 +26,9 @@ from .core import authoring, schema, validate
 WORKSPACE_CONTROL = "BattlezoneWorkspaceControl"
 GROUP_ORDER = (
     ("GEO", "Battlezone GEO", True),
-    ("Flags", "Engine Object Flags", False),
+    ("Flags", "Engine Object Flags (advanced)", False),
     ("Bounds", "Collision / Authored Bounds", False),
-    ("Damage", "Damage Representation", False),
+    ("Damage", "Damage Representation (read by the game, no effect in stock)", False),
     ("Eyepoint", "Eyepoint / POV", False),
     ("Spinner", "VDF Extras: Spinner", False),
     ("SDF", "SDF Extras", False),

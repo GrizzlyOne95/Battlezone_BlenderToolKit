@@ -241,3 +241,51 @@ byte-exact round trips and semantic equality. No copyrighted game assets are
 included; real-file validation was performed locally against a retail Redux
 install (235 addon VDFs: 100% parse success, 100% byte-exact re-serialization,
 band census confirming §5's layout).
+
+## 11. Field reference (technical notes)
+
+The tooltips in the Blender and Maya panels use plain-English text. The original
+reverse-engineering notes for each field are kept here so nothing is lost.
+
+- GenerateCollision: Generate GEO center, projectile box, and sphere radius for SDF/building collision data. This does not create VDF inner_col/outer_col vehicle collision helpers.
+- GEOTypeEnum: Named GEO type selector for common Battlezone roles. Unknown imported values are preserved exactly and listed as 'Unknown (0xNN)'.
+- GEOFlags: Raw VDF/SDF ObjectFlags field seeding the engine _OBJ76.flags state bitfield. Unknown bits are preserved when known checkboxes change. Stock assets ship 0.
+- BoundsMode: How this part's GeoCenter/SphereRadius/BoxHalfHeight are produced on export. Imported parts default to Preserve so authored bounds survive round trips.
+- BoundsMode (Preserve item): Write the stored values verbatim. Only affects collision/broadphase when ObjectFlags bit 0x1 is set (or class 11/81).
+- IsPOVHelper: This empty represents a class-40 eyepoint/POV part whose .geo is intentionally absent.
+- ANIMOrientationFlags: Raw tagANIMOBJ_MESH.flags value captured from imported animations; stock assets store 0.
+- HasDamageVariants: This part carries damage-state mesh swap names in the VGEO variant bands.
+- DamageGeo1: 8-char geo name swapped in for this part at damage state 1. Stock engines never select states above 0 until an external driver calls ObjTree_SelectRep.
+- DamageGeo2: 8-char geo name swapped in for this part at damage state 2.
+- DamageGeo3: 8-char geo name swapped in for this part at damage state 3.
+- FlagKeepBounds: CONFIRMED: SetObjBbox keeps the record's GeoCenter/SphereRadius/BoxHalfHeight verbatim instead of recomputing them; those volumes then drive broadphase/hitbox queries. Also makes the part non-collidable via the collision nibble.
+- FlagViewRender: CONFIRMED: tested inside AnimSprite::Render view logic. Rarely meaningful on static parts.
+- FlagDestroyedSeed: CONFIRMED: engine treats the object as dead from creation (IsAlive false, path blocking skipped, spinners halt). Seeding this breaks mission liveness checks - advanced use only.
+- FlagLightAttached: CONFIRMED: set at runtime by LOBJ chunk handlers and consumed by Building::Explode.
+- CollisionClass: CONFIRMED: high nibble of ObjectFlags consumed by obj_get/set_collision. NONCOLLIDABLE class forces 0x1000 at load.
+- ObjFlagTeam: CONFIRMED: bits 16-19 seed the object team id read by get_obj_team.
+- FlagsUnknownHex: ObjectFlags bits outside the decoded set, preserved exactly through edits and round trips.
+- SDFDDR: Raw StructObjectType ddr field. Stock structures commonly use 500000; some mine/powerup SDFs use smaller values such as 200.
+- SDFX: Raw StructObjectType Target vector X. Used by some special structure helpers.
+- SDFY: Raw StructObjectType Target vector Y. Stock type-15 structure spinners commonly use this as spin speed, such as 0.1 or 0.2.
+- SDFZ: Raw StructObjectType Target vector Z. Used by some special structure helpers.
+- SDFTime: Raw StructObjectType Time field. Most stock structures leave this at 0; some mine/powerup-like SDFs use nonzero values.
+- GEOHeaderUnknown: Raw second GEO header int. Stock values behave like a legacy checksum/signature; preserve imported values because generated meaning is still unconfirmed.
+- GEOHeaderUnknown2: Raw trailing GEO header int. Legacy editor references treat this as render flags; stock Redux assets are normally 0.
+- GEOFaceUnknownDefault: Default raw face reserved int used when per-face attributes are missing; stock assets normally store 0.
+- Name: The name inside the file. Kinda unimportant.
+- VehicleSize: Legacy VDF vehicle size/class field. Stock vehicles normally use 2; pilots, powerups, camera/repair helpers, and similar small objects commonly use 1.
+- VehicleType: Legacy VDF vehicle type field. Stock assets examined so far use 1; preserve imported values for compatibility.
+- Mass: Set how heavy the object is (Default: 1750.0 on many VDFs).
+- CollMult: Unknown (Default: 1.0).
+- DragCoefficient: Aerodynamics(?) (Default: 0.0008).
+- StructureType: Legacy SDF structure type field. Stock assets examined so far use 1; preserve imported values for compatibility.
+- Defensive: Raw SDFC DDR integer after the LOD distances. Stock structures commonly use 500000; mine/powerup-like SDFs commonly use smaller values such as 200.
+- UseAdvancedAnimHeader: Use custom raw ANIM pointer-placeholder fields; stock exported files normally leave these as zero.
+- AnimNull2: Raw legacy ANIM header animPtr placeholder; stock disk files normally store 0.
+- AnimUnknown2: Raw legacy ANIM header meshPtr placeholder; stock disk files normally store 0.
+- AnimReserved: Raw legacy ANIM rotKey/sclKey/posKey/object/entity pointer placeholders.
+- UseTranslation2Track: Write object scale animation into the legacy ANIM SCLKEY/Translation2 slot used by a few stock assets; location keys remain in POSKEY.
+- UseCustomSCPS: Write custom raw VDF SPCS/SCPS compatibility ints; most stock VDFs omit this chunk.
+- SCPSData: Three raw compatibility ints for the optional VDF shell/SCPS chunk path.
+- VDFCRawNull: Raw trailing int of the imported VDFC record; preserved verbatim on export (stock files store 0).

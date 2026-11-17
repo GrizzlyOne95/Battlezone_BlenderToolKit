@@ -536,7 +536,7 @@ class SDFVDFPropertyGroup(bpy.types.PropertyGroup):
     # Shared Properties.
     Name: bpy.props.StringProperty(
         name="Name",
-        description="The name inside the file. Kinda unimportant",
+        description="The name stored inside the file (max 16 characters). It does not affect gameplay.",
         default="New Thing",
         maxlen=16,
     )
@@ -544,7 +544,7 @@ class SDFVDFPropertyGroup(bpy.types.PropertyGroup):
     # VDF Properties
     VehicleSize: bpy.props.IntProperty(
         name="Vehicle Size",
-        description="Legacy VDF vehicle size/class field. Stock vehicles normally use 2; pilots, powerups, camera/repair helpers, and similar small objects commonly use 1.",
+        description="Advanced: leave at the imported value (2 for new vehicles; small objects like pilots and powerups use 1).",
         default=2,
         min=0,
         max=10,
@@ -552,7 +552,7 @@ class SDFVDFPropertyGroup(bpy.types.PropertyGroup):
 
     VehicleType: bpy.props.IntProperty(
         name="Vehicle Type",
-        description="Legacy VDF vehicle type field. Stock assets examined so far use 1; preserve imported values for compatibility.",
+        description="Advanced: leave at the imported value (1 for new vehicles).",
         default=1,
         min=0,
         max=10,
@@ -560,7 +560,7 @@ class SDFVDFPropertyGroup(bpy.types.PropertyGroup):
 
     Mass: bpy.props.FloatProperty(
         name="Mass",
-        description="Set how heavy the object is(Default: 1750.0 on many VDFs)",
+        description="How heavy the vehicle is. Many stock VDFs use 1750.",
         default=1750.0,
         min=0.0,
         max=34028234.0,
@@ -568,7 +568,7 @@ class SDFVDFPropertyGroup(bpy.types.PropertyGroup):
 
     CollMult: bpy.props.FloatProperty(
         name="Collision Multiplier(?)",
-        description="Unknown(Default: 1.0)",
+        description="Effect in game not known; leave at the imported value (1.0 for new vehicles).",
         default=1.0,
         min=0.0,
         max=34028234.0,
@@ -576,7 +576,7 @@ class SDFVDFPropertyGroup(bpy.types.PropertyGroup):
 
     DragCoefficient: bpy.props.FloatProperty(
         name="Drag Coefficient",
-        description="Aerodynamics(?)(Default: 0.0008)",
+        description="Probably air drag; effect in game not known. Leave at the imported value (0.0008 for new vehicles).",
         default=0.0008,
         min=0.0,
         max=34028234.0,
@@ -584,7 +584,7 @@ class SDFVDFPropertyGroup(bpy.types.PropertyGroup):
 
     StructureType: bpy.props.IntProperty(
         name="Structure Type",
-        description="Legacy SDF structure type field. Stock assets examined so far use 1; preserve imported values for compatibility.",
+        description="Advanced: leave at the imported value (1 for new buildings).",
         default=1,
         min=0,
         max=10,
@@ -593,7 +593,7 @@ class SDFVDFPropertyGroup(bpy.types.PropertyGroup):
     # SDF Properties here!
     Defensive: bpy.props.IntProperty(
         name="SDFC DDR",
-        description="Raw SDFC DDR integer after the LOD distances. Stock structures commonly use 500000; mine/powerup-like SDFs commonly use smaller values such as 200.",
+        description="Advanced: leave at the imported value (500000 for buildings; mines and powerups use small values like 200).",
         default=500000,
         min=0,
         max=2147483647,
@@ -656,13 +656,13 @@ class SDFVDFPropertyGroup(bpy.types.PropertyGroup):
 
     UseAdvancedAnimHeader: bpy.props.BoolProperty(
         name="Use Advanced ANIM Header",
-        description="Use custom raw ANIM pointer-placeholder fields; stock exported files normally leave these as zero",
+        description="Advanced: write your own values into the animation header placeholders. Leave off; stock files use zeros.",
         default=False,
     )
 
     AnimNull2: bpy.props.IntProperty(
         name="ANIM animPtr Placeholder",
-        description="Raw legacy ANIM header animPtr placeholder; stock disk files normally store 0",
+        description="Advanced: animation header placeholder. Leave at 0.",
         default=0,
         min=-2147483648,
         max=2147483647,
@@ -670,7 +670,7 @@ class SDFVDFPropertyGroup(bpy.types.PropertyGroup):
 
     AnimUnknown2: bpy.props.IntProperty(
         name="ANIM meshPtr Placeholder",
-        description="Raw legacy ANIM header meshPtr placeholder; stock disk files normally store 0",
+        description="Advanced: animation header placeholder. Leave at 0.",
         default=0,
         min=-2147483648,
         max=2147483647,
@@ -678,33 +678,33 @@ class SDFVDFPropertyGroup(bpy.types.PropertyGroup):
 
     AnimReserved: bpy.props.IntVectorProperty(
         name="ANIM Key/Object Placeholders",
-        description="Raw legacy ANIM rotKey/sclKey/posKey/object/entity pointer placeholders",
+        description="Advanced: five animation header placeholders. Leave at 0.",
         size=5,
         default=(0, 0, 0, 0, 0),
     )
 
     UseTranslation2Track: bpy.props.BoolProperty(
         name="Export Scale Keys to SCLKEY",
-        description="Write object scale animation into the legacy ANIM SCLKEY/Translation2 slot used by a few stock assets; location keys remain in POSKEY",
+        description="Export scale animation into the old scale-key slot that a few stock assets use. Location keys are exported as normal.",
         default=False,
     )
 
     UseCustomSCPS: bpy.props.BoolProperty(
         name="Use Custom SPCS/SCPS",
-        description="Write custom raw VDF SPCS/SCPS compatibility ints; most stock VDFs omit this chunk",
+        description="Advanced: write the optional SPCS/SCPS chunk. Most stock VDFs omit it; leave off.",
         default=False,
     )
 
     SCPSData: bpy.props.IntVectorProperty(
         name="SPCS/SCPS Data",
-        description="Three raw compatibility ints for the optional VDF shell/SCPS chunk path",
+        description="Advanced: three values for the optional SPCS/SCPS chunk. Effect in game not known; leave at the imported value.",
         size=3,
         default=(0, 0, 0),
     )
 
     VDFCRawNull: bpy.props.IntProperty(
         name="VDFC Trailing Raw Int",
-        description="Raw trailing int of the imported VDFC record; preserved verbatim on export (stock files store 0)",
+        description="Advanced: spare value at the end of the vehicle record, kept as imported. Leave at the imported value (0 for new vehicles).",
         default=0,
     )
 
@@ -1475,7 +1475,7 @@ def _collision_class_items(self, context):
 class GEOPropertyGroup(bpy.types.PropertyGroup):
     GenerateCollision: bpy.props.BoolProperty(
         name="Auto Generate SDF Collision Data",
-        description="Generate GEO center, projectile box, and sphere radius for SDF/building collision data. This does not create VDF inner_col/outer_col vehicle collision helpers.",
+        description="Work out the building (SDF) collision center, hit box and radius from the mesh on export. It does not create vehicle inner_col/outer_col helpers.",
         default=True,
     )
 
@@ -1545,7 +1545,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
 
     GEOTypeEnum: bpy.props.EnumProperty(
         name="GEO Type",
-        description="Named GEO type selector for common Battlezone roles. Unknown imported values are preserved exactly and listed as 'Unknown (0xNN)'.",
+        description="Pick the part's role by name. Unknown imported types are kept as they are and shown as 'Unknown (0xNN)'.",
         items=_geotype_enum_items,
         get=_get_geotype_enum_value,
         set=_set_geotype_enum_value,
@@ -1553,7 +1553,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
 
     GEOFlags: bpy.props.IntProperty(
         name="Object Flags (raw)",
-        description="Raw VDF/SDF ObjectFlags field seeding the engine _OBJ76.flags state bitfield. Unknown bits are preserved when known checkboxes change. Stock assets ship 0.",
+        description="Advanced: the part's raw flag number, set by the checkboxes below. Leave at the imported value (0 for new parts).",
         default=0,
         min=-2147483648,
         max=2147483647,
@@ -1561,7 +1561,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
 
     BoundsMode: bpy.props.EnumProperty(
         name="Bounds Mode",
-        description="How this part's GeoCenter/SphereRadius/BoxHalfHeight are produced on export. Imported parts default to Preserve so authored bounds survive round trips",
+        description="How the part's collision center, radius and box are written on export. Imported parts use Preserve so their original values survive.",
         items=(
             (
                 "AUTO",
@@ -1571,7 +1571,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
             (
                 "PRESERVE",
                 "Preserve Imported / Custom",
-                "Write the stored values verbatim. Only affects collision/broadphase when ObjectFlags bit 0x1 is set (or class 11/81)",
+                "Write the stored values unchanged. The game only uses them when 'Keep Authored Bounds' is on (or for SCROUNGE and PARKING_LOT parts)",
             ),
             (
                 "RECALC",
@@ -1590,46 +1590,46 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
 
     IsPOVHelper: bpy.props.BoolProperty(
         name="Eyepoint Helper",
-        description="This empty represents a class-40 eyepoint/POV part whose .geo is intentionally absent",
+        description="This empty stands in for an eyepoint (type 40) part that has no .geo file on purpose.",
         default=False,
     )
 
     ANIMOrientationFlags: bpy.props.IntProperty(
         name="ANIM Orientation Flags (raw)",
-        description="Raw tagANIMOBJ_MESH.flags value captured from imported animations; stock assets store 0",
+        description="Advanced: animation flags read from the imported file. Leave at the imported value (0 for new parts).",
         default=0,
     )
 
     HasDamageVariants: bpy.props.BoolProperty(
         name="Has Damage Variants",
-        description="This part carries damage-state mesh swap names in the VGEO variant bands",
+        description="This part has damaged-state mesh names. Valid values the game loads, but stock BZ98 1.5 and Redux never switch to them (only a mod hook could). Kept so files round-trip.",
         default=False,
     )
 
     DamageGeo1: bpy.props.StringProperty(
         name="Damaged 1 Mesh",
-        description="8-char geo name swapped in for this part at damage state 1. Stock engines never select states above 0 until an external driver calls ObjTree_SelectRep",
+        description="Name (max 8 characters) of the damage state 1 mesh: a valid value the game loads, but stock BZ98 1.5 and Redux never switch to it (only a mod hook could).",
         default="",
         maxlen=8,
     )
 
     DamageGeo2: bpy.props.StringProperty(
         name="Heavily Damaged Mesh",
-        description="8-char geo name swapped in for this part at damage state 2",
+        description="Name (max 8 characters) of the damage state 2 mesh: a valid value the game loads, but stock BZ98 1.5 and Redux never switch to it (only a mod hook could).",
         default="",
         maxlen=8,
     )
 
     DamageGeo3: bpy.props.StringProperty(
         name="Wreck Mesh",
-        description="8-char geo name swapped in for this part at damage state 3",
+        description="Name (max 8 characters) of the damage state 3 mesh: a valid value the game loads, but stock BZ98 1.5 and Redux never switch to it (only a mod hook could).",
         default="",
         maxlen=8,
     )
 
     FlagKeepBounds: bpy.props.BoolProperty(
         name="Keep Authored Bounds (0x1)",
-        description="CONFIRMED: SetObjBbox keeps the record's GeoCenter/SphereRadius/BoxHalfHeight verbatim instead of recomputing them; those volumes then drive broadphase/hitbox queries. Also makes the part non-collidable via the collision nibble",
+        description="Advanced: the game uses this part's saved center, radius and hit box instead of recalculating them, and the part stops colliding. Leave at the imported value (off for new parts).",
         get=lambda self: bool(self.GEOFlags & bz_semantics.OBJFLAG_KEEP_BOUNDS),
         set=lambda self, v: setattr(
             self,
@@ -1642,7 +1642,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
 
     FlagViewRender: bpy.props.BoolProperty(
         name="View Render Test (0x10)",
-        description="CONFIRMED: tested inside AnimSprite::Render view logic. Rarely meaningful on static parts",
+        description="Advanced: a flag the game checks when drawing animated sprites. Rarely meaningful on parts; leave at the imported value (off for new parts).",
         get=lambda self: bool(self.GEOFlags & bz_semantics.OBJFLAG_VIEW_RENDER),
         set=lambda self, v: setattr(
             self,
@@ -1655,7 +1655,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
 
     FlagDestroyedSeed: bpy.props.BoolProperty(
         name="Spawn Destroyed (0x200)",
-        description="CONFIRMED: engine treats the object as dead from creation (IsAlive false, path blocking skipped, spinners halt). Seeding this breaks mission liveness checks - advanced use only",
+        description="Advanced: the object starts out counted as destroyed (spinners stop, no path blocking) and mission alive-checks break. Leave off.",
         get=lambda self: bool(self.GEOFlags & bz_semantics.OBJFLAG_DESTROYED),
         set=lambda self, v: setattr(
             self,
@@ -1668,7 +1668,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
 
     FlagLightAttached: bpy.props.BoolProperty(
         name="Light Attached (0x800)",
-        description="CONFIRMED: set at runtime by LOBJ chunk handlers and consumed by Building::Explode",
+        description="Advanced: the game sets this itself when a light is attached to the part. Leave at the imported value (off for new parts).",
         get=lambda self: bool(self.GEOFlags & bz_semantics.OBJFLAG_LIGHT_ATTACHED),
         set=lambda self, v: setattr(
             self,
@@ -1681,7 +1681,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
 
     CollisionClass: bpy.props.EnumProperty(
         name="Collision Class",
-        description="CONFIRMED: high nibble of ObjectFlags consumed by obj_get/set_collision. NONCOLLIDABLE class forces 0x1000 at load",
+        description="Advanced: collision setting for this part. Leave at the imported value (0 for new parts); a NONCOLLIDABLE type part is forced to non-colliding.",
         items=_collision_class_items,
         get=lambda self: self.GEOFlags & bz_semantics.OBJFLAG_COLLISION_MASK,
         set=lambda self, v: setattr(
@@ -1694,7 +1694,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
 
     ObjFlagTeam: bpy.props.IntProperty(
         name="Team Seed",
-        description="CONFIRMED: bits 16-19 seed the object team id read by get_obj_team",
+        description="Advanced: starting team number (0-15) stored in the part's flags. Leave at the imported value.",
         min=0,
         max=15,
         get=lambda self: (self.GEOFlags & bz_semantics.OBJFLAG_TEAM_MASK) >> 16,
@@ -1708,7 +1708,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
 
     FlagsUnknownHex: bpy.props.StringProperty(
         name="Unknown Bits",
-        description="ObjectFlags bits outside the decoded set, preserved exactly through edits and round trips",
+        description="Flag bits this tool does not understand. They are kept exactly as imported; do not change them.",
         get=lambda self: bz_semantics.format_hex(
             bz_semantics.unknown_flag_bits(self.GEOFlags)
         ),
@@ -1770,7 +1770,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
 
     SDFDDR: bpy.props.IntProperty(
         name="DDR / Draw Distance",
-        description="Raw StructObjectType ddr field. Stock structures commonly use 500000; some mine/powerup SDFs use smaller values such as 200.",
+        description="Advanced: leave at the imported value (500000 for buildings; mines and powerups use small values like 200).",
         default=50000,
         min=0,
         max=5000000,
@@ -1778,7 +1778,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
 
     SDFX: bpy.props.FloatProperty(
         name="Target X",
-        description="Raw StructObjectType Target vector X. Used by some special structure helpers.",
+        description="Advanced: target X value used by a few special structure helpers. Leave at the imported value (0 for new buildings).",
         default=0,
         min=-500000.0,
         max=500000.0,
@@ -1786,7 +1786,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
 
     SDFY: bpy.props.FloatProperty(
         name="Target Y / Spin Speed",
-        description="Raw StructObjectType Target vector Y. Stock type-15 structure spinners commonly use this as spin speed, such as 0.1 or 0.2.",
+        description="Spin speed for type 15 (SPINNER) structures; stock ones use values like 0.1 or 0.2. Otherwise leave at the imported value (0).",
         default=0,
         min=-500000.0,
         max=500000.0,
@@ -1794,7 +1794,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
 
     SDFZ: bpy.props.FloatProperty(
         name="Target Z",
-        description="Raw StructObjectType Target vector Z. Used by some special structure helpers.",
+        description="Advanced: target Z value used by a few special structure helpers. Leave at the imported value (0 for new buildings).",
         default=0,
         min=-500000.0,
         max=500000.0,
@@ -1802,7 +1802,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
 
     SDFTime: bpy.props.FloatProperty(
         name="Target Time / Value",
-        description="Raw StructObjectType Time field. Most stock structures leave this at 0; some mine/powerup-like SDFs use nonzero values.",
+        description="Advanced: leave at the imported value (0 for most buildings; some mines and powerups use other values).",
         default=0.0,
         min=-500000.0,
         max=500000.0,
@@ -1810,7 +1810,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
 
     GEOHeaderUnknown: bpy.props.IntProperty(
         name="GEO Header Checksum",
-        description="Raw second GEO header int. Stock values behave like a legacy checksum/signature; preserve imported values because generated meaning is still unconfirmed.",
+        description="Advanced: old GEO header value that looks like a checksum. Effect in game not known; leave at the imported value (69 for new parts).",
         default=69,
         min=-2147483648,
         max=2147483647,
@@ -1818,7 +1818,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
 
     GEOHeaderUnknown2: bpy.props.IntProperty(
         name="GEO Header Flags",
-        description="Raw trailing GEO header int. Legacy editor references treat this as render flags; stock Redux assets are normally 0.",
+        description="Advanced: old GEO header render flags. Effect in game not known; leave at the imported value (0 for new parts).",
         default=0,
         min=-2147483648,
         max=2147483647,
@@ -1826,7 +1826,7 @@ class GEOPropertyGroup(bpy.types.PropertyGroup):
 
     GEOFaceUnknownDefault: bpy.props.IntProperty(
         name="Face Reserved Raw",
-        description="Default raw face reserved int used when per-face attributes are missing; stock assets normally store 0",
+        description="Advanced: spare per-face value used for faces without their own data. Leave at the imported value (0 for new parts).",
         default=0,
         min=-2147483648,
         max=2147483647,
@@ -3845,7 +3845,7 @@ class BZ98TOOLS_PT_geo_semantics(bpy.types.Panel):
 
         # --- Object flags ---------------------------------------------
         flags_box = layout.box()
-        flags_box.label(text="Engine Object Flags", icon="SETTINGS")
+        flags_box.label(text="Engine Object Flags (advanced)", icon="SETTINGS")
         flags_box.prop(geo, "FlagKeepBounds")
         flags_box.prop(geo, "FlagDestroyedSeed")
         flags_box.prop(geo, "FlagLightAttached")
@@ -3867,7 +3867,7 @@ class BZ98TOOLS_PT_geo_semantics(bpy.types.Panel):
 
         # --- Damage representation ------------------------------------
         damage_box = layout.box()
-        damage_box.label(text="Damage Representation", icon="MOD_BUILD")
+        damage_box.label(text="Damage Representation (read by the game, no effect in stock)", icon="MOD_BUILD")
         damage_box.prop(geo, "DamageGeo1")
         damage_box.prop(geo, "DamageGeo2")
         damage_box.prop(geo, "DamageGeo3")
