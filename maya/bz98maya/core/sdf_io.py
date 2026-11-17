@@ -1,0 +1,232 @@
+"""Legacy .sdf (structure) + .geo <-> neutral scene. Maya-free.
+
+Shares the part / GEO / hierarchy handling with ``vdf_io``; this module only
+adds the SDF container: ``sdf_classes`` sections SDFC, SGEO and the GEO
+records (which carry five extra fields: ddr, x, y, z, time).
+
+Layout (checked against ``export_sdf.py`` and stock files): SGEO holds
+``geocount`` slots in each of 6 bands; LOD1 / LOD2 / LOD3 live in bands 0 / 2 / 4
+and bands 1 / 3 / 5 are NULL. Stock files often repeat the LOD1 record names in
+the LOD2 / LOD3 bands (the same .geo is reused); those repeats are folded into
+the single LOD1 node on read, and written as NULL unless a distinct LOD2 / LOD3
+part exists. SDF part names are not always LOD-digit style (``op1bda01``); such
+names are treated as LOD1 (see ``vdf_io.make_layout``).
+
+Kept as scene meta (model header attributes): structure name and type, LOD distances,
+the SDFC ``ddr`` value, death explosion effect and sound. Kept per part (authoring
+attributes): ddr, x, y, z, time, plus the VDF part fields. The ANIM block round-trips as in
+``vdf_io`` (slot table, per-part keys). Not round-tripped: chunks after the known sections (Blender
+does not write them back either), damage-state data, and the same per-face fields listed in ``vdf_io``.
+"""
+
+from __future__ import annotations
+
+import os
+from typing import List
+
+from . import anim as anim_io
+from . import vdf_io
+from .model import Scene
+from .toolkit import ensure_toolkit
+
+SDF_LOD_BANDS = (0, 2, 4)
+SDF_BAND_COUNT = 6
+SDF_RECORD_SIZE = 120
+NULL_SLOT_DDR = 50000  # what export_sdf.py gives NULL slots
+DEFAULT_PART_DDR = 0  # stock parts store 0
+
+
+def _modules():
+    ensure_toolkit()
+    from bz98tools import sdf_classes, vdf_classes
+
+    return sdf_classes, vdf_classes
+
+
+def read_sdf(path: str, import_options=None) -> Scene:
+    sdf_classes, _ = _modules()
+    with open(path, "rb") as handle:
+        data = handle.read()
+
+    header = sdf_classes.SDFHeader()
+    position = header.Read(data, 0)
+    if header.BWDHeader != b"BWD2" or header.REVHeader != b"REV\0":
+        raise ValueError("%s is not an SDF file or is corrupted" % os.path.basename(path))
+    sdfc = sdf_classes.SDFCHeader()
+    position = sdfc.Read(data, position)
+    sgeo = sdf_classes.SGEOHeader()
+    position = sgeo.Read(data, position)
+    if sdfc.headername != "SDFC" or sgeo.headername != "SGEO":
+        raise ValueError("%s: missing SDFC / SGEO sections" % os.path.basename(path))
+    if sgeo.geocount < 0 or position + SDF_BAND_COUNT * sgeo.geocount * SDF_RECORD_SIZE > len(data):
+        raise ValueError("%s: truncated GEO table" % os.path.basename(path))
+
+    scene = Scene()
+    scene.meta = {
+        "format": "sdf",
+        "name": sdfc.name,
+        "structuretype": int(sdfc.structuretype),
+        "lod_dists": [float(v) for v in (sdfc.lod1dist, sdfc.lod2dist, sdfc.lod3dist, sdfc.lod4dist, sdfc.lod5dist)],
+        "ddr": int(sdfc.ddr),
+        "explosioneffect": sdfc.explosioneffect,
+        "explosionsound": sdfc.explosionsound,
+    }
+
+    records = []  # (lod, GEOData, owner)
+    owners = {}
+    ignored = 0
+    for band in range(SDF_BAND_COUNT):
+        for slot in range(sgeo.geocount):
+            geo = sdf_classes.GEOData()
+            position = geo.Read(data, position)
+            if not geo.name or geo.name[0:4].lower() == "null":
+                continue
+            if band in SDF_LOD_BANDS:
+                lod = SDF_LOD_BANDS.index(band) + 1
+                if lod == 1:
+                    owners[slot] = geo.name.lower()
+                records.append((lod, geo, owners.get(slot)))
+            else:
+                ignored += 1
+    if ignored:
+        scene.warnings.append(f"{ignored} record(s) in the unused SGEO bands 1/3/5 were ignored")
+
+    vdf_io.build_nodes(
+        records,
+        os.path.dirname(os.path.abspath(path)),
+        scene,
+        extra_props=lambda geo: {
+            "ddr": int(geo.ddr),
+            "x": float(geo.x),
+            "y": float(geo.y),
+            "z": float(geo.z),
+            "time": float(geo.time),
+        },
+        quiet_duplicates=True,
+    )
+    position = _read_anim(scene, data, position, sdf_classes)
+    tail = _unknown_tail_tags(data, position)
+    if tail:  # import_sdf.py:71-102 captures these; export_sdf.py:585-592 reads a non-existent `.elements`, so they are lost
+        scene.warnings.append("%d unrecognised chunk(s) after the SDF sections (%s) are not kept" % (len(tail), ", ".join(tail[:6])))
+    vdf_io.attach_map_textures(scene, os.path.dirname(os.path.abspath(path)), import_options)
+    return scene
+
+
+def _unknown_tail_tags(data: bytes, position: int) -> List[str]:
+    """Tags of the chunks after the known sections other than EXIT (import_sdf.py:71-102 walks them the same way)."""
+    import struct
+
+    tags = []
+    while position + 8 <= len(data):
+        tag = data[position:position + 4]
+        declared = struct.unpack_from("<i", data, position + 4)[0]
+        if tag != b"EXIT":
+            tags.append(tag.decode("ascii", "ignore"))
+        position += max(8, declared) if declared >= 8 and position + declared <= len(data) else len(data)
+    return tags
+
+
+def _read_anim(scene: Scene, data: bytes, position: int, sdf_classes) -> int:
+    """The ANIM block after the GEO table (import_sdf.py's reader), onto the nodes; returns the position after it."""
+    if data[position:position + 4] != b"ANIM":
+        return position
+    header = sdf_classes.ANIMHeader()
+    position = header.Read(data, position)
+
+    def many(cls, count):
+        nonlocal position
+        out = []
+        for _ in range(max(0, count)):
+            item = cls()
+            position = item.Read(data, position)
+            out.append(item)
+        return out
+
+    elements = many(sdf_classes.ANIMElement, header.elementscount)
+    orientations = many(sdf_classes.ANIMOrientation, header.orientationscount)
+    rotations = many(sdf_classes.ANIMRotation, header.rotationcount)
+    translations2 = many(sdf_classes.ANIMTranslation2, header.translation2count)
+    positions = many(sdf_classes.ANIMPosition, header.positioncount)
+    anim_io.read_anim(scene, header, elements, orientations, rotations, translations2, positions)
+    return position
+
+
+def write_sdf(scene: Scene, path: str, write_geos: bool = True, face_plane_mode: str = "STOCK",
+              export_animations: bool = True) -> List[str]:
+    """Write ``path`` and a ``<name>.geo`` beside it for every part with a mesh."""
+    sdf_classes, vdf_classes = _modules()
+    folder = os.path.dirname(os.path.abspath(path))
+    warnings: List[str] = list(scene.warnings)
+    layout = vdf_io.make_layout(scene, warnings)
+    geocount = len(layout.placed)
+    from . import authoring
+
+    meta = dict(authoring.default_meta())
+    meta.update(scene.meta or {})
+
+    sdfc = sdf_classes.SDFCHeader()
+    sdfc.name = str(meta["name"] if meta.get("name") is not None else os.path.splitext(os.path.basename(path))[0])[:16]  # as authored, even empty
+    sdfc.structuretype = int(meta["structuretype"])
+    (sdfc.lod1dist, sdfc.lod2dist, sdfc.lod3dist, sdfc.lod4dist, sdfc.lod5dist) = vdf_io._lod_dists(meta)
+    sdfc.ddr = int(meta["ddr"])
+    sdfc.explosioneffect = str(meta["explosioneffect"] or "")[:12]
+    sdfc.explosionsound = str(meta["explosionsound"] or "")[:12]
+
+    null_geo = sdf_classes.GEOData()
+    null_geo.name = "NULL"
+    null_geo.matrix = [0] * 12
+    null_geo.parent = "NULL"
+    null_geo.geocenter = [0] * 3
+    null_geo.sphereradius = 0
+    null_geo.boxhalfheight = [0] * 3
+    null_geo.type = 0
+    null_geo.geoflags = 0
+    null_geo.ddr = NULL_SLOT_DDR
+    null_geo.x = null_geo.y = null_geo.z = null_geo.time = 0.0
+
+    def extras(record, props):
+        record.ddr = int(props.get("ddr", DEFAULT_PART_DDR))
+        record.x = float(props.get("x", 0.0))
+        record.y = float(props.get("y", 0.0))
+        record.z = float(props.get("z", 0.0))
+        record.time = float(props.get("time", 0.0))
+
+    records, _points = vdf_io.fill_records(
+        layout, folder, warnings, sdf_classes.GEOData, vdf_classes.serialize_section,
+        vdf_classes.serialize_section(null_geo), SDF_LOD_BANDS, SDF_BAND_COUNT, extras=extras,
+        write_geos=write_geos, face_plane_mode=face_plane_mode,
+    )
+
+    sgeo = sdf_classes.SGEOHeader()
+    sgeo.geocount = geocount
+    sgeo.sectionlength = geocount * SDF_RECORD_SIZE * SDF_BAND_COUNT + sgeo.binlength
+
+    block = anim_io.build_anim(
+        layout.entries, layout.matrices, meta, sdf_classes, os.path.splitext(os.path.basename(path))[0], warnings
+    ) if export_animations else None
+    with open(path, "wb") as handle:
+        sdf_classes.SDFHeader().Write(handle, 0)
+        sdfc.Write(handle, 0)
+        sgeo.Write(handle, 0)
+        for record in records:
+            handle.write(record)
+        exit_section = sdf_classes.EXITSection()
+        if block is not None:
+            header, elements, orientations, rotations, translations2, positions = block
+            header.elementscount = len(elements)
+            header.orientationscount = len(orientations)
+            header.rotationcount = len(rotations)
+            header.translation2count = len(translations2)
+            header.positioncount = len(positions)
+            header.sectionlength = (
+                header.binlength + 148 * len(elements) + 132 * len(orientations) + 20 * len(rotations)
+                + 16 * len(translations2) + 16 * len(positions)
+            )
+            header.Write(handle, 0)
+            for group in (elements, orientations, rotations, translations2, positions):
+                for item in group:
+                    item.Write(handle, 0)
+            exit_section.Write(handle, 0)  # the extra EXIT an ANIM block carries
+        exit_section.Write(handle, 0)
+        exit_section.Write(handle, 0)
+    return warnings
