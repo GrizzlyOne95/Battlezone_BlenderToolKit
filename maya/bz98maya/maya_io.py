@@ -42,7 +42,7 @@ from .core.toolkit import ensure_toolkit
 # Keep the native Ogre backend probe (a global side effect) out of Maya.
 ensure_toolkit(stub_ogrefast=True)
 
-from .core import ogre_io, sdf_io, validate, vdf_io  # noqa: E402
+from .core import export_options, ogre_io, redux, sdf_io, validate, vdf_io  # noqa: E402
 
 DEFAULT_CAMERAS = ("persp", "top", "front", "side", "bottom", "back", "left")
 TEXTURE_EXTENSIONS = (".png", ".tga", ".dds", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")
@@ -152,6 +152,9 @@ def _find_texture(material: str, folder: Optional[str]) -> Optional[str]:
     return None
 
 
+_IMPORT_MATERIALS: Dict[str, dict] = {}  # scene.materials of the import in progress
+
+
 def _shading_group(material: str, texture_folder: Optional[str], cache: Dict[str, str]) -> str:
     if material in cache:
         return cache[material]
@@ -164,7 +167,10 @@ def _shading_group(material: str, texture_folder: Optional[str], cache: Dict[str
     sg = cmds.sets(renderable=True, noSurfaceShader=True, empty=True, name=sg_name)
     cmds.connectAttr(shader + ".outColor", sg + ".surfaceShader", force=True)
     _add_attr(shader, "bzMaterial", material)
-    texture = _find_texture(material, texture_folder)
+    info = _IMPORT_MATERIALS.get(material) or {}
+    if info.get("diffuse"):
+        cmds.setAttr(shader + ".color", *[float(v) for v in info["diffuse"][:3]], type="double3")
+    texture = info.get("texture_path") or _find_texture(material, texture_folder)
     if texture:
         file_node = cmds.shadingNode("file", asTexture=True, isColorManaged=True, name=safe + "_tex")
         place = cmds.shadingNode("place2dTexture", asUtility=True, name=safe + "_place2d")
@@ -178,6 +184,14 @@ def _shading_group(material: str, texture_folder: Optional[str], cache: Dict[str
     return sg
 
 
+def _colour_plug(shader: str, names=("color", "baseColor")) -> Optional[str]:
+    """The base-colour plug of a shader (lambert ``color``; standardSurface / openPBR ``baseColor``)."""
+    for name in names:
+        if cmds.attributeQuery(name, node=shader, exists=True):
+            return "%s.%s" % (shader, name)
+    return None
+
+
 def _material_name_of(shading_group: str) -> str:
     """The BZ material / texture name a shading group stands for ('' = none)."""
     if shading_group == "initialShadingGroup":
@@ -188,7 +202,8 @@ def _material_name_of(shading_group: str) -> str:
         stored = _get_attr(shader, "bzMaterial")
         if stored:
             return stored
-        files = cmds.listConnections(shader + ".color", source=True, destination=False, type="file") or []
+        plug = _colour_plug(shader)
+        files = (cmds.listConnections(plug, source=True, destination=False, type="file") or []) if plug else []
         if files:
             path = cmds.getAttr(files[0] + ".fileTextureName") or ""
             if path:
@@ -286,6 +301,8 @@ def build_scene(scene: Scene, group_name: str, texture_folder: Optional[str] = N
         attributes.write_model(root, scene.meta)
     cache: Dict[str, str] = {}
     uuids: Dict[str, str] = {}
+    _IMPORT_MATERIALS.clear()
+    _IMPORT_MATERIALS.update(scene.materials)
     for node in scene.nodes:
         uuids[node.name] = _create_node(node, root, texture_folder, cache)
     for node in scene.nodes:
@@ -449,7 +466,50 @@ def collect_scene(triangulate: bool = False) -> Scene:
         scene.nodes.append(node)
     if not scene.nodes:
         raise RuntimeError("nothing to export: no meshes, locators or tagged transforms found")
+    scene.materials = collect_materials(scene)
     return scene
+
+
+def _plug_colour(plug: str, fallback):
+    """RGB of a colour plug; a connected texture gives Blender's default Principled grey."""
+    if cmds.listConnections(plug, source=True, destination=False):
+        return [0.8, 0.8, 0.8]
+    value = cmds.getAttr(plug)
+    return [float(v) for v in (value[0] if isinstance(value, list) else value)][:3] or fallback
+
+
+def collect_materials(scene: Scene) -> Dict[str, dict]:
+    """Blender's ``bCollectMaterialData`` for the exported meshes: colours and the image texture.
+
+    Blender reads the Principled base colour (ambient = diffuse = specular) and the first image
+    node; here the lambert colour and its file texture. A texture connected to the colour makes
+    the colour Blender's default grey.
+    """
+    wanted = {m for node in scene.nodes if node.mesh for m in node.mesh.face_materials if m}
+    out: Dict[str, dict] = {}
+    for sg in cmds.ls(type="shadingEngine") or []:
+        name = _material_name_of(sg)
+        if name not in wanted or name in out:
+            continue
+        shaders = cmds.listConnections(sg + ".surfaceShader", source=True, destination=False) or []
+        info = {"ambient": [1.0] * 3, "diffuse": [1.0] * 3, "specular": [0.0] * 3, "emissive": [0.0] * 3}
+        if shaders:
+            shader = shaders[0]
+            colour = _colour_plug(shader)
+            if colour:
+                diffuse = _plug_colour(colour, [1.0] * 3)
+                info.update(ambient=list(diffuse), diffuse=list(diffuse), specular=list(diffuse))
+            emission = _colour_plug(shader, ("incandescence", "emissionColor"))
+            if emission:
+                info["emissive"] = _plug_colour(emission, [0.0] * 3)
+            files = (cmds.listConnections(colour, source=True, destination=False, type="file") or []) if colour else []
+            if files:
+                path = cmds.getAttr(files[0] + ".fileTextureName") or ""
+                if path:
+                    info["texture"] = os.path.basename(path)
+                    info["texture_path"] = path
+        out[name] = info
+    return out
 
 
 # --- entry points used by the plug-in menu ---------------------------------
@@ -474,19 +534,21 @@ def _import(scene: Scene, path: str) -> str:
 LAST_ISSUES: List[dict] = []  # result of the most recent validation (the panel shows it)
 
 
-def import_vdf(path: str) -> str:
-    return _import(vdf_io.read_vdf(path), path)
+def import_vdf(path: str, import_options: Optional[dict] = None) -> str:
+    """``import_options``: Blender's ImportMapTextures / MapTextureDirectory / MapTextureZFS."""
+    return _import(vdf_io.read_vdf(path, import_options), path)
 
 
-def import_sdf(path: str) -> str:
-    return _import(sdf_io.read_sdf(path), path)
+def import_sdf(path: str, import_options: Optional[dict] = None) -> str:
+    return _import(sdf_io.read_sdf(path, import_options), path)
 
 
-def import_geo(path: str) -> str:
-    return _import(vdf_io.read_geo(path), path)
+def import_geo(path: str, import_options: Optional[dict] = None) -> str:
+    return _import(vdf_io.read_geo(path, import_options), path)
 
 
 def import_ogre_mesh(path: str) -> str:
+    """The mesh, with the sibling .material's colours and textures."""
     return _import(ogre_io.read_ogre_mesh(path), path)
 
 
@@ -507,50 +569,78 @@ def _active_part_name(scene: Scene) -> Optional[str]:
     return next((n.name for n in scene.nodes if n.mesh is not None), None)
 
 
+BLOCK_ON_ERRORS = True  # Blender blocks on validation errors and offers no override; tests switch it off
+
+
 def _check_before_export(scene: Scene, export_mode: str) -> None:
-    """Blender validates before VDF / SDF / GEO export; here it warns and never blocks."""
+    """Blender's pre-export validation: errors block the export, warnings are only reported."""
     issues = validate_scene(export_mode, scene=scene)
     found = validate.counts(issues, export_mode)
-    if found["ERROR"] or found["WARNING"]:
+    if found["ERROR"] and BLOCK_ON_ERRORS:
+        raise RuntimeError(
+            "%s export blocked by %d validation errors. Run 'Validate Battlezone Scene' for details."
+            % (export_mode, found["ERROR"])
+        )
+    if found["WARNING"]:
         om.MGlobal.displayWarning(
-            "Battlezone: %s export validation found %d error(s) and %d warning(s). "
-            "Run Validate Battlezone Scene for details." % (export_mode, found["ERROR"], found["WARNING"])
+            "Battlezone: %s export validation found %d warnings." % (export_mode, found["WARNING"])
         )
 
 
-def export_vdf(path: str) -> None:
+def export_legacy(kind: str, path: str, options: Optional[dict] = None) -> dict:
+    """VDF / SDF / GEO export with Blender's options; "Also Create Redux Files" adds the auto-port.
+
+    Returns {"warnings": [...], "redux": porter result or None}.
+    """
+    options = export_options.merged_options(kind, options)
     scene = collect_scene()
-    _check_before_export(scene, "VDF")
-    warnings = vdf_io.write_vdf(scene, path)
+    plane = options.get("face_plane_mode", "CURRENT")
+    if kind == "GEO":
+        active = _active_part_name(scene)
+        node = scene.node_by_name(active) if active else None
+        if node is None or node.mesh is None:
+            raise RuntimeError("select a mesh to export as GEO")
+        _check_before_export(Scene(nodes=[node]), "GEO")
+        warnings = vdf_io.write_geo(node, path, plane)
+    else:
+        _check_before_export(scene, kind)
+        write_geos = not options.get("ExportVDFOnly" if kind == "VDF" else "ExportSDFOnly", False)
+        writer = vdf_io.write_vdf if kind == "VDF" else sdf_io.write_sdf
+        warnings = writer(scene, path, write_geos, plane)
     _report(warnings)
-    om.MGlobal.displayInfo("Battlezone: wrote %s (+ .geo files beside it)" % path)
+    om.MGlobal.displayInfo("Battlezone: wrote %s" % path)
+    result = None
+    if options.get("auto_port_ogre"):
+        result = redux.auto_port(path, options)
+        om.MGlobal.displayInfo("Battlezone: Redux auto-port %s" % sorted(result or ["FAILED"]))
+    return {"warnings": warnings, "redux": result}
 
 
-def export_sdf(path: str) -> None:
-    scene = collect_scene()
-    _check_before_export(scene, "SDF")
-    warnings = sdf_io.write_sdf(scene, path)
+def export_redux_mesh(path: str, options: Optional[dict] = None) -> List[str]:
+    """"Redux Mesh Only": the BZR .mesh (and .material) with Blender's options."""
+    options = export_options.merged_options("MESH", options)
+    scene = collect_scene(triangulate=True)
+    warnings = redux.write_bzr_mesh(scene, path, options)
     _report(warnings)
-    om.MGlobal.displayInfo("Battlezone: wrote %s (+ .geo files beside it)" % path)
+    om.MGlobal.displayInfo("Battlezone: wrote %s" % path)
+    return warnings
 
 
-def export_geo(path: str) -> None:
+def export_vdf(path: str, options: Optional[dict] = None) -> None:
+    export_legacy("VDF", path, options)
+
+
+def export_sdf(path: str, options: Optional[dict] = None) -> None:
+    export_legacy("SDF", path, options)
+
+
+def export_geo(path: str, options: Optional[dict] = None) -> None:
     """The first selected mesh (or the first mesh in the scene) as one .geo."""
-    scene = collect_scene()
-    active = _active_part_name(scene)
-    node = scene.node_by_name(active) if active else None
-    if node is None or node.mesh is None:
-        raise RuntimeError("select a mesh to export as GEO")
-    _check_before_export(Scene(nodes=[node]), "GEO")
-    warnings = vdf_io.write_geo(node, path)
-    _report(warnings)
-    om.MGlobal.displayInfo("Battlezone: wrote %s" % path)
+    export_legacy("GEO", path, options)
 
 
-def export_ogre_mesh(path: str) -> None:
-    warnings = ogre_io.write_ogre_mesh(collect_scene(triangulate=True), path)
-    _report(warnings)
-    om.MGlobal.displayInfo("Battlezone: wrote %s" % path)
+def export_ogre_mesh(path: str, options: Optional[dict] = None) -> None:
+    export_redux_mesh(path, options)
 
 
 # --- authoring tools ---------------------------------------------------------

@@ -94,6 +94,12 @@ def _call(action, *args):
         cmds.confirmDialog(title="Battlezone", message=str(exc), button=["OK"], icon="critical")
 
 
+def export_dialog(*_args):
+    from . import export_dialog as dialog
+
+    _call(dialog.show_dialog)
+
+
 def show_panel(*_args):
     from . import panel
 
@@ -158,6 +164,7 @@ def create_menu():
     cmds.menuItem(label="Import Ogre Mesh...", command=import_mesh, parent=MENU_NAME)
     cmds.menuItem(label="Export Ogre Mesh...", command=export_mesh, parent=MENU_NAME)
     cmds.menuItem(divider=True, parent=MENU_NAME)
+    cmds.menuItem(label="Export Options (Legacy / Legacy + Redux / Redux)...", command=export_dialog, parent=MENU_NAME)
     cmds.menuItem(label="Battlezone Panel", command=show_panel, parent=MENU_NAME)
     cmds.menuItem(label="Validate Battlezone Scene", command=validate_scene, parent=MENU_NAME)
     cmds.menuItem(label="Create Vehicle GEO Set", command=create_vehicle_geo_set, parent=MENU_NAME)

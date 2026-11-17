@@ -59,6 +59,9 @@ class Scene:
     # VDF only: vehicle header values and collision box (see vdf_io).
     meta: Dict[str, object] = field(default_factory=dict)
     warnings: List[str] = field(default_factory=list)
+    # Material name -> info dict (ambient / diffuse / specular / emissive RGB, texture, texture_path),
+    # the same keys Blender's bCollectMaterialData fills; used for the .material file.
+    materials: Dict[str, dict] = field(default_factory=dict)
 
     def node_by_name(self, name: str) -> Optional[Node]:
         for node in self.nodes:

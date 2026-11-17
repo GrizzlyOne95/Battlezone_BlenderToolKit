@@ -19,6 +19,7 @@ Run:
 import math
 import os
 import shutil
+import struct
 import sys
 import tempfile
 import unittest
@@ -207,13 +208,24 @@ class VdfRoundTripTests(unittest.TestCase):
         for before, after in zip(scene.nodes, again.nodes):
             np.testing.assert_allclose(after.matrix, before.matrix, atol=TOL)
         new_mesh = again.nodes[0].mesh
-        self.assertEqual(len(new_mesh.positions), 8)  # welded on (position, normal)
+        # welded on (position, normal, UV): the cube's 24 face corners have 24 different UVs
+        self.assertEqual(len(new_mesh.positions), 24)
         self.assertEqual(len(new_mesh.faces), 6)
         self.assertEqual(new_mesh.face_materials, hull.mesh.face_materials)
         for old, new in zip(_expanded(hull.mesh), _expanded(new_mesh)):
             np.testing.assert_allclose(new[0], old[0], atol=TOL)
             np.testing.assert_allclose(new[1], old[1], atol=TOL)
             np.testing.assert_allclose(new[2], old[2], atol=TOL)
+
+    def test_geo_vertices_split_on_uv_but_weld_when_everything_matches(self):
+        cube = vdf_io.box_mesh((0, 0, 0), (1, 1, 1))
+        cube.face_materials = ["t"] * 6
+        loops = cube.loop_count()
+        cube.normals = [(0.0, 1.0, 0.0)] * loops  # one normal everywhere
+        cube.uv_sets = [[(0.5, 0.5)] * loops]  # and one UV everywhere
+        self.assertEqual(vdf_io.mesh_to_geo("c", cube).vert_count, 8)
+        cube.uv_sets = [[(0.1 * (i % 7), 0.0) for i in range(loops)]]
+        self.assertGreater(vdf_io.mesh_to_geo("c", cube).vert_count, 8)
 
     def test_stock_plane_convention_is_written(self):
         mesh = Mesh(
@@ -508,7 +520,7 @@ class SdfRoundTripTests(unittest.TestCase):
             self.assertEqual(twin.mesh is None, node.mesh is None)
             if node.mesh:
                 self.assertEqual(len(twin.mesh.faces), len(node.mesh.faces))
-                self.assertEqual(len(twin.mesh.positions), len(node.mesh.positions))
+                self.assertGreaterEqual(len(twin.mesh.positions), len(node.mesh.positions))
 
     def test_sdf_rejects_non_sdf(self):
         bad = os.path.join(self.tmp, "bad.sdf")
@@ -1072,6 +1084,578 @@ class OgreRoundTripTests(unittest.TestCase):
         pos = import_compat._decode_semantic(sub._wire_geometry, {"POSITION"})[:, :3][np.asarray(sub.faces)]
         normal = np.cross(pos[1] - pos[0], pos[2] - pos[0])
         self.assertGreater(float(normal[2]), 0.0)  # still facing +Z after the mirror
+
+
+# --- tier 2: Redux export pipeline ---------------------------------------------------------
+
+def _load_blender_ogre_export():
+    """Blender's own OgreExport module (it imports bpy only for the code we do not call)."""
+    import importlib.util
+    import types
+
+    stubs = {}
+    for name in ("bpy", "mathutils"):
+        if name not in sys.modules:
+            stubs[name] = types.ModuleType(name)
+            sys.modules[name] = stubs[name]
+    if "mathutils" in stubs:
+        for cls in ("Vector", "Matrix", "Quaternion"):
+            setattr(stubs["mathutils"], cls, type(cls, (), {}))
+    try:
+        path = os.path.join(_REPO_ROOT, "bz98tools", "ogretools", "OgreExport.py")
+        spec = importlib.util.spec_from_file_location("bz98_ogre_export_for_tests", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        for name in stubs:
+            sys.modules.pop(name, None)
+
+
+def _reference_mesh_bytes(submeshes, tangent_dimensions=None):
+    """Blender's pure static export, fed by hand-built Blender-axes arrays (no module under test)."""
+    from bz98tools.ogrefast.pure import kenshi_compat, pose_compat
+
+    built = []
+    for index, spec in enumerate(submeshes):
+        sub = pose_compat.SubMeshData()
+        sub.index = index
+        sub.submesh_name = spec["name"]
+        sub.material = spec["material"]
+        loops = len(spec["loops"])
+        out = sub.set_vertex(
+            nd_vert_indices=np.asarray(spec["loops"], dtype=np.int32),
+            nd_loop_indices=np.arange(loops, dtype=np.int32),
+            nd_positions=np.asarray(spec["positions"], dtype=np.float32),
+            nd_normals=np.asarray(spec["normals"], dtype=np.float32),
+            nd_tangents=np.asarray(spec.get("tangents", np.empty(3)), dtype=np.float32),
+            nd_bitangent_signs=np.asarray(spec.get("signs", np.empty(1)), dtype=np.float32),
+            nd_bitangents=np.asarray(spec.get("bitangents", np.empty(3)), dtype=np.float32),
+            nd_texcoords=np.asarray(spec["uvs"], dtype=np.float32),
+            nd_colors=np.empty(4, dtype=np.float32),
+            nd_alphas=np.empty(4, dtype=np.float32),
+            tangent_dimensions=spec.get("tangent_dimensions", 3),
+            optimize=True,
+        )
+        sub.set_bone_assignments([], out)
+        built.append(sub)
+    serializer = kenshi_compat.KenshiObjectSerializer()
+    mesh = serializer.create_mesh("ref.mesh")
+    mesh.set_submeshes(built)
+    path = os.path.join(tempfile.mkdtemp(prefix="bzmaya_ref_"), "ref.mesh")
+    serializer.save_mesh(mesh, path, kenshi_compat.MeshVersion.V_1_10)
+    with open(path, "rb") as handle:
+        return handle.read()
+
+
+def _decode_mesh(path):
+    """(per-submesh dict of declaration, vertex count, index list, decoded semantics)."""
+    importer = import_compat.KenshiObjectSerializer()
+    importer.add_resource_location(os.path.dirname(path))
+    out = []
+    for sub in importer.load_mesh(os.path.basename(path)).get_submeshes():
+        geometry = sub._wire_geometry
+        decl = [(e.semantic, e.index, e.offset, e.source, e.component_type) for e in geometry.declaration]
+        values = {}
+        for element in geometry.declaration:
+            key = (element.semantic, element.index)
+            values[key] = import_compat._decode_element(geometry, element)
+        out.append({
+            "name": sub.submesh_name, "material": sub.material, "decl": decl,
+            "count": geometry.vertex_count, "faces": list(sub.faces), "values": values,
+            "strides": [(b.bind_index, b.vertex_size) for b in geometry.buffers],
+        })
+    return out
+
+
+def _box_with_two_uv_sets():
+    mesh = vdf_io.box_mesh((0, 0, 0), (1, 2, 3))
+    loops = mesh.loop_count()
+    mesh.face_materials = ["mat_a", "mat_a", "mat_a", "mat_b", "mat_b", "mat_b"]
+    mesh.normals = vdf_io.with_normals(mesh)
+    mesh.uv_sets = [
+        [(0.1 * (i % 4), 0.2 * (i % 3)) for i in range(loops)],
+        [(0.5, 0.25 + 0.01 * i) for i in range(loops)],
+    ]
+    return mesh
+
+
+class ExportOptionsTests(unittest.TestCase):
+    def test_options_come_from_blenders_operators(self):
+        from bz98maya.core import export_options as eo
+
+        vdf = {o.name: o for o in eo.option_fields("VDF")}
+        self.assertEqual(vdf["ogre_suffix"].default, "_port")
+        self.assertEqual(vdf["ogre_normal_mode"].default, "CORRECT")
+        self.assertEqual([i[0] for i in vdf["ogre_normal_mode"].items], ["CORRECT", "NONE", "FLIP"])
+        self.assertEqual([i[0] for i in vdf["face_plane_mode"].items], ["CURRENT", "PRESERVE", "RECOMPUTE", "DX_FIX"])
+        self.assertTrue(vdf["ogre_headlights"].vdf_only)
+        self.assertIn("Porter --headlights", vdf["ogre_headlights"].tip)
+        self.assertFalse(any(o.vdf_only for o in eo.option_fields("SDF")))
+        self.assertIn("ExportSDFOnly", {o.name for o in eo.option_fields("SDF")})
+        mesh = eo.default_options("MESH")
+        self.assertEqual(
+            {k: mesh[k] for k in ("export_tangents", "export_binormals", "tangent_parity", "apply_transform",
+                                  "export_materials", "overwrite_material", "copy_textures", "batch_export")},
+            dict(export_tangents=True, export_binormals=True, tangent_parity=True, apply_transform=True,
+                 export_materials=True, overwrite_material=False, copy_textures=False, batch_export=False),
+        )
+        self.assertNotIn("xml_converter", mesh)  # no OgreXMLConverter in the pure path
+
+    def test_modes_and_porter_options_match_the_operators(self):
+        from bz98maya.core import export_options as eo
+
+        options = eo.default_options("VDF")
+        self.assertEqual(eo.export_mode("VDF", options), eo.MODE_LEGACY)
+        options["auto_port_ogre"] = True
+        self.assertEqual(eo.export_mode("VDF", options), eo.MODE_LEGACY_REDUX)
+        self.assertEqual(eo.export_mode("MESH", {}), eo.MODE_REDUX)
+        porter = eo.autoport_options(dict(options, ogre_name=" tank ", ogre_headlights=True, ogre_person_mode="YES"))
+        self.assertEqual((porter["name"], porter["suffix"], porter["headlights"], porter["person_mode"]),
+                         ("tank", "_port", True, "YES"))
+        self.assertEqual(porter["dest_dir"], None)
+        self.assertEqual(len(porter["scope_transform"]), 12)
+        sdf = eo.autoport_options(eo.default_options("SDF"))
+        self.assertNotIn("headlights", sdf)  # VDF-only extras are not passed for SDF / GEO
+
+    def test_presets_apply_save_and_delete_like_blender(self):
+        from bz98maya.core import export_options as eo
+        from bz98maya.core.export_session import ExportSession
+
+        directory = tempfile.mkdtemp(prefix="bzmaya_presets_")
+        self.addCleanup(shutil.rmtree, directory, True)
+        keys = [k for k, _l, _v in eo.builtin_presets("VDF")]
+        self.assertTrue(keys and all(k for k in keys))
+        session = ExportSession("VDF", directory)
+        self.assertIn(eo.MODE_LEGACY, session.mode)
+        port_key = next(k for k, _l, v in eo.builtin_presets("VDF") if v.get("auto_port_ogre"))
+        session.apply_builtin(port_key)
+        self.assertEqual(session.mode, eo.MODE_LEGACY_REDUX)
+        session.set_option("ogre_suffix", "_mine")
+        session.set_option("ogre_bounds_mult", (2.0, 2.0, 2.0))
+        path = session.save_preset("My Tank!")
+        self.assertTrue(path.endswith("My_Tank.json"))
+        self.assertEqual(session.custom_presets(), ["My Tank!"])
+        fresh = ExportSession("VDF", directory)
+        fresh.apply_custom("My Tank!")
+        self.assertEqual((fresh.options["ogre_suffix"], fresh.options["ogre_bounds_mult"], fresh.options["auto_port_ogre"]),
+                         ("_mine", [2.0, 2.0, 2.0], True))
+        self.assertTrue(fresh.delete_preset("My Tank!"))
+        self.assertEqual(fresh.custom_presets(), [])
+        with self.assertRaises(ValueError):
+            fresh.save_preset("  ")
+        self.assertFalse(fresh.delete_preset("nope"))
+
+    def test_session_switches_between_the_three_modes(self):
+        from bz98maya.core import export_options as eo
+        from bz98maya.core.export_session import ExportSession
+
+        calls = []
+        session = ExportSession("SDF", runner=lambda kind, path, options: calls.append((kind, path, dict(options))))
+        session.set_mode(eo.MODE_LEGACY_REDUX)
+        self.assertEqual((session.kind, session.options["auto_port_ogre"]), ("SDF", True))
+        session.set_option("ogre_name", "keep")
+        session.set_mode(eo.MODE_REDUX)
+        self.assertEqual((session.kind, session.extension()), ("MESH", ".mesh"))
+        session.set_mode(eo.MODE_LEGACY)
+        self.assertEqual((session.kind, session.options["auto_port_ogre"], session.options["ogre_name"]), ("SDF", False, "keep"))
+        session.export("x.sdf")
+        self.assertEqual(calls[0][:2], ("SDF", "x.sdf"))
+        with self.assertRaises(KeyError):
+            session.set_option("not_an_option", 1)
+
+
+class MaterialFileTests(unittest.TestCase):
+    MATERIALS = {
+        "hull_trim": {"ambient": [1.0, 0.5, 0.25], "diffuse": [0.8, 0.8, 0.8], "specular": [0.8, 0.8, 0.8],
+                      "emissive": [0.0, 0.0, 0.0], "texture": "hull_trim_d.png", "texture_path": "x/hull_trim_d.png"},
+        "cockpit_glass": {"ambient": [0.1234567, 0.2, 0.3], "diffuse": [0.1234567, 0.2, 0.3],
+                          "specular": [0.0, 0.0, 0.0], "emissive": [0.0, 0.0, 0.0]},
+        "wing2": {"ambient": [1, 1, 1], "diffuse": [1, 1, 1], "specular": [0, 0, 0], "emissive": [0, 0, 0],
+                  "texture": "metal.tga"},
+        "bz98/hull": {"ambient": [0.5, 0.5, 0.5], "diffuse": [0.5, 0.5, 0.5], "specular": [0.5, 0.5, 0.5],
+                      "emissive": [0, 0, 0], "texture": "Plain_Diffuse.dds"},
+    }
+
+    def test_material_file_is_identical_to_blenders_writer(self):
+        from bz98maya.core import material
+
+        tmp = tempfile.mkdtemp(prefix="bzmaya_mat_")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        blender_dir, maya_dir = os.path.join(tmp, "b"), os.path.join(tmp, "m")
+        os.makedirs(blender_dir)
+        os.makedirs(maya_dir)
+        blender = _load_blender_ogre_export()
+        blender.xSaveMaterialData(os.path.join(blender_dir, "a.mesh"), {"materials": self.MATERIALS}, True, False)
+        written = material.write_material_file(os.path.join(maya_dir, "a.mesh"), self.MATERIALS, True, False)
+        with open(os.path.join(blender_dir, "a.material"), encoding="utf-8") as a, open(written, encoding="utf-8") as b:
+            self.assertEqual(b.read(), a.read())
+        text = material.material_text(self.MATERIALS)
+        self.assertIn("material cockpit_glass : BZBaseCockpit", text)
+        self.assertIn("material wing2 : BZBaseCockpit", text)  # name ends in 2
+        self.assertIn("set_texture_alias DiffuseMap hull_trim_d.dds", text)  # _d suffix stripped, not doubled
+        self.assertIn("set_texture_alias NormalMap Plain_n.dds", text)
+        self.assertIn('set $diffuse "0.123 0.2 0.3"', text)
+
+    def test_existing_material_is_kept_unless_overwrite_and_textures_are_copied(self):
+        from bz98maya.core import material
+
+        tmp = tempfile.mkdtemp(prefix="bzmaya_mat_")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        texture = os.path.join(tmp, "tex.png")
+        with open(texture, "wb") as handle:
+            handle.write(b"png")
+        out_dir = os.path.join(tmp, "out")
+        os.makedirs(out_dir)
+        mesh = os.path.join(out_dir, "m.mesh")
+        mats = {"a": {"texture": "tex.png", "texture_path": texture}}
+        with open(os.path.join(out_dir, "m.material"), "w") as handle:
+            handle.write("keep me")
+        material.write_material_file(mesh, mats, overwrite=False, copy_textures=True)
+        with open(os.path.join(out_dir, "m.material")) as handle:
+            self.assertEqual(handle.read(), "keep me")
+        self.assertTrue(os.path.isfile(os.path.join(out_dir, "tex.png")))
+        material.write_material_file(mesh, mats, overwrite=True)
+        with open(os.path.join(out_dir, "m.material")) as handle:
+            self.assertIn("material a : BZBase", handle.read())
+        self.assertIsNone(material.write_material_file(mesh, {}, True))
+
+    def test_material_file_round_trips_through_the_reader(self):
+        from bz98maya.core import material
+
+        tmp = tempfile.mkdtemp(prefix="bzmaya_mat_")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        path = material.write_material_file(os.path.join(tmp, "a.mesh"), self.MATERIALS, True)
+        parsed = material.parse_material_file(path)
+        self.assertEqual(set(parsed), set(self.MATERIALS))
+        self.assertEqual(parsed["hull_trim"]["textures"]["DiffuseMap"], "hull_trim_d.dds")
+        self.assertEqual(parsed["hull_trim"]["template"], "BZBase")
+        np.testing.assert_allclose(parsed["hull_trim"]["diffuse"], [0.8, 0.8, 0.8])
+        plain = os.path.join(tmp, "plain.material")
+        with open(plain, "w") as handle:
+            handle.write("material simple\n{\n technique\n {\n pass\n {\n texture_unit\n {\n texture wall.png\n }\n }\n }\n}\n")
+        self.assertEqual(material.parse_material_file(plain)["simple"]["textures"]["DiffuseMap"], "wall.png")
+        open(os.path.join(tmp, "WALL.DDS"), "wb").close()
+        self.assertTrue(material.find_texture_file("wall.png", tmp).lower().endswith("wall.dds"))
+
+
+class ReduxMeshGoldenTests(unittest.TestCase):
+    """The Maya-free Redux writer against Blender's pipeline fed by hand-built reference arrays."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="bzmaya_mesh_")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def _write(self, scene, options=None):
+        from bz98maya.core import redux
+
+        path = os.path.join(self.tmp, "out.mesh")
+        redux.write_bzr_mesh(scene, path, dict({"export_materials": False}, **(options or {})))
+        with open(path, "rb") as handle:
+            return handle.read(), path
+
+    def test_tangent_format_mapping_is_blenders(self):
+        import itertools
+
+        from bz98maya.core import redux
+        from bz98tools.ogrefast import backend
+
+        for combo in itertools.product((True, False), repeat=4):
+            self.assertEqual(redux.map_tangent_format(*combo), backend._map_tangent_format(*combo), combo)
+
+    def test_plane_with_tangents_is_byte_identical_to_the_blender_path(self):
+        # Maya XZ plane, normal +Y, U along +X, V along +Z.
+        pts = [(0, 0, 0), (2, 0, 0), (2, 0, 1), (0, 0, 1)]
+        mesh = Mesh(
+            positions=pts, faces=[(0, 1, 2, 3)], face_materials=["plane_mat"],
+            normals=[(0, 1, 0)] * 4, uv_sets=[[(0, 0), (2, 0), (2, 1), (0, 1)]],
+        )
+        scene = Scene(nodes=[Node("plane", None, axes.identity4(), KIND_PART, mesh)])
+        blender_pts = [(x, -z, y) for x, y, z in pts]
+        loops = [0, 1, 2, 0, 2, 3]
+        # tangent = +U = Blender +X; bitangent = +V = Blender -Y; cross(n, t) = +Y -> sign -1.
+        # Blender's ALL format multiplies the (signed) bitangent by the sign again.
+        reference = _reference_mesh_bytes([dict(
+            name="plane", material="plane_mat", positions=blender_pts, loops=loops,
+            normals=[(0, 0, 1)] * 6, uvs=[mesh.uv_sets[0][i] for i in loops],
+            tangents=[(1, 0, 0)] * 6, signs=[-1.0] * 6, bitangents=[(0, 1, 0)] * 6, tangent_dimensions=4,
+        )])
+        data, path = self._write(scene)
+        self.assertEqual(data, reference)
+        decoded = _decode_mesh(path)[0]
+        # BZR's vertex organisation (from the serializer) lists the binormal before the tangent
+        self.assertEqual([d[0] for d in decoded["decl"]], ["POSITION", "NORMAL", "TEXCOORD", "BINORMAL", "TANGENT"])
+        np.testing.assert_allclose(decoded["values"][("TANGENT", 0)], [[1, 0, 0, -1]] * decoded["count"], atol=1e-6)
+
+    def test_tangent_options_change_the_layout_like_blender(self):
+        pts = [(0, 0, 0), (1, 0, 0), (1, 0, 1), (0, 0, 1)]
+        mesh = Mesh(positions=pts, faces=[(0, 1, 2, 3)], face_materials=["m"], normals=[(0, 1, 0)] * 4,
+                    uv_sets=[[(0, 0), (1, 0), (1, 1), (0, 1)]])
+        scene = Scene(nodes=[Node("plane", None, axes.identity4(), KIND_PART, mesh)])
+        layouts = {}
+        for label, options in {
+            "none": {"export_tangents": False},
+            "t4": {"export_binormals": False},
+            "t3": {"tangent_parity": False},
+            "all": {},
+            "zero": {"zero_tangents_binormals": True},
+        }.items():
+            data, path = self._write(scene, options)
+            decoded = _decode_mesh(path)[0]
+            layouts[label] = ([(d[0], d[4]) for d in decoded["decl"]], decoded)
+        self.assertEqual([s for s, _t in layouts["none"][0]], ["POSITION", "NORMAL", "TEXCOORD"])
+        self.assertIn(("TANGENT", "FLOAT4"), layouts["t4"][0])
+        self.assertNotIn("BINORMAL", [s for s, _t in layouts["t4"][0]])
+        self.assertIn(("TANGENT", "FLOAT3"), layouts["t3"][0])
+        self.assertIn("BINORMAL", [s for s, _t in layouts["t3"][0]])
+        self.assertIn(("TANGENT", "FLOAT4"), layouts["all"][0])
+        self.assertIn("BINORMAL", [s for s, _t in layouts["all"][0]])
+        np.testing.assert_array_equal(layouts["zero"][1]["values"][("TANGENT", 0)], 0.0)
+
+    def test_two_uv_sets_materials_and_parent_transform_match_the_blender_path(self):
+        mesh = _box_with_two_uv_sets()
+        scene = Scene(nodes=[
+            Node("root", None, _identity_translated(5, 0, 0), KIND_EMPTY, None),
+            Node("box", "root", _identity_translated(0, 1, 0), KIND_PART, mesh),
+        ])
+        # independent reference: world = translate(5, 1, 0); fan triangles per face; split per material
+        T = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]], dtype=float)
+        world_pts = [(x + 5, y + 1, z) for x, y, z in mesh.positions]
+        blender_pts = [tuple(T @ np.array(p)) for p in world_pts]
+        specs = []
+        loop = 0
+        by_material = {}
+        for face_index, face in enumerate(mesh.faces):
+            for k in (1, 2):
+                tri = [0, k, k + 1]
+                by_material.setdefault(mesh.face_materials[face_index], []).append(
+                    [(face[c], loop + c) for c in tri]
+                )
+            loop += 4
+        for name in ("mat_a", "mat_b"):
+            loops, normals, uv0, uv1 = [], [], [], []
+            for tri in by_material[name]:
+                for vertex, loop_index in tri:
+                    loops.append(vertex)
+                    normals.append(tuple(T @ np.array(mesh.normals[loop_index])))
+                    uv0.append(mesh.uv_sets[0][loop_index])
+                    uv1.append(mesh.uv_sets[1][loop_index])
+            specs.append(dict(name="box_" + name, material=name, positions=blender_pts, loops=loops,
+                              normals=normals, uvs=[uv0, uv1]))
+        reference = _reference_mesh_bytes(specs)
+        data, path = self._write(scene, {"export_tangents": False})
+        self.assertEqual(data, reference)
+        decoded = _decode_mesh(path)
+        self.assertEqual([d["material"] for d in decoded], ["mat_a", "mat_b"])
+        self.assertEqual([d["name"] for d in decoded], ["box_mat_a", "box_mat_b"])
+        self.assertEqual(sorted(k for k in decoded[0]["values"] if k[0] == "TEXCOORD"), [("TEXCOORD", 0), ("TEXCOORD", 1)])
+
+    def test_apply_transform_off_keeps_object_space_and_batch_writes_one_file_per_object(self):
+        from bz98maya.core import redux
+
+        mesh = vdf_io.box_mesh((0, 0, 0), (1, 1, 1))
+        mesh.face_materials = ["m"] * 6
+        scene = Scene(nodes=[
+            Node("a", None, _identity_translated(10, 0, 0), KIND_PART, mesh),
+            Node("b", None, _identity_translated(0, 7, 0), KIND_PART, mesh),
+        ])
+        data, path = self._write(scene, {"apply_transform": False, "export_tangents": False})
+        position = _decode_mesh(path)[0]["values"][("POSITION", 0)]
+        self.assertEqual(float(position[:, 0].max()), 1.0)  # not moved by the +10 translation
+        out = os.path.join(self.tmp, "batch", "ignored.mesh")
+        os.makedirs(os.path.dirname(out))
+        redux.write_bzr_mesh(scene, out, {"batch_export": True, "export_materials": True})
+        self.assertEqual(sorted(os.listdir(os.path.dirname(out))), ["a.material", "a.mesh", "b.material", "b.mesh"])
+        moved = _decode_mesh(os.path.join(os.path.dirname(out), "a.mesh"))[0]["values"][("POSITION", 0)]
+        self.assertEqual(float(moved[:, 0].min()), 10.0)
+
+    def test_materials_file_follows_export_materials_and_overwrite(self):
+        from bz98maya.core import redux
+
+        mesh = vdf_io.box_mesh((0, 0, 0), (1, 1, 1))
+        mesh.face_materials = ["skin"] * 6
+        scene = Scene(
+            nodes=[Node("a", None, axes.identity4(), KIND_PART, mesh)],
+            materials={"skin": {"ambient": [0.25] * 3, "diffuse": [0.25] * 3, "specular": [0.25] * 3,
+                                "emissive": [0] * 3, "texture": "skin_d.png"}},
+        )
+        path = os.path.join(self.tmp, "m.mesh")
+        redux.write_bzr_mesh(scene, path, {"export_materials": False})
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "m.material")))
+        redux.write_bzr_mesh(scene, path, {})
+        with open(os.path.join(self.tmp, "m.material"), encoding="utf-8") as handle:
+            self.assertIn('set $diffuse "0.25 0.25 0.25"', handle.read())
+        scene.materials["skin"]["diffuse"] = [0.5] * 3
+        redux.write_bzr_mesh(scene, path, {})  # not overwritten by default
+        with open(os.path.join(self.tmp, "m.material"), encoding="utf-8") as handle:
+            self.assertIn('"0.25 0.25 0.25"', handle.read())
+        redux.write_bzr_mesh(scene, path, {"overwrite_material": True})
+        with open(os.path.join(self.tmp, "m.material"), encoding="utf-8") as handle:
+            self.assertIn('"0.5 0.5 0.5"', handle.read())
+
+    def test_stock_meshes_match_the_blender_import_export_path(self):
+        stock = os.environ.get("BZ98_STOCK_DIR")
+        folder = os.path.join(stock, "mesh") if stock else ""
+        files = sorted(f for f in os.listdir(folder) if f.endswith(".mesh")) if os.path.isdir(folder) else []
+        if not files:
+            self.skipTest("BZ98_STOCK_DIR/mesh is not set")
+        for name in files:
+            with self.subTest(mesh=name):
+                source = os.path.join(folder, name)
+                # Blender: import accessors -> set_vertex -> serializer
+                importer = import_compat.KenshiObjectSerializer()
+                importer.add_resource_location(folder)
+                specs = []
+                for sub in importer.load_mesh(name).get_submeshes():
+                    loops = list(sub.faces)
+                    uvs = np.asarray(sub.get_texcoords(), dtype=np.float32)
+                    specs.append(dict(
+                        name=sub.submesh_name, material=sub.material,
+                        positions=np.asarray(sub.get_positions(), dtype=np.float32).reshape(-1, 3),
+                        loops=loops, normals=np.asarray(sub.get_normals(), dtype=np.float32).reshape(-1, 3),
+                        uvs=uvs.reshape(len(uvs), len(loops), 2) if uvs.ndim == 2 and uvs.size else np.empty(2),
+                    ))
+                reference = _reference_mesh_bytes(specs)
+                # Maya path (Maya-free half): neutral scene -> redux writer
+                scene = ogre_io.read_ogre_mesh(source)
+                data, path = self._write(scene, {"export_tangents": False})
+                ref_path = os.path.join(self.tmp, "reference.mesh")
+                with open(ref_path, "wb") as handle:
+                    handle.write(reference)
+                got, want = _decode_mesh(path), _decode_mesh(ref_path)
+                self.assertEqual(len(got), len(want))
+                for a, b in zip(got, want):
+                    self.assertEqual((a["name"], a["material"], a["decl"], a["count"], a["strides"]),
+                                     (b["name"], b["material"], b["decl"], b["count"], b["strides"]))
+                    self.assertEqual(a["faces"], b["faces"])
+                    for key in b["values"]:
+                        np.testing.assert_allclose(a["values"][key], b["values"][key], atol=1e-5, err_msg=str(key))
+                # and against the original stock file: same geometry, whatever its layout
+                original = _decode_mesh(source)
+                for a, o in zip(got, original):
+                    np.testing.assert_allclose(
+                        a["values"][("POSITION", 0)][a["faces"]], o["values"][("POSITION", 0)][o["faces"]], atol=1e-5
+                    )
+
+
+class AutoPortTests(unittest.TestCase):
+    def _vehicle(self, folder, textured=False):
+        cube = vdf_io.box_mesh((-1, 0, -1), (1, 1, 1))
+        cube.face_materials = ["avtrim"] * 6
+        scene = Scene(nodes=[
+            Node("tst11bod", None, axes.identity4(), KIND_PART, cube, {"type": 60}),
+            Node("tst11pov", None, axes.identity4(), KIND_HARDPOINT, None, {"type": 40}),
+            Node("tst11gc1", "tst11bod", axes.identity4(), KIND_HARDPOINT, None, {"type": 71}),
+        ])
+        path = os.path.join(folder, "tst.vdf")
+        vdf_io.write_vdf(scene, path)
+        return path
+
+    def test_legacy_plus_redux_runs_the_toolkits_porter_on_the_exported_files(self):
+        from bz98maya.core import export_options as eo, redux
+
+        tmp = tempfile.mkdtemp(prefix="bzmaya_port_")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        path = self._vehicle(tmp)
+        options = dict(eo.default_options("VDF"), auto_port_ogre=True, ogre_dest_dir=os.path.join(tmp, "redux"))
+        self.assertEqual(redux.auto_port(path, options), {"FINISHED"})
+        produced = sorted(os.listdir(os.path.join(tmp, "redux")))
+        self.assertIn("tst.mesh", produced)
+        self.assertIn("tst.skeleton", produced)
+        self.assertTrue(any(f.endswith(".material") for f in produced), produced)
+        from bz98tools.bzrmodelporter.ogremesh_serializer import MeshSerializer
+
+        with open(os.path.join(tmp, "redux", "tst.mesh"), "rb") as handle:
+            ported = MeshSerializer(handle).read()  # the porter's mesh is skinned, so read it directly
+        self.assertGreaterEqual(len(ported.submesh_list), 1)
+        self.assertEqual(ported.skeleton_name, "tst.skeleton")
+        # the legacy files stay where they were written
+        self.assertTrue(os.path.isfile(os.path.join(tmp, "tst11bod.geo")))
+        # --onlyonce: a second run is skipped, as in Blender
+        self.assertEqual(redux.auto_port(path, dict(options, ogre_only_once=True)), {"CANCELLED"})
+        # --nowrite: nothing new is written
+        dry = os.path.join(tmp, "dry")
+        redux.auto_port(path, dict(options, ogre_dest_dir=dry, ogre_nowrite=True))
+        self.assertEqual(os.listdir(dry) if os.path.isdir(dry) else [], [])
+        self.assertEqual(redux.auto_port(os.path.join(tmp, "x.txt"), options), {"CANCELLED"})
+
+
+class MapTextureTests(unittest.TestCase):
+    def _indexed_map(self, folder, name, width=4, height=2):
+        # BZ .map: <row_bytes, pixel_format, height, unknown> then palette indices (fmt 0 = indexed)
+        with open(os.path.join(folder, name + ".map"), "wb") as handle:
+            handle.write(struct.pack("<4H", width, 0, height, 0))
+            handle.write(bytes(range(width * height)))
+
+    def test_map_files_are_found_by_blenders_rules_and_converted_to_png(self):
+        from bz98maya.core import mapload
+
+        tmp = tempfile.mkdtemp(prefix="bzmaya_map_")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        base, extra = os.path.join(tmp, "base"), os.path.join(tmp, "extra", "deep")
+        os.makedirs(base)
+        os.makedirs(extra)
+        self._indexed_map(extra, "AVHULL")
+        self.assertIsNone(mapload.resolve_map_file("avhull", base))
+        found = mapload.resolve_map_file("avhull", base, os.path.join(tmp, "extra"))  # case-insensitive, subfolders
+        self.assertTrue(found.lower().endswith("avhull.map"))
+        png = mapload.texture_for_map_name("avhull", base, os.path.join(tmp, "extra"))
+        self.assertTrue(png.lower().endswith(".png"))
+        with open(png, "rb") as handle:
+            data = handle.read()
+        self.assertEqual(data[:8], b"\x89PNG\r\n\x1a\n")
+        self.assertEqual(struct.unpack(">II", data[16:24]), (4, 2))
+        self.assertIsNone(mapload.texture_for_map_name("missing", base))
+
+    def test_vdf_import_attaches_map_textures_unless_disabled(self):
+        tmp = tempfile.mkdtemp(prefix="bzmaya_map_")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        folder = os.path.join(tmp, "src")
+        os.makedirs(folder)
+        shutil.copy(os.path.join(FIXTURES, "eyepoint.vdf"), folder)
+        _write_cube_geo(os.path.join(folder, "fxh11.geo"), "fxh11")  # faces use tex_a / tex_b
+        self._indexed_map(folder, "tex_a")
+        path = os.path.join(folder, "eyepoint.vdf")
+        scene = vdf_io.read_vdf(path)
+        self.assertEqual(set(scene.materials), {"tex_a"})
+        self.assertTrue(scene.materials["tex_a"]["texture_path"].endswith("tex_a.png"))
+        self.assertEqual(scene.materials["tex_a"]["texture"], "tex_a.map")
+        off = vdf_io.read_vdf(path, {"ImportMapTextures": False})
+        self.assertEqual(off.materials, {})
+        other = os.path.join(tmp, "textures")
+        os.makedirs(other)
+        self._indexed_map(other, "tex_b")
+        with_dir = vdf_io.read_vdf(path, {"MapTextureDirectory": other})
+        self.assertEqual(set(with_dir.materials), {"tex_a", "tex_b"})
+
+
+class FacePlaneModeTests(unittest.TestCase):
+    def test_blenders_face_plane_modes(self):
+        # A quad at Maya z = 2 (BZ z = -2) facing +Z.
+        pts = [(0, 0, 2), (2, 0, 2), (2, 2, 2), (0, 2, 2)]
+        bz = [axes.maya_point_to_bz(p) for p in pts]
+        normal, d = vdf_io.face_plane("CURRENT", pts, bz)
+        # Blender: face centre in Blender axes (x, -z, y) and d = 1.0
+        np.testing.assert_allclose(normal, (1.0, -2.0, 1.0))
+        self.assertEqual(d, 1.0)
+        self.assertEqual(vdf_io.face_plane("PRESERVE", pts, bz), vdf_io.face_plane("CURRENT", pts, bz))
+        for mode in ("RECOMPUTE", "DX_FIX"):
+            normal, d = vdf_io.face_plane(mode, pts, bz)
+            np.testing.assert_allclose(normal, (0, 0, 1), atol=1e-9)  # cross of the first three GEO-space points
+            self.assertAlmostEqual(d, -2.0)  # Blender writes +n . p0
+        normal, d = vdf_io.face_plane("STOCK", pts, bz)
+        self.assertAlmostEqual(d, 2.0)  # stock files: -n . p0
+        mesh = Mesh(positions=pts, faces=[(0, 1, 2, 3)], face_materials=["t"])
+        geo = vdf_io.mesh_to_geo("pl", mesh, None, "CURRENT")
+        self.assertEqual(geo.face_list[0].plane.distance, 1.0)
+        out = tempfile.mkdtemp(prefix="bzmaya_geo_")
+        self.addCleanup(shutil.rmtree, out, True)
+        scene = Scene(nodes=[Node("tst11bdy", None, axes.identity4(), KIND_PART, vdf_io.box_mesh((0, 0, 0), (1, 1, 1)),
+                                  {"type": 60})])
+        vdf_io.write_vdf(scene, os.path.join(out, "a.vdf"), write_geos=False)
+        self.assertFalse(os.path.exists(os.path.join(out, "tst11bdy.geo")))  # "Skip GEO File Export"
+        vdf_io.write_vdf(scene, os.path.join(out, "b.vdf"), True, "RECOMPUTE")
+        self.assertTrue(os.path.isfile(os.path.join(out, "tst11bdy.geo")))
 
 
 class ToolkitDiscoveryTests(unittest.TestCase):

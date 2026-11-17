@@ -42,7 +42,7 @@ def _modules():
     return sdf_classes, vdf_classes
 
 
-def read_sdf(path: str) -> Scene:
+def read_sdf(path: str, import_options=None) -> Scene:
     sdf_classes, _ = _modules()
     with open(path, "rb") as handle:
         data = handle.read()
@@ -103,10 +103,11 @@ def read_sdf(path: str) -> Scene:
         },
         quiet_duplicates=True,
     )
+    vdf_io.attach_map_textures(scene, os.path.dirname(os.path.abspath(path)), import_options)
     return scene
 
 
-def write_sdf(scene: Scene, path: str) -> List[str]:
+def write_sdf(scene: Scene, path: str, write_geos: bool = True, face_plane_mode: str = "STOCK") -> List[str]:
     """Write ``path`` and a ``<name>.geo`` beside it for every part with a mesh."""
     sdf_classes, vdf_classes = _modules()
     folder = os.path.dirname(os.path.abspath(path))
@@ -148,6 +149,7 @@ def write_sdf(scene: Scene, path: str) -> List[str]:
     records, _points = vdf_io.fill_records(
         layout, folder, warnings, sdf_classes.GEOData, vdf_classes.serialize_section,
         vdf_classes.serialize_section(null_geo), SDF_LOD_BANDS, SDF_BAND_COUNT, extras=extras,
+        write_geos=write_geos, face_plane_mode=face_plane_mode,
     )
 
     sgeo = sdf_classes.SGEOHeader()

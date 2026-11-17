@@ -21,6 +21,7 @@ fixture-based cases run. The toolkit itself is found relative to this file.
 import glob
 import os
 import shutil
+import struct
 import sys
 import tempfile
 import unittest
@@ -50,7 +51,7 @@ from bz98maya import attributes, maya_io, menu, panel  # noqa: E402
 from bz98maya.core import axes, ogre_io, schema, sdf_io, validate, vdf_io  # noqa: E402
 from bz98tools import sdf_classes, vdf_classes, vdf_file  # noqa: E402
 
-from test_maya_core import _sdf_record, _write_cube_geo, _write_sdf  # noqa: E402
+from test_maya_core import _decode_mesh, _sdf_record, _write_cube_geo, _write_sdf  # noqa: E402
 
 PLUGIN = os.path.join(_REPO_ROOT, "maya", "plug-ins", "bz98maya_plugin.py")
 STOCK = os.environ.get("BZ98_STOCK_DIR")
@@ -122,6 +123,8 @@ def shading_groups(shape):
 
 class MayaCase(unittest.TestCase):
     def setUp(self):
+        maya_io.BLOCK_ON_ERRORS = False  # most tests export scenes that Blender's validator would reject
+        self.addCleanup(setattr, maya_io, "BLOCK_ON_ERRORS", True)
         cmds.file(new=True, force=True)
         self.tmp = tempfile.mkdtemp(prefix="bzmaya_it_")
         self.addCleanup(shutil.rmtree, self.tmp, True)
@@ -867,6 +870,337 @@ class ToolTests(MayaCase):
         cmds.file(new=True, force=True)
         with self.assertRaises(RuntimeError):  # nothing in the scene to export
             self.inject(menu.export_geo, os.path.join(folder, "none.geo"))
+
+
+class ReduxExportTests(MayaCase):
+    """Blender's export modes, options, materials and textures through the Maya layer."""
+
+    def vehicle(self, prefix="tst"):
+        created = maya_io.create_vehicle_geo_set(prefix)
+        cmds.select(clear=True)
+        return created
+
+    def test_validation_blocks_on_errors_and_only_warns_otherwise(self):
+        maya_io.BLOCK_ON_ERRORS = True
+        cube = cmds.polyCube(name="tst11bod")[0]
+        attributes.ensure_part(cube)
+        cmds.select(clear=True)
+        out = os.path.join(self.tmp, "blocked.vdf")
+        with self.assertRaises(RuntimeError) as caught:  # a vehicle without a POV is an error
+            self.inject(menu.export_vdf, out)
+        self.assertIn("VDF export blocked by 1 validation errors", str(caught.exception))
+        self.assertFalse(os.path.exists(out))
+        # add the POV: only warnings remain (no inner_col / outer_col), and those never block
+        pov = cmds.spaceLocator(name="tst11pov")[0]
+        attributes.ensure_part(pov)
+        cmds.setAttr(pov + ".bzGEOType", 40)
+        cmds.select(clear=True)
+        self.inject(menu.export_vdf, out)
+        self.assertTrue(os.path.isfile(out))
+        self.assertGreater(validate.counts(maya_io.LAST_ISSUES, "VDF")["WARNING"], 0)
+        # GEO: no mesh to export is the validator's error
+        cmds.file(new=True, force=True)
+        cmds.polyCube(name="tst11bod")
+        cmds.select(clear=True)
+        geo = os.path.join(self.tmp, "ok.geo")
+        self.inject(menu.export_geo, geo)
+        self.assertTrue(os.path.isfile(geo))
+
+    def test_the_three_export_modes(self):
+        self.vehicle()
+        legacy = os.path.join(self.tmp, "legacy", "tst.vdf")
+        both = os.path.join(self.tmp, "both", "tst.vdf")
+        for path in (legacy, both):
+            os.makedirs(os.path.dirname(path))
+        # Legacy only
+        result = maya_io.export_legacy("VDF", legacy, {})
+        self.assertIsNone(result["redux"])
+        self.assertEqual(sorted(f for f in os.listdir(os.path.dirname(legacy)) if f.endswith(".mesh")), [])
+        self.assertTrue(os.path.isfile(os.path.join(os.path.dirname(legacy), "tst11bod.geo")))
+        # Legacy + Redux: the toolkit's auto-port runs on the exported files
+        result = maya_io.export_legacy("VDF", both, {"auto_port_ogre": True, "ogre_suffix": "_bz"})
+        self.assertEqual(result["redux"], {"FINISHED"})
+        produced = sorted(os.listdir(os.path.dirname(both)))
+        self.assertIn("tst.vdf", produced)
+        self.assertIn("tst.mesh", produced)
+        self.assertIn("tst.skeleton", produced)
+        self.assertTrue(any(f.endswith("_bz.material") for f in produced), produced)
+        # Redux only: no legacy files at all
+        redux_dir = os.path.join(self.tmp, "redux")
+        os.makedirs(redux_dir)
+        maya_io.export_redux_mesh(os.path.join(redux_dir, "tank.mesh"), {})
+        self.assertEqual(sorted(os.listdir(redux_dir)), ["tank.material", "tank.mesh"])
+        # the dialog's session drives the same three paths
+        from bz98maya import export_dialog
+        from bz98maya.core import export_options as eo
+
+        session = export_dialog.new_session("VDF", preset_dir=os.path.join(self.tmp, "presets"))
+        session.set_mode(eo.MODE_REDUX)
+        session.export(os.path.join(redux_dir, "via_session.mesh"))
+        self.assertTrue(os.path.isfile(os.path.join(redux_dir, "via_session.mesh")))
+        session.set_mode(eo.MODE_LEGACY)
+        session.set_option("ExportVDFOnly", True)
+        sub = os.path.join(self.tmp, "vdf_only")
+        os.makedirs(sub)
+        session.export(os.path.join(sub, "tst.vdf"))
+        self.assertEqual(os.listdir(sub), ["tst.vdf"])  # "Skip GEO File Export"
+
+    def test_face_plane_modes_reach_the_geo_files(self):
+        from bz98tools.bzrmodelporter.bzgeo_serializer import GeoSerializer
+
+        cube = cmds.polyCube(name="tst11bod")[0]
+        pov = cmds.spaceLocator(name="tst11pov")[0]
+        attributes.ensure_part(pov)
+        cmds.setAttr(pov + ".bzGEOType", 40)
+        cmds.select(clear=True)
+        distances = {}
+        for mode in ("CURRENT", "RECOMPUTE"):
+            folder = os.path.join(self.tmp, mode)
+            os.makedirs(folder)
+            maya_io.export_legacy("VDF", os.path.join(folder, "t.vdf"), {"face_plane_mode": mode})
+            with open(os.path.join(folder, "tst11bod.geo"), "rb") as handle:
+                geo = GeoSerializer(handle).read()
+            distances[mode] = {round(f.plane.distance, 4) for f in geo.face_list}
+        self.assertEqual(distances["CURRENT"], {1.0})  # Blender's historical default: centre + d = 1
+        self.assertNotEqual(distances["RECOMPUTE"], {1.0})
+
+    def test_mesh_options_tangents_batch_and_materials(self):
+        ship = cmds.polyCube(name="ship")[0]
+        wing = cmds.polyPlane(name="wing", width=2, height=1, subdivisionsX=1, subdivisionsY=1)[0]
+        cmds.setAttr(wing + ".translateY", 3)
+        # a lambert with a colour and a file texture (the texture makes Blender's colour grey)
+        shader = cmds.shadingNode("lambert", asShader=True, name="hull_mat")
+        sg = cmds.sets(renderable=True, noSurfaceShader=True, empty=True, name="hull_SG")
+        cmds.connectAttr(shader + ".outColor", sg + ".surfaceShader", force=True)
+        cmds.setAttr(shader + ".color", 0.2, 0.4, 0.6, type="double3")
+        cmds.sets(ship, edit=True, forceElement=sg)
+        textured = cmds.shadingNode("lambert", asShader=True, name="skin_mat")
+        sg2 = cmds.sets(renderable=True, noSurfaceShader=True, empty=True, name="skin_SG")
+        cmds.connectAttr(textured + ".outColor", sg2 + ".surfaceShader", force=True)
+        file_node = cmds.shadingNode("file", asTexture=True, name="skin_tex")
+        texture = os.path.join(self.tmp, "skin_d.png")
+        with open(texture, "wb") as handle:
+            handle.write(b"png")
+        cmds.setAttr(file_node + ".fileTextureName", texture, type="string")
+        cmds.connectAttr(file_node + ".outColor", textured + ".color", force=True)
+        cmds.sets(wing, edit=True, forceElement=sg2)
+        cmds.select(clear=True)
+
+        out_dir = os.path.join(self.tmp, "m")
+        os.makedirs(out_dir)
+        mesh_path = os.path.join(out_dir, "model.mesh")
+        maya_io.export_redux_mesh(mesh_path, {"copy_textures": True})
+        mats = maya_io.collect_materials(maya_io.collect_scene())
+        np.testing.assert_allclose(mats["hull"]["diffuse"], [0.2, 0.4, 0.6], atol=1e-6)
+        self.assertEqual(mats["skin_d"]["texture"], "skin_d.png")
+        # the text equals what Blender's xSaveMaterialData writes for the same material data
+        from test_maya_core import _load_blender_ogre_export
+
+        golden_dir = os.path.join(self.tmp, "golden")
+        os.makedirs(golden_dir)
+        _load_blender_ogre_export().xSaveMaterialData(os.path.join(golden_dir, "model.mesh"), {"materials": mats}, True, False)
+        with open(os.path.join(golden_dir, "model.material"), encoding="utf-8") as a, open(
+            os.path.join(out_dir, "model.material"), encoding="utf-8"
+        ) as b:
+            self.assertEqual(b.read(), a.read())
+        text = open(os.path.join(out_dir, "model.material"), encoding="utf-8").read()
+        self.assertIn("material hull : BZBase", text)
+        self.assertIn("set_texture_alias DiffuseMap skin_d.dds", text)
+        self.assertIn('set $diffuse "0.2 0.4 0.6"', text)
+        self.assertTrue(os.path.isfile(os.path.join(out_dir, "skin_d.png")))  # Copy Textures
+
+        decoded = _decode_mesh(mesh_path)
+        self.assertEqual(sorted(d["material"] for d in decoded), ["hull", "skin_d"])
+        for d in decoded:  # default options: BZR layout with tangents and binormals, V flipped
+            self.assertIn(("TANGENT", 0), d["values"])
+            self.assertIn(("BINORMAL", 0), d["values"])
+            tangent = d["values"][("TANGENT", 0)]
+            normal = d["values"][("NORMAL", 0)]
+            np.testing.assert_allclose(np.abs(np.sum(tangent[:, :3] * normal, axis=1)), 0.0, atol=1e-4)
+            np.testing.assert_allclose(np.linalg.norm(tangent[:, :3], axis=1), 1.0, atol=1e-4)
+            self.assertTrue(set(np.round(tangent[:, 3])) <= {-1.0, 1.0})
+        maya_io.export_redux_mesh(mesh_path, {"export_tangents": False, "export_materials": False})
+        self.assertEqual([d[0] for d in _decode_mesh(mesh_path)[0]["decl"]], ["POSITION", "NORMAL", "TEXCOORD"])
+        # batch: one .mesh per object, named after it
+        cmds.select([ship, wing], replace=True)
+        batch_dir = os.path.join(self.tmp, "batch")
+        os.makedirs(batch_dir)
+        maya_io.export_redux_mesh(os.path.join(batch_dir, "ignored.mesh"), {"batch_export": True})
+        self.assertEqual(sorted(f for f in os.listdir(batch_dir) if f.endswith(".mesh")), ["ship.mesh", "wing.mesh"])
+
+    def test_mesh_import_picks_up_the_sibling_material_and_textures(self):
+        from bz98maya.core import material
+
+        folder = os.path.join(self.tmp, "imp")
+        os.makedirs(folder)
+        scene_mesh = vdf_io.box_mesh((0, 0, 0), (1, 1, 1))
+        scene_mesh.face_materials = ["hull_trim", "hull_trim", "hull_trim", "plain", "plain", "plain"]
+        scene_mesh.normals = vdf_io.with_normals(scene_mesh)
+        scene_mesh.uv_sets = [[(0, 0)] * scene_mesh.loop_count()]
+        from bz98maya.core.model import Node, Scene
+
+        mesh_path = os.path.join(folder, "thing.mesh")
+        ogre_io.write_ogre_mesh(Scene(nodes=[Node("thing", None, axes.identity4(), "part", scene_mesh)]), mesh_path,
+                                {"export_materials": False})
+        with open(os.path.join(folder, "thing.material"), "w", encoding="utf-8") as handle:
+            handle.write(material.material_text({
+                "hull_trim": {"diffuse": [0.3, 0.6, 0.9], "texture": "hull_trim_d.dds"},
+                "plain": {"diffuse": [0.3, 0.6, 0.9]},
+            }))
+        texture = os.path.join(folder, "HULL_TRIM_D.png")
+        with open(texture, "wb") as handle:
+            handle.write(b"png")
+        root = maya_io.import_ogre_mesh(mesh_path)
+        groups = {}  # one submesh (node) per material
+        for part in maya_parts(root).values():
+            for g in shading_groups(mesh_shape(part)) - {"initialShadingGroup"}:
+                groups[maya_io._material_name_of(g)] = g
+        self.assertEqual(set(groups), {"hull_trim", "plain"})
+        trim = cmds.listConnections(groups["hull_trim"] + ".surfaceShader")[0]
+        files = cmds.listConnections(trim + ".color", type="file")  # the texture found beside the mesh
+        self.assertEqual(os.path.normcase(cmds.getAttr(files[0] + ".fileTextureName")), os.path.normcase(texture))
+        plain = cmds.listConnections(groups["plain"] + ".surfaceShader")[0]  # no texture: the .material diffuse
+        np.testing.assert_allclose(cmds.getAttr(plain + ".color")[0], (0.3, 0.6, 0.9), atol=1e-5)
+        self.assertFalse(cmds.listConnections(plain + ".color", type="file"))
+
+    def test_legacy_import_loads_stock_map_textures_from_the_folder_the_user_names(self):
+        folder = os.path.join(self.tmp, "src")
+        os.makedirs(folder)
+        shutil.copy(os.path.join(_HERE, "fixtures", "eyepoint.vdf"), folder)
+        _write_cube_geo(os.path.join(folder, "fxh11.geo"), "fxh11")
+        textures = os.path.join(self.tmp, "textures")
+        os.makedirs(textures)
+        with open(os.path.join(textures, "tex_a.map"), "wb") as handle:
+            handle.write(struct.pack("<4H", 4, 0, 2, 0) + bytes(range(8)))
+        path = os.path.join(folder, "eyepoint.vdf")
+        root = maya_io.import_vdf(path, {"MapTextureDirectory": textures})
+        part = maya_parts(root)["fxh11"]
+        sg = [g for g in shading_groups(mesh_shape(part)) if maya_io._material_name_of(g) == "tex_a"][0]
+        shader = cmds.listConnections(sg + ".surfaceShader")[0]
+        files = cmds.listConnections(shader + ".color", type="file")
+        converted = cmds.getAttr(files[0] + ".fileTextureName")
+        self.assertTrue(converted.lower().endswith("tex_a.png") and os.path.isfile(converted))
+        cmds.file(new=True, force=True)
+        root = maya_io.import_vdf(path, {"ImportMapTextures": False})
+        sg = [g for g in shading_groups(mesh_shape(maya_parts(root)["fxh11"])) if maya_io._material_name_of(g) == "tex_a"][0]
+        self.assertFalse(cmds.listConnections(cmds.listConnections(sg + ".surfaceShader")[0] + ".color", type="file"))
+
+    def test_stock_meshes_export_like_the_blender_path(self):
+        files = _stock("mesh")
+        if not files:
+            self.skipTest("BZ98_STOCK_DIR not set")
+        from bz98tools.ogrefast.pure import import_compat
+        from test_maya_core import _reference_mesh_bytes
+
+        for source in files:
+            with self.subTest(mesh=os.path.basename(source)):
+                cmds.file(new=True, force=True)
+                folder = os.path.dirname(source)
+                importer = import_compat.KenshiObjectSerializer()
+                importer.add_resource_location(folder)
+                specs = []
+                for sub in importer.load_mesh(os.path.basename(source)).get_submeshes():
+                    loops = list(sub.faces)
+                    uvs = np.asarray(sub.get_texcoords(), dtype=np.float32)
+                    specs.append(dict(
+                        name=sub.submesh_name, material=sub.material,
+                        positions=np.asarray(sub.get_positions(), dtype=np.float32).reshape(-1, 3), loops=loops,
+                        normals=np.asarray(sub.get_normals(), dtype=np.float32).reshape(-1, 3),
+                        uvs=uvs.reshape(len(uvs), len(loops), 2) if uvs.ndim == 2 and uvs.size else np.empty(2),
+                    ))
+                reference = os.path.join(self.tmp, "ref_" + os.path.basename(source))
+                with open(reference, "wb") as handle:
+                    handle.write(_reference_mesh_bytes(specs))
+                maya_io.import_ogre_mesh(source)
+                cmds.select(clear=True)
+                out = os.path.join(self.tmp, "maya_" + os.path.basename(source))
+                maya_io.export_redux_mesh(out, {"export_tangents": False, "export_materials": False})
+                got, want = _decode_mesh(out), _decode_mesh(reference)
+                self.assertEqual(len(got), len(want))
+                for a, b in zip(got, want):
+                    self.assertEqual((a["material"], a["decl"], a["strides"]), (b["material"], b["decl"], b["strides"]))
+                    self.assertEqual((a["count"], len(a["faces"])), (b["count"], len(b["faces"])))
+                    for key in b["values"]:
+                        np.testing.assert_allclose(a["values"][key][a["faces"]], b["values"][key][b["faces"]], atol=1e-4,
+                                                   err_msg=str(key))
+
+    def test_export_dialog_builds_and_presets_persist_in_standalone(self):
+        from bz98maya import export_dialog
+
+        with self.assertRaises(RuntimeError):
+            export_dialog.show_dialog()  # needs the Maya UI
+        preset_dir = os.path.join(self.tmp, "presets")
+        session = export_dialog.new_session("SDF", preset_dir)
+        session.set_option("ogre_suffix", "_sdf")
+        session.save_preset("sdf one")
+        self.assertEqual(export_dialog.new_session("SDF", preset_dir).custom_presets(), ["sdf one"])
+        try:
+            cmds.window("bzExportTestWindow")
+            cmds.columnLayout()
+        except RuntimeError as exc:
+            self.skipTest("UI layouts are unavailable in standalone: %s" % exc)
+        for kind in ("VDF", "SDF", "GEO", "MESH"):
+            session = export_dialog.new_session(kind, preset_dir)
+            session.options["auto_port_ogre"] = kind != "MESH"
+            export_dialog._build_form(session, lambda *_a: None)  # builds every control without error
+
+
+class StockPortTests(MayaCase):
+    def port_summary(self, legacy_path, dest):
+        from bz98maya.core import redux
+        from bz98tools.bzrmodelporter.ogremesh_serializer import MeshSerializer
+
+        os.makedirs(dest, exist_ok=True)
+        result = redux.auto_port(legacy_path, {"ogre_dest_dir": dest, "ogre_skip_unchanged": False})
+        stem = os.path.splitext(os.path.basename(legacy_path))[0]
+        mesh_path = os.path.join(dest, stem + ".mesh")
+        if result != {"FINISHED"} or not os.path.isfile(mesh_path):
+            return None
+        with open(mesh_path, "rb") as handle:
+            mesh = MeshSerializer(handle).read()
+        materials = sorted(os.path.splitext(f)[0] for f in os.listdir(dest) if f.endswith(".material"))
+        return {
+            "submeshes": len(mesh.submesh_list),
+            "vertices": sorted(sm.vertex_data.vertex_count if sm.vertex_data else 0 for sm in mesh.submesh_list),
+            "indices": sorted(len(sm.get_index_array()) for sm in mesh.submesh_list),
+            "skeleton": mesh.skeleton_name,
+            "materials": materials,
+        }
+
+    def test_legacy_plus_redux_of_stock_models_matches_porting_the_source(self):
+        files = _stock("vdf") + _stock("sdf")
+        if not files:
+            self.skipTest("BZ98_STOCK_DIR not set")
+        compared = 0
+        for path in files:
+            kind = "vdf" if path.endswith(".vdf") else "sdf"
+            with self.subTest(model=os.path.basename(path)):
+                cmds.file(new=True, force=True)
+                source = self.port_summary(path, os.path.join(self.tmp, "src_" + os.path.basename(path)))
+                if source is None:
+                    self.skipTest("the porter does not accept this stock model as is")
+                (maya_io.import_vdf if kind == "vdf" else maya_io.import_sdf)(path)
+                cmds.select(clear=True)
+                folder = os.path.join(self.tmp, "maya_" + os.path.basename(path))
+                os.makedirs(folder)
+                out = os.path.join(folder, os.path.basename(path))
+                result = maya_io.export_legacy(
+                    kind.upper(), out, {"auto_port_ogre": True, "ogre_skip_unchanged": False}
+                )
+                self.assertEqual(result["redux"], {"FINISHED"})
+                maya = self.port_summary(out, folder)
+                self.assertEqual(maya["submeshes"], source["submeshes"])
+                # Same triangles. The porter keeps one vertex per GEO (position, normal) index pair, so
+                # stock GEOs that repeat equal normals under different indices give it a few more
+                # vertices than the welded GEO the Maya export writes; never fewer triangles.
+                self.assertEqual(maya["indices"], source["indices"])
+                for got, want in zip(maya["vertices"], source["vertices"]):
+                    self.assertLessEqual(got, want)
+                    self.assertGreaterEqual(got, 0.5 * want)
+                self.assertEqual(maya["skeleton"], source["skeleton"])
+                self.assertEqual(len(maya["materials"]), len(source["materials"]))
+                compared += 1
+        self.assertGreater(compared, 0)
 
 
 def main():

@@ -64,7 +64,10 @@ def _literal(node):
     try:
         return ast.literal_eval(node)
     except Exception:
-        return None
+        pass
+    if isinstance(node, ast.Name):  # e.g. items=NORMAL_MODE_ITEMS
+        return blender_constant(node.id)
+    return None
 
 
 def blender_properties(class_name: str) -> Dict[str, Dict[str, Any]]:
@@ -81,7 +84,7 @@ def blender_properties(class_name: str) -> Dict[str, Dict[str, Any]]:
                     and isinstance(item.target, ast.Name)
                     and isinstance(item.annotation, ast.Call)
                 ):
-                    kwargs = {}
+                    kwargs = {"__type__": getattr(item.annotation.func, "attr", getattr(item.annotation.func, "id", ""))}
                     for keyword in item.annotation.keywords:
                         value = _literal(keyword.value)
                         if value is not None:

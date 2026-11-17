@@ -163,11 +163,39 @@ def texture_name(material: str) -> str:
     return base.replace(" ", "_").lower()[:MAX_TEXTURE_CHARS]
 
 
-def mesh_to_geo(name: str, mesh: Mesh, props: Optional[Dict[str, object]] = None):
-    """Build a bzgeo.Geo. Vertices are welded on (position, normal).
+# Maya (x, y, z) -> Blender (x, -z, y): Blender's face centres and plane maths use Blender axes.
+_TO_BLENDER = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]])
+FACE_PLANE_MODES = ("STOCK", "CURRENT", "PRESERVE", "RECOMPUTE", "DX_FIX")
+
+
+def face_plane(mode: str, maya_points, bz_points) -> Tuple[Tuple[float, float, float], float]:
+    """The four per-face GEO plane floats, by Blender's ``face_plane_mode`` (export_geo.py).
+
+    CURRENT / PRESERVE (no imported plane data exists in Maya): the face centre in Blender
+    axes and ``d = 1.0``. RECOMPUTE / DX_FIX: the normalised first-three-vertex normal in GEO
+    coordinates and ``d = +n . p0`` (Blender's ``_compute_face_plane``). STOCK (the default
+    here, and not a Blender option): stock files' own convention ``d = -n . p0`` with the
+    winding-based normal.
+    """
+    if mode in ("CURRENT", "PRESERVE"):
+        center = _TO_BLENDER @ np.mean(np.array(maya_points, dtype=float), axis=0)
+        return (float(center[0]), float(center[1]), float(center[2])), 1.0
+    pts = np.array(bz_points[:3], dtype=float)
+    if mode in ("RECOMPUTE", "DX_FIX") and len(pts) == 3:
+        cross = np.cross(pts[1] - pts[0], pts[2] - pts[0])
+        length = float(np.linalg.norm(cross))
+        n = cross / length if length > 0.0 else np.array([0.0, 0.0, 1.0])
+        return (float(n[0]), float(n[1]), float(n[2])), float(np.dot(n, pts[0]))
+    n = np.array(axes.newell_normal(bz_points))
+    return (float(n[0]), float(n[1]), float(n[2])), -float(np.dot(n, np.array(bz_points[0])))
+
+
+def mesh_to_geo(name: str, mesh: Mesh, props: Optional[Dict[str, object]] = None, face_plane_mode: str = "STOCK"):
+    """Build a bzgeo.Geo. Vertices are welded on (position, normal, UV): a GEO vertex carries one UV.
 
     ``props`` supplies the header words and the per-face defaults
     (``header_unknown`` ... ``face_node``); Blender's exporter writes the same defaults.
+    ``face_plane_mode`` is one of ``FACE_PLANE_MODES``.
     """
     _, _, bzgeo, spacial, _ = _modules()
     props = props or {}
@@ -188,16 +216,13 @@ def mesh_to_geo(name: str, mesh: Mesh, props: Optional[Dict[str, object]] = None
     loop = 0
     for face_index, face in enumerate(mesh.faces):
         bz_points = [axes.maya_point_to_bz(mesh.positions[i]) for i in face]
-        bz_face_normal = np.array(axes.newell_normal(bz_points))
         # Stock GEOs store plane normal = normalize(cross(b - a, c - a)) and d = -n . a
-        # (checked on shipped files; export_geo.py's RECOMPUTE mode uses +n . a).
-        plane_d = -float(np.dot(bz_face_normal, np.array(bz_points[0])))
+        # (checked on shipped files); Blender's own modes are in face_plane().
+        plane_normal, plane_d = face_plane(face_plane_mode, [mesh.positions[i] for i in face], bz_points)
 
         gface = geo.create_face(face_index)
         gface.color = spacial.Color3(*DEFAULT_FACE_COLOR)
-        gface.plane = bzgeo.SurfacePlane(
-            spacial.Vector3(*(float(v) for v in bz_face_normal)), plane_d
-        )
+        gface.plane = bzgeo.SurfacePlane(spacial.Vector3(*plane_normal), plane_d)
         gface.poly_area = poly_area
         gface.shade_type = int(props.get("face_shade", 4)) & 0xFF
         gface.texture_type = int(props.get("face_texture", 0)) & 0xFF
@@ -207,13 +232,15 @@ def mesh_to_geo(name: str, mesh: Mesh, props: Optional[Dict[str, object]] = None
         gface.tree_branch = int(props.get("face_node", 0))
         for vi in face:
             normal = axes.maya_normal_to_bz(normals[loop])
-            key = (vi, tuple(round(c, 6) for c in normal))
+            u, v = axes.maya_uv_to_bz(uvs[loop]) if uvs else (0.0, 0.0)
+            # Legacy GEO vertices carry a single UV (the porter and the toolkit's importers read it
+            # per vertex), so a position shared by faces with different UVs must be split.
+            key = (vi, tuple(round(c, 6) for c in normal), round(u, 6), round(v, 6))
             if key not in vertex_ids:
                 vertex_ids[key] = len(out_positions)
                 out_positions.append(axes.maya_point_to_bz(mesh.positions[vi]))
                 out_normals.append(normal)
             index = vertex_ids[key]
-            u, v = axes.maya_uv_to_bz(uvs[loop]) if uvs else (0.0, 0.0)
             gface.create_face_node(index, index, spacial.UV(u, v))
             loop += 1
 
@@ -237,17 +264,19 @@ def _bounds_from_mesh(mesh: Optional[Mesh]):
 
 # --- standalone GEO --------------------------------------------------------
 
-def read_geo(path: str) -> Scene:
+def read_geo(path: str, import_options: Optional[Dict[str, object]] = None) -> Scene:
     """A single .geo as a one-node scene named after the file."""
     _, _, _, _, GeoSerializer = _modules()
     with open(path, "rb") as handle:
         geo = GeoSerializer(handle).read()
     name = os.path.splitext(os.path.basename(path))[0]
     props = geo_part_props(geo)
-    return Scene(nodes=[Node(name=name, mesh=geo_to_mesh(geo), props=props)])
+    scene = Scene(nodes=[Node(name=name, mesh=geo_to_mesh(geo), props=props)])
+    attach_map_textures(scene, os.path.dirname(os.path.abspath(path)), import_options)
+    return scene
 
 
-def write_geo(node: Node, path: str) -> List[str]:
+def write_geo(node: Node, path: str, face_plane_mode: str = "STOCK") -> List[str]:
     """Write one node's mesh as a .geo (local space, no hierarchy)."""
     _, _, _, _, GeoSerializer = _modules()
     if node.mesh is None or not node.mesh.faces:
@@ -255,7 +284,7 @@ def write_geo(node: Node, path: str) -> List[str]:
     warnings = _geo_warnings(node.name, node.mesh)
     name = os.path.splitext(os.path.basename(path))[0]
     with open(path, "wb") as handle:
-        GeoSerializer(handle).write(mesh_to_geo(name, node.mesh, node.props))
+        GeoSerializer(handle).write(mesh_to_geo(name, node.mesh, node.props, face_plane_mode))
     return warnings
 
 
@@ -628,7 +657,8 @@ def _order_spinner_helpers(layout: Layout) -> None:
 # --- shared write (VDF and SDF) --------------------------------------------
 
 def fill_records(layout: Layout, folder: str, warnings: List[str], new_record, serialize,
-                 null_record: bytes, bands, band_count: int, extras=None, empty_record: Optional[bytes] = None):
+                 null_record: bytes, bands, band_count: int, extras=None, empty_record: Optional[bytes] = None,
+                 write_geos: bool = True, face_plane_mode: str = "STOCK"):
     """Serialised record grid (``band * geocount + slot``), writing ``.geo`` files.
 
     Returns ``(records, lod1_world_points_in_bz_space)``.
@@ -687,9 +717,10 @@ def fill_records(layout: Layout, folder: str, warnings: List[str], new_record, s
 
             if has_mesh:
                 warnings.extend(_geo_warnings(name, node.mesh))
-                geo = mesh_to_geo(name, node.mesh, props)
-                with open(os.path.join(folder, name + ".geo"), "wb") as handle:
-                    GeoSerializer(handle).write(geo)
+                if write_geos:
+                    geo = mesh_to_geo(name, node.mesh, props, face_plane_mode)
+                    with open(os.path.join(folder, name + ".geo"), "wb") as handle:
+                        GeoSerializer(handle).write(geo)
                 if lod == 1:
                     world = layout.world(name)
                     all_points.extend(
@@ -705,7 +736,34 @@ def _b64(data: bytes) -> str:
     return base64.b64encode(bytes(data)).decode("ascii")
 
 
-def read_vdf(path: str) -> Scene:
+DEFAULT_IMPORT_OPTIONS = {"ImportMapTextures": True, "MapTextureDirectory": "", "MapTextureZFS": ""}
+
+
+def attach_map_textures(scene: Scene, folder: str, options: Optional[Dict[str, object]]) -> None:
+    """Blender's "Auto-load .map textures": a PNG per face texture name found as a stock .map.
+
+    Lookup follows Blender's rules (import folder, the user's folder, then the stock ZFS archive);
+    the result is ``scene.materials[name]["texture_path"]``.
+    """
+    options = dict(DEFAULT_IMPORT_OPTIONS, **(options or {}))
+    if not options["ImportMapTextures"]:
+        return
+    from . import mapload
+
+    names = []
+    for node in scene.nodes:
+        if node.mesh is not None:
+            names.extend(m for m in node.mesh.face_materials if m and m not in names)
+    for name in names:
+        png = mapload.texture_for_map_name(
+            name, folder, str(options["MapTextureDirectory"] or ""), str(options["MapTextureZFS"] or "")
+        )
+        if png:
+            scene.materials.setdefault(name, {})
+            scene.materials[name].update({"texture": name + ".map", "texture_path": png})
+
+
+def read_vdf(path: str, import_options: Optional[Dict[str, object]] = None) -> Scene:
     vdf_classes, vdf_file, _, _, _ = _modules()
     from bz98tools import semantics
 
@@ -778,6 +836,7 @@ def read_vdf(path: str) -> Scene:
         inner, outer = _colp_boxes(parsed.colp_data)
         scene.nodes.append(Node(name=INNER_COLLISION, mesh=inner))
         scene.nodes.append(Node(name=OUTER_COLLISION, mesh=outer))
+    attach_map_textures(scene, os.path.dirname(os.path.abspath(path)), import_options)
     return scene
 
 
@@ -797,7 +856,7 @@ def _clean_anim_from_plan(plan):
     return cleaned
 
 
-def write_vdf(scene: Scene, path: str) -> List[str]:
+def write_vdf(scene: Scene, path: str, write_geos: bool = True, face_plane_mode: str = "STOCK") -> List[str]:
     """Write ``path`` and a ``<name>.geo`` beside it for every part with a mesh.
 
     Returns warnings (skipped parts etc.).
@@ -865,6 +924,7 @@ def write_vdf(scene: Scene, path: str) -> List[str]:
     model.records, all_points = fill_records(
         layout, folder, warnings, vdf_classes.GEOData, vdf_classes.serialize_section,
         vdf_classes.serialize_section(null_geo), LOD_BANDS, BAND_COUNT, empty_record=bytes(100),
+        write_geos=write_geos, face_plane_mode=face_plane_mode,
     )
     _write_damage_bands(model.records, layout, geocount, preserved, semantics)
 

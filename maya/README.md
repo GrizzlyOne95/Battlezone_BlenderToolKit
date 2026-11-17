@@ -37,7 +37,8 @@ A **Battlezone** menu appears in the main menu bar.
 | Import SDF / Export SDF | Same as VDF for structures (`.sdf`). Keeps the structure header (name, type, LOD distances, ddr, death effect / sound) and each part's ddr / x / y / z / time. |
 | Import GEO / Export GEO | One `.geo` as a single mesh part / the selected mesh as a `.geo` (header words and face defaults come from its attributes). |
 | Import Ogre Mesh | One transform per submesh, material per submesh, normals and every UV set. Rigged meshes (skeleton link) are rejected. |
-| Export Ogre Mesh | Writes a `.mesh`: world transforms baked in, one submesh per mesh and material, normals, all UV sets. No `.material` file is written. |
+| Export Ogre Mesh | "Redux Mesh Only" with Blender's default options: the BZR `.mesh` and its `.material` (see Export modes below). |
+| Export Options... | The export dialog: Blender's three modes, every option, presets. |
 | Battlezone Panel | Opens the dockable authoring panel (below). |
 | Validate Battlezone Scene | Runs Blender's validation on the selection / scene and prints the issues (the panel lists them with Select / Fix). |
 | Create Vehicle GEO Set | Blender's starter set (body, POV, hardpoints, rotor, nacelle): meshes for the visible classes, locators for the invisible ones. |
@@ -72,8 +73,41 @@ tooltips, the model header, Blender's GEO Type Reference, the validation results
 
 Validation runs Blender's own `bz98tools/validation.py` on the scene, so checks and wording are the same (naming, hierarchy, LOD
 counterparts, hardpoint suffixes, collision helpers, pivots / scale, eyepoint, bridge / floor, flags, bounds, emitters, materials ...).
-Animation checks come with the animation tier. Export validates first and warns, it never blocks. Hardpoint locators count as helper
+Animation checks come with the animation tier. As in Blender, export validates first: errors block the export (Blender has no
+override, so neither does the menu), warnings are reported. Hardpoint locators count as helper
 empties (Blender authors them as meshes).
+
+### Export modes (as in Blender)
+
+The **Export Options...** dialog (and `bz98maya.export_dialog.new_session`) offers Blender's modes and option sets, read from
+Blender's operators so labels, tooltips, enums and defaults match:
+
+- **Legacy only**: `.vdf` / `.sdf` / `.geo` (+ the GEO files). Options: Skip GEO File Export, Face Plane Export
+  (Current / Preserve / Recompute / DX fix, Blender's `face_plane_mode`).
+- **Legacy + Redux** ("Also Create Redux Files"): the same, then the toolkit's own auto-port (`ogre_autoport`, unchanged) writes the
+  Redux `.mesh` / `.skeleton` / `.material` / `.dds` next to the files or into the output folder. All porter options (name, suffix,
+  flat colours, normal mode, bounds scale, ACT / config, only-once, dry run, skip unchanged, output folder, and the VDF-only
+  headlight / person / turret / cockpit / scope options) are exposed. Redux `.dds` output needs Pillow, which Maya's Python does not
+  ship (the porter then writes no `.dds`); plain `pip install pillow` into mayapy fixes that.
+- **Redux only**: the BZR `.mesh` and `.material` without any legacy file. Options: tangents / binormals / zero tangents / tangent
+  parity, apply transforms, batch (one file per selected object), export / overwrite materials, copy textures.
+
+Presets: Blender's built-in presets plus user presets (JSON in `~/.bz98maya/presets/<kind>/`, or `$BZ98MAYA_PRESET_DIR`):
+Apply, Save Current Settings, Delete.
+
+The `.mesh` is Blender's pure static export: the per-loop arrays go through the toolkit's own `pose_compat.SubMeshData.set_vertex`,
+`MeshData` and `OgreMeshSerializer`, so the vertex layout (BZR vertex-buffer organisation), vertex splitting, multi-UV, `1 - v`
+flip, bounds and radius are the toolkit's. The `.material` text is a port of `OgreExport.xSaveMaterialData` (BZBase templates;
+`_d` / `_n` / `_S` / `_e` .dds names derived from the texture); the tests compare it with Blender's own function. Colour and
+texture come from the shader's colour (a texture on the colour makes Blender's default grey) and its file texture.
+
+Differences from Blender, deliberate: tangents are a per-loop UV-derivative frame with Blender's sign convention (Blender uses
+MikkTSpace); a Maya mesh with several materials becomes one submesh per material (Blender: one submesh per object, first material);
+hierarchy transforms are baked from the world matrix; vertex colours are not exported; no skeleton, shape-key or animation export.
+
+Texture import: `.mesh` import reads the sibling `.material` (diffuse colour, DiffuseMap file found beside the mesh). Legacy import
+follows Blender's "Auto-load .map textures" (`ImportMapTextures`, `MapTextureDirectory`, `MapTextureZFS`: import folder, your folder,
+then the stock ZFS archive) with the toolkit's own palette and decoder code, and loads the converted `.png` into the shader.
 
 ### Authoring rules for VDF export
 
@@ -105,13 +139,17 @@ Maya space is Ogre space (Y up, right handed). Battlezone's own axes differ by a
   with those bands empty.
 - Spinner (type 15) parts keep their spin axis and speed but not an editable rotation; use the raw matrix for exact records.
 - Face colour is written as 204,204,204; the face plane is recomputed from the winding (stock convention `d = -n.a`).
-- Ogre export drops vertex colours and tangents; `.material` files are not written.
 - Normals are applied as locked per-face-vertex normals.
 - The winding / normal conventions were validated against stock GEOs and `.mesh` files outside the committed tests (no stock
   assets are committed); the tests only check self-consistency on synthetic data.
 - GEO export keeps n-gons and warns about non-planar or concave faces; Ogre export triangulates a temporary copy in Maya.
-- GUI only, not verified: docking of the workspace control, the Battlezone menu itself, file dialogs, widget tooltips and the
-  selection-driven refresh. Headless Maya builds the panel and drives its change handlers.
+- GUI only, not verified: docking of the workspace control, the Battlezone menu itself, file dialogs, widget tooltips, the
+  selection-driven refresh, and the look and behaviour of the export dialog widgets. Headless Maya builds the panel and the dialog and
+  drives their handlers (standalone controls hold no state, so values are fed to the handlers).
+- A stock GEO has several vertices per position (one per UV / normal index); the exported GEO welds equal (position, normal, UV)
+  vertices, so the porter may produce somewhat fewer Redux vertices for the same triangles.
+- Not ported: the skeleton, pose and animation parts of the Redux export, the OgreXMLConverter fallback, Blender's `--onlyonce`-style
+  state outside the porter options.
 
 ## Tests
 
