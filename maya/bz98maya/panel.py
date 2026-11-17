@@ -50,6 +50,12 @@ INFO_BUTTONS = (
 )
 
 
+# Fixed height for wrapped labels: six lines, room for the longest GEO hint
+# (~190 chars) and the eyepoint scale warning at the panel's 320 px minimum
+# width. Maya sizes a frameLayout once, so a wordWrap text that grows on
+# refresh squashes the rows below it.
+WRAPPED_LABEL_HEIGHT = 84
+
 # --- controller ----------------------------------------------------------------
 
 def selected_part() -> Optional[str]:
@@ -319,18 +325,16 @@ class _Form:
         cmds.scrollLayout(childResizable=True, horizontalScrollBarThickness=0)
         cmds.columnLayout(adjustableColumn=True, rowSpacing=4)
 
-        cmds.frameLayout(label="Selected Part", collapsable=False, marginWidth=6)
+        cmds.frameLayout(label="Selected Part", collapsable=True, collapse=False, marginWidth=6)
         cmds.columnLayout(adjustableColumn=True, rowSpacing=2)
         self.labels["name"] = cmds.text(label="", align="left", font="boldLabelFont")
         self.labels["info"] = cmds.text(label="", align="left")
-        self.labels["role"] = cmds.text(label="", align="left", wordWrap=True)
-        self.labels["hint"] = cmds.text(label="", align="left", wordWrap=True)
-        cmds.rowLayout(numberOfColumns=2, adjustableColumn=1)
-        cmds.button(label="Tag Selected as BZ Part", command=lambda *_a: self.tag_selected(),
+        self.labels["role"] = cmds.text(label="", align="left")
+        self.labels["hint"] = cmds.text(label="", align="left", wordWrap=True, height=WRAPPED_LABEL_HEIGHT)
+        cmds.button(label="Tag Selected as BZ Part", height=24, command=lambda *_a: self.tag_selected(),
                     annotation="Add every Battlezone attribute (Blender's defaults) to the selected transform")
-        cmds.button(label="Generate Collision Settings", command=lambda *_a: self.generate_collision(),
+        cmds.button(label="Generate Collision Settings", height=24, command=lambda *_a: self.generate_collision(),
                     annotation="Write mesh-derived GEO center, sphere radius and projectile box into the attributes")
-        cmds.setParent("..")
         cmds.setParent("..")
         cmds.setParent("..")
 
@@ -347,7 +351,8 @@ class _Form:
                         self.labels["flags_unknown"] = cmds.text(label="", align="left",
                                                                  annotation=self._tip("FlagsUnknownHex"))
             if group == "Eyepoint":
-                self.labels["eye"] = cmds.text(label="", align="left", wordWrap=True)
+                self.labels["eye"] = cmds.text(label="", align="left", wordWrap=True,
+                                               height=WRAPPED_LABEL_HEIGHT)
             cmds.setParent("..")
             cmds.setParent("..")
 
