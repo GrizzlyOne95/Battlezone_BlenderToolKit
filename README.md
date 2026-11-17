@@ -6,6 +6,8 @@ The Battlezone Blender Toolkit works with classic Battlezone model formats (`.vd
 
 It combines legacy model editing, Redux mesh export, terrain tools, validation, and workflow helpers into one Blender-based toolset. Redux-specific features are included where the later engine requires them, but the toolkit itself is not Redux-only.
 
+The repository also provides a **Maya plug-in** that imports and exports Battlezone models with the same serializers (see [Maya plug-in](#maya-plug-in) below).
+
 ## Install
 
 1. Download the newest `Battlezone_BlenderToolKit-vX.Y.Z.zip` from [Releases](https://github.com/GrizzlyOne95/Battlezone_BlenderToolKit/releases).
@@ -23,6 +25,32 @@ The release archive intentionally contains the internal add-on folder `bz98tools
 - Blender 5.2.2 is supported for the rebuilt pure-Python Redux mesh/skeleton fast path.
 - On compatible Windows/CPython 3.11 runtimes, the historical native Ogre backend remains available as a fast-path implementation and compatibility oracle.
 - Blender 5.2.2 no longer requires the CPython-3.11-only native Ogre extension for normal Redux mesh/skeleton import and export.
+
+## Maya plug-in
+
+A Maya plug-in (first released with `v1.5.0`) adds a **Battlezone** menu to Maya. It uses the toolkit's own file serializers, so files are read and written by the same code as in Blender.
+
+- Import and export legacy `.vdf` and `.sdf` models with their `.geo` parts, and single `.geo` files.
+- Import and export Redux Ogre `.mesh` files with their `.material`, and `.skeleton` files (joints, skin weights, animation clips).
+- Export with Blender's three modes (Legacy only, Legacy + Redux, Redux only), their options and presets.
+- A dockable authoring panel for the per-part fields (GEO type, ObjectFlags, bounds, damage bands, eyepoint / spinner / SDF fields), the model header and legacy animation slots.
+- Blender's validation checks, run on the Maya scene.
+
+Limits: verified headless in Maya 2027 only (the menu, file dialogs and panel docking have not been checked in the Maya GUI); no Redux poses / shape keys; no terrain (`.hg2`) or ZFS model import. See [maya/README.md](maya/README.md) for the full list.
+
+### Install (Maya)
+
+1. Download the newest `Battlezone_MayaToolKit-vX.Y.Z.zip` from [Releases](https://github.com/GrizzlyOne95/Battlezone_BlenderToolKit/releases).
+2. Extract it straight into your Maya modules folder, so that `bz98maya.mod` sits directly in it, next to the `bz98maya` folder:
+   - Windows: extract so that `Documents\maya\modules\bz98maya.mod` exists (create the `modules` folder if it does not exist). Windows "Extract All" proposes a `Battlezone_MayaToolKit-...` subfolder: delete that part of the path, or Maya never finds the `.mod`.
+   - Linux: `~/maya/modules`; macOS: `~/Library/Preferences/Autodesk/maya/modules`.
+3. Restart Maya.
+4. Open `Windows > Settings/Preferences > Plug-in Manager` and enable `bz98maya_plugin.py` (tick Auto load to keep it on).
+5. A **Battlezone** menu appears in the main menu bar.
+
+The zip carries its own copy of the toolkit's serializers; the Blender add-on does not need to be installed.
+
+Supported Maya versions: Maya 2027 is verified; Maya 2024 and later are expected to work but are untested; Maya 2022 / 2023 are not supported (their Python is too old).
 
 ## Main Features
 

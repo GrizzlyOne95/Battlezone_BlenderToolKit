@@ -70,4 +70,14 @@ The pure backend fails closed or retains fallback behavior for features that are
 4. Enable **Battlezone Blender Toolkit**.
 5. Restart Blender when replacing an already-loaded version.
 
+## Maya plug-in
+
+This release is the first to ship the **Battlezone Maya plug-in** as its own asset, `Battlezone_MayaToolKit-v1.5.0.zip`.
+
+- Adds a **Battlezone** menu to Maya: import / export of legacy `.vdf` / `.sdf` models with their `.geo` parts and of single `.geo` files, and of Redux Ogre `.mesh` (+ `.material`) and `.skeleton` files (joints, skin weights, clips).
+- Uses the toolkit's own serializers, so files are read and written by the same code as in Blender; exports offer Blender's Legacy only, Legacy + Redux and Redux only modes, options and presets, and run Blender's validation first.
+- A dockable authoring panel edits the per-part fields (GEO type, ObjectFlags, bounds, damage bands, eyepoint / spinner / SDF fields), the model header and legacy animation slots.
+- Install: extract into the Maya modules folder so that `Documents\maya\modules\bz98maya.mod` exists on Windows (remove the `Battlezone_MayaToolKit-...` subfolder that "Extract All" proposes), restart Maya, enable `bz98maya_plugin.py` in the Plug-in Manager. The zip bundles the serializers it needs; the Blender add-on is not required.
+- Verified headless in Maya 2027; Maya 2024+ is expected to work but untested; Maya 2022 / 2023 are not supported. The menu, file dialogs and panel docking have not been checked in the Maya GUI. Limitations are listed in `maya/README.md`.
+
 **Full changes:** compare `v1.4.10...v1.5.0` after the release tag is created.
