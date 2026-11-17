@@ -245,6 +245,8 @@ def drop_degenerate_faces(mesh: Mesh) -> Mesh:
     if mesh.normals is not None:
         out.normals = [mesh.normals[i] for i in keep_loops]
     out.uv_sets = [[uvs[i] for i in keep_loops] for uvs in mesh.uv_sets]
+    if mesh.face_data:
+        out.face_data = {key: [values[i] for i in kept_faces] for key, values in mesh.face_data.items()}
     repeated = sum(1 for face in mesh.faces if len(set(face)) != len(face))
     om.MGlobal.displayWarning("Battlezone: repaired %d face(s) that repeat a vertex (collapsed or dropped; Maya cannot hold them)"
                               % repeated)
@@ -267,6 +269,8 @@ def _create_mesh(transform: str, mesh: Mesh, texture_folder: Optional[str], cach
     fn = om.MFnMesh(_dag_path(shape_long))
 
     cmds.sets(shape_long, edit=True, forceElement="initialShadingGroup")
+    if mesh.face_data:
+        attributes.write_face_data(transform, mesh.face_data)
 
     for set_index, loops in enumerate(mesh.uv_sets):
         if len(loops) != len(connects):
@@ -340,6 +344,15 @@ def build_scene(scene: Scene, group_name: str, texture_folder: Optional[str] = N
     _IMPORT_MATERIALS.update(scene.materials)
     for node in scene.nodes:
         uuids[node.name] = _create_node(node, root, texture_folder, cache)
+    by_name = {n.name: n for n in scene.nodes}
+    for node in scene.nodes:
+        walker, seen = by_name.get(node.parent), set()
+        while walker is not None and walker is not node and walker.name not in seen:
+            seen.add(walker.name)
+            walker = by_name.get(walker.parent)
+        if walker is node:  # the file's parent chain loops back to this part: leave it at the top
+            scene.warnings.append("%s: parent chain loops back to itself; imported without a parent" % node.name)
+            node.parent = None
     for node in scene.nodes:
         if node.parent and node.parent in uuids:
             cmds.parent(_long_name(uuids[node.name]), _long_name(uuids[node.parent]), relative=True)
@@ -552,6 +565,9 @@ def _collect(transforms: List[str], triangulate: bool) -> Scene:
                 node.mesh = _extract_triangulated(transform, shapes[transform], sink, node.name)
             else:
                 node.mesh = _extract_mesh(shapes[transform], sink, node.name)
+                data = attributes.read_face_data(transform)  # only while the face count still matches
+                if data and all(len(v) == len(node.mesh.faces) for v in data.values()):
+                    node.mesh.face_data = data
         node.anim = legacy_anim.collect_keys(transform)
         scene.nodes.append(node)
     scene.skeleton = rig.collect_skeleton([t for t in transforms if rig.is_bone(t)])

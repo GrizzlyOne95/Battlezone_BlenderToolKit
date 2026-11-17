@@ -31,6 +31,8 @@ class Mesh:
     uv_sets: List[List[UV]] = field(default_factory=list)
     # Skin weights per position: [(bone id, weight), ...] (Redux skinned meshes), else None.
     weights: Optional[List[List[Tuple[int, float]]]] = None
+    # Legacy GEO per-face words (unknown, shade, texture, xlu, parent, node), one list entry per face.
+    face_data: Optional[Dict[str, List[int]]] = None
 
     def loop_count(self) -> int:
         return sum(len(face) for face in self.faces)

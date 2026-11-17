@@ -888,6 +888,7 @@ class ToolTests(MayaCase):
         self.assertEqual(cmds.getAttr(part + ".bzGEOHeaderUnknown"), 69)
         cmds.setAttr(part + ".bzGEOHeaderUnknown", 71)
         cmds.setAttr(part + ".bzGEOFaceXluscentTypeDefault", 2)
+        cmds.deleteAttr(part + ".bzFaceData")  # per-face words from the file win over the part defaults, as in Blender
         cmds.select(part, replace=True)
         out = os.path.join(folder, "out.geo")
         self.inject(menu.export_geo, out)
@@ -1413,6 +1414,38 @@ class RigAndAnimationTests(MayaCase):
         self.assertEqual([(n, c) for n, _d, c in table], [("walk", 1)])
         mapped = anim.auto_map(["walk", "idleEject"], ["Walk.001", "idleElect"])
         self.assertEqual(mapped, {"walk": "Walk.001", "idleEject": "idleElect"})
+
+
+class StockQuirkTests(MayaCase):
+    def test_parent_cycle_in_a_file_imports_without_the_loop(self):
+        from bz98maya.core.model import KIND_PART, Node, Scene
+
+        cube = vdf_io.box_mesh((-1, -1, -1), (1, 1, 1))
+        cube.face_materials = ["tex_a"] * 6
+        a = Node("abc11bda", "abc11bdb", axes.identity4(), KIND_PART, cube, {"type": 60})
+        b = Node("abc11bdb", "abc11bda", axes.identity4(), KIND_PART, cube, {"type": 60})
+        root = maya_io.build_scene(Scene(nodes=[a, b]), "cyc")
+        self.assertEqual(len(cmds.listRelatives(root, allDescendents=True, type="transform") or []), 2)
+
+    def test_nul_in_a_string_field_and_out_of_range_numbers_are_tolerated(self):
+        node = panel.create_model_node("bz_quirk")
+        attributes.write_model(node, {"name": "ok", "explosioneffect": "null\x00\x00garbage"})
+        self.assertEqual(attributes.read_model(node)["explosioneffect"], "null")
+
+    def test_per_face_geo_words_ride_on_the_part(self):
+        from bz98maya.core.model import KIND_PART, Node, Scene
+
+        cube = vdf_io.box_mesh((-1, -1, -1), (1, 1, 1))
+        cube.face_materials = ["tex_a"] * 6
+        cube.face_data = {"unknown": [0] * 6, "shade": [4] * 6, "texture": [1] * 6, "xlu": [0] * 6,
+                          "parent": [-1, 0, 1, 2, 3, 4], "node": [0] * 6}
+        root = maya_io.build_scene(Scene(nodes=[Node("abc11bdy", None, axes.identity4(), KIND_PART, cube,
+                                                      {"type": 60})]), "pf")
+        cmds.select(root, replace=True)
+        out = os.path.join(self.tmp, "pf.vdf")
+        maya_io.export_vdf(out, {})
+        back = {n.name: n for n in vdf_io.read_vdf(out).nodes}["abc11bdy"].mesh.face_data
+        self.assertEqual(back["parent"], [-1, 0, 1, 2, 3, 4])
 
 
 def main():

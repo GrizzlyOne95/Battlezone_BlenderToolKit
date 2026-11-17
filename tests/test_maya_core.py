@@ -1870,5 +1870,61 @@ class SkeletonCoreTests(unittest.TestCase):
 
 
 
+
+class StockSweepRegressionTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="bzmaya_sweep_")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def _scene(self):
+        cube = vdf_io.box_mesh((-1, -1, -1), (1, 1, 1))
+        cube.face_materials = ["tex_a"] * 6
+        body = Node("abc11bdy", None, axes.identity4(), KIND_PART, cube, {"type": 60})
+        return Scene(nodes=[body], meta={"name": "x"})
+
+    def test_per_face_geo_words_survive_a_round_trip(self):
+        scene = self._scene()
+        scene.nodes[0].mesh.face_data = {
+            "unknown": [0, 1, 2, 3, 4, 5], "shade": [4, 4, 3, 3, 4, 4], "texture": [0, 1, 0, 1, 0, 1],
+            "xlu": [0, 0, 1, 1, 0, 0], "parent": [-1, 0, 1, 2, 3, 4], "node": [1, 0, 1, 0, 1, 0],
+        }
+        path = os.path.join(self.tmp, "pf.vdf")
+        vdf_io.write_vdf(scene, path)
+        back = {n.name: n for n in vdf_io.read_vdf(path).nodes}["abc11bdy"].mesh.face_data
+        self.assertEqual(back, scene.nodes[0].mesh.face_data)
+
+    def test_header_name_is_written_as_authored_even_when_empty(self):
+        scene = self._scene()
+        scene.meta["name"] = ""
+        path = os.path.join(self.tmp, "nm.vdf")
+        vdf_io.write_vdf(scene, path)
+        self.assertEqual(vdf_io.read_vdf(path).meta["name"], "")
+
+    def test_spinner_helper_chains_are_all_written(self):
+        scene = self._scene()
+        previous = "abc11bdy"
+        for suffix in ("sp1", "sp2", "sp3"):
+            cube = vdf_io.box_mesh((-0.1, -0.1, -0.1), (0.1, 0.1, 0.1))
+            cube.face_materials = ["tex_a"] * 6
+            node = Node("abc11" + suffix, previous, axes.identity4(), KIND_PART, cube,
+                        {"type": 15, "is_spinner": True, "spinner_axis": [1.0, 0.0, 0.0],
+                         "spinner_speed": 1.0, "spinner_target": previous})
+            scene.nodes.append(node)
+            previous = node.name
+        path = os.path.join(self.tmp, "sp.vdf")
+        vdf_io.write_vdf(scene, path)
+        names = {n.name for n in vdf_io.read_vdf(path).nodes}
+        self.assertTrue({"abc11sp1", "abc11sp2", "abc11sp3"} <= names)
+
+    def test_lod_part_without_a_lod1_twin_is_dropped_like_blender(self):
+        scene = self._scene()
+        cube = vdf_io.box_mesh((-1, -1, -1), (1, 1, 1))
+        cube.face_materials = ["tex_a"] * 6
+        scene.nodes.append(Node("abc21zzz", "abc11bdy", axes.identity4(), KIND_PART, cube, {"type": 60}))
+        warnings = vdf_io.write_vdf(scene, os.path.join(self.tmp, "lod.vdf"))
+        self.assertTrue(any("no LOD1 part with the same name" in w for w in warnings))
+
+
+
 if __name__ == "__main__":
     unittest.main()

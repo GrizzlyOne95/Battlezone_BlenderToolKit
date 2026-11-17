@@ -95,7 +95,7 @@ def set_field(node: str, fld: schema.Field, value: Any) -> None:
     plug = _plug(node, fld.attr)
     kind = fld.kind
     if kind == "string":
-        cmds.setAttr(plug, value or "", type="string")
+        cmds.setAttr(plug, (value or "").split("\0")[0], type="string")  # C strings end at the first NUL
     elif kind == "enum":
         _ensure_enum_value(node, fld, int(value))
         cmds.setAttr(plug, int(value))
@@ -187,6 +187,19 @@ def ensure_part(node: str) -> None:
     """Tag a plain transform: add every part attribute with Blender's defaults."""
     if not is_part(node):
         write_part(node, {})
+
+
+FACE_DATA_ATTR = "bzFaceData"
+
+
+def write_face_data(node: str, data: Optional[Dict[str, Any]]) -> None:
+    """Per-face legacy GEO words (Blender keeps them as bz_face_* mesh attributes)."""
+    _json_attr(node, FACE_DATA_ATTR, data)
+
+
+def read_face_data(node: str) -> Optional[Dict[str, Any]]:
+    data = _read_json(node, FACE_DATA_ATTR)
+    return data or None
 
 
 # --- model header ------------------------------------------------------------

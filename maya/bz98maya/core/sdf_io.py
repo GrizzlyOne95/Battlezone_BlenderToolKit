@@ -147,7 +147,7 @@ def write_sdf(scene: Scene, path: str, write_geos: bool = True, face_plane_mode:
     meta.update(scene.meta or {})
 
     sdfc = sdf_classes.SDFCHeader()
-    sdfc.name = str(meta.get("name") or os.path.splitext(os.path.basename(path))[0])[:16]
+    sdfc.name = str(meta["name"] if meta.get("name") is not None else os.path.splitext(os.path.basename(path))[0])[:16]  # as authored, even empty
     sdfc.structuretype = int(meta["structuretype"])
     (sdfc.lod1dist, sdfc.lod2dist, sdfc.lod3dist, sdfc.lod4dist, sdfc.lod5dist) = vdf_io._lod_dists(meta)
     sdfc.ddr = int(meta["ddr"])

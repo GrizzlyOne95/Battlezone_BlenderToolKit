@@ -171,6 +171,23 @@ Maya space is Ogre space (Y up, right handed). Battlezone's own axes differ by a
 - Part LOD comes from the file's band (stored as `lod` / `slot` in `bzProps`); names that disagree with it (some stock parts do) are
   kept as they are. SDF files that repeat the LOD1 records in the LOD2/3 bands are folded into one set of parts and written back
   with those bands empty.
+- Same as Blender (found by a sweep of every stock VDF / SDF / `.mesh`; the sweep compares the re-exported file with the source):
+  - `.mesh` bounds and radius are recomputed from the vertices (stock files carry padded bounds); triangles that repeat a vertex are
+    dropped; a mesh without normals gains them (Maya meshes always have normals).
+  - Per-face legacy GEO words (unknown, shade, texture type, translucency, BSP parent / branch) are kept as `bzFaceData` on the part
+    while its face count is unchanged (they win over the part's default fields until you delete that attribute); face colour is rewritten as 204,204,204 and the face plane is recomputed.
+  - A LOD2/3 part is paired with the LOD1 part of the same name (4th character swapped); one with no twin is not exported, whatever
+    slot the source file had it in. Slots are written parents first (spinner helpers right after their target), LOD parts' parents are
+    renamed to their own LOD, and record names are lower-cased.
+  - A face texture name loses its extension (`avdef4.MAP` -> `avdef4`), is lower-cased and cut to 8 characters.
+  - COLP is kept as the inner / outer boxes (min / max per axis), not as the raw 12 floats.
+  - Only the fixed EXIT sections follow the data (two, three with an ANIM block); other trailing bytes of a source file are not kept.
+  - `SDFTime` is limited to +-500000 and string fields end at their first NUL (stock files carry garbage after it).
+  - A spinner part keeps its axis and speed, not the rotation rows of its record.
+  - A source whose parent chain loops is imported without the looping parent; an SDF with no parts cannot be exported.
+  - A parent name that matches no part (or the part itself) is written as `WORLD`; NaN normals / UVs in a source GEO come out as
+    whatever Maya holds; a part with an empty GEO is written without a `.geo` file; damage bands and unused bands are not kept.
+- A few stock `.mesh` files use `MeshSerializer_v1.40`, which the toolkit's reader does not support (so neither does the plug-in).
 - Spinner (type 15) parts keep their spin axis and speed but not an editable rotation; use the raw matrix for exact records.
 - Face colour is written as 204,204,204; the face plane is recomputed from the winding (stock convention `d = -n.a`).
 - Normals are applied as locked per-face-vertex normals.

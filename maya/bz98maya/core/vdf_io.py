@@ -97,6 +97,8 @@ def _find_case_insensitive(folder: str, filename: str) -> Optional[str]:
 
 # --- GEO <-> Mesh ----------------------------------------------------------
 
+FACE_DATA_KEYS = ("unknown", "shade", "texture", "xlu", "parent", "node")  # Blender's bz_face_* attributes
+
 def geo_to_mesh(geo) -> Mesh:
     mesh = Mesh()
     positions = np.asarray(geo.vertex_pos_buffer, dtype=float).reshape(-1, 3)
@@ -104,6 +106,7 @@ def geo_to_mesh(geo) -> Mesh:
     mesh.positions = [axes.bz_point_to_maya(p) for p in positions]
     loop_normals = []
     loop_uvs = []
+    data: Dict[str, List[int]] = {key: [] for key in FACE_DATA_KEYS}
     for face in geo.face_list:
         nodes = face.wireframe
         if len(nodes) < 3:
@@ -118,11 +121,18 @@ def geo_to_mesh(geo) -> Mesh:
             continue
         mesh.faces.append(tuple(int(n.vertex_index) for n in nodes))
         mesh.face_materials.append(face.texture_name or "")
+        data["unknown"].append(struct.unpack("<i", struct.pack("<f", float(face.poly_area)))[0])
+        data["shade"].append(int(face.shade_type))
+        data["texture"].append(int(face.texture_type))
+        data["xlu"].append(int(face.xluscent_type))
+        data["parent"].append(int(face.parent_face_index))
+        data["node"].append(int(face.tree_branch))
         for n in nodes:
             loop_normals.append(axes.bz_normal_to_maya(normals[n.vertex_normal_index]))
             loop_uvs.append(axes.bz_uv_to_maya((n.uv.u, n.uv.v)))
     mesh.normals = loop_normals
     mesh.uv_sets = [loop_uvs]
+    mesh.face_data = data
     return mesh
 
 
@@ -211,8 +221,16 @@ def mesh_to_geo(name: str, mesh: Mesh, props: Optional[Dict[str, object]] = None
     geo.name = name[:16]
     geo._checksum = int(props.get("header_unknown", 69))
     geo.flags = int(props.get("header_flags", 0))
-    face_unknown = int(props.get("face_unknown", 0))
-    poly_area = 0.0 if face_unknown == 0 else struct.unpack("<f", struct.pack("<i", face_unknown))[0]
+    defaults = {
+        "unknown": int(props.get("face_unknown", 0)), "shade": int(props.get("face_shade", 4)),
+        "texture": int(props.get("face_texture", 0)), "xlu": int(props.get("face_xlu", 0)),
+        "parent": int(props.get("face_parent", 0)), "node": int(props.get("face_node", 0)),
+    }
+    per_face = mesh.face_data if mesh.face_data and all(
+        len(mesh.face_data.get(k, ())) == len(mesh.faces) for k in FACE_DATA_KEYS) else None
+
+    def word(key: str, face_index: int) -> int:  # per-face value kept from import, else the part default
+        return int(per_face[key][face_index]) if per_face else defaults[key]
 
     loop = 0
     for face_index, face in enumerate(mesh.faces):
@@ -224,13 +242,14 @@ def mesh_to_geo(name: str, mesh: Mesh, props: Optional[Dict[str, object]] = None
         gface = geo.create_face(face_index)
         gface.color = spacial.Color3(*DEFAULT_FACE_COLOR)
         gface.plane = bzgeo.SurfacePlane(spacial.Vector3(*plane_normal), plane_d)
-        gface.poly_area = poly_area
-        gface.shade_type = int(props.get("face_shade", 4)) & 0xFF
-        gface.texture_type = int(props.get("face_texture", 0)) & 0xFF
-        gface.xluscent_type = int(props.get("face_xlu", 0)) & 0xFF
+        unknown = word("unknown", face_index)
+        gface.poly_area = 0.0 if unknown == 0 else struct.unpack("<f", struct.pack("<i", unknown))[0]
+        gface.shade_type = word("shade", face_index) & 0xFF
+        gface.texture_type = word("texture", face_index) & 0xFF
+        gface.xluscent_type = word("xlu", face_index) & 0xFF
         gface.texture_name = texture_name(mesh.face_materials[face_index])
-        gface.parent_face_index = int(props.get("face_parent", 0))
-        gface.tree_branch = int(props.get("face_node", 0))
+        gface.parent_face_index = word("parent", face_index)
+        gface.tree_branch = word("node", face_index)
         for vi in face:
             normal = axes.maya_normal_to_bz(normals[loop])
             u, v = axes.maya_uv_to_bz(uvs[loop]) if uvs else (0.0, 0.0)
@@ -653,6 +672,9 @@ def _order_spinner_helpers(layout: Layout) -> None:
             continue
         ordered.append(item)
         ordered.extend(helpers.get(item[1], []))
+    # Helpers whose target is itself a helper (chains) were not reached: keep them, as Blender does.
+    seen = {name for _key, name in ordered}
+    ordered.extend(item for item in layout.placed if item[1] not in seen)
     layout.placed = ordered
 
 
@@ -908,7 +930,7 @@ def write_vdf(scene: Scene, path: str, write_geos: bool = True, face_plane_mode:
     while sum(1 for kind, _ in model.plan if kind == "raw") < len(model.raw_chunks):
         model.plan.append(("raw", sum(1 for kind, _ in model.plan if kind == "raw")))
 
-    model.vdfc_name = str(meta.get("name") or os.path.splitext(os.path.basename(path))[0])[:16]
+    model.vdfc_name = str(meta["name"] if meta.get("name") is not None else os.path.splitext(os.path.basename(path))[0])[:16]  # as authored, even empty
     model.vdfc_vehicletype = int(meta["vehicletype"])
     model.vdfc_vehiclesize = int(meta["vehiclesize"])
     model.vdfc_lod_dists = _lod_dists(meta)
