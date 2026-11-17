@@ -1290,6 +1290,13 @@ def bCreateSubMeshes(meshData, meshName, import_params):
                 print("Created new material: " + subMeshData["material"])
                 bpy.data.materials.new(name=subMeshData["material"])
 
+            from . import material_source
+
+            material_source.attach_source(
+                bpy.data.materials.get(subMeshData["material"]),
+                import_params["mesh_path"],
+                subMeshData.get("materialOrg", ""),
+            )
             ob.data.materials.append(bpy.data.materials.get(subMeshData["material"]))
 
         # texture coordinates
@@ -1538,6 +1545,7 @@ def load(
         "round_frames": round_frames,
         "use_selected_skeleton": use_selected_skeleton,
         "import_materials": import_materials,
+        "mesh_path": str(filepath),
     }
 
     print("loading", str(filepath))

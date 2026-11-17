@@ -244,6 +244,7 @@ def create_mesh(
     select_encoding="utf-8",
     cleanup_vertices: str = "PRESERVE",
     submesh_name_delimiter: str = "",
+    mesh_path: str = "",
 ):
     mesh_objects: List[Object] = []
     scene_collection = context.scene.collection
@@ -292,6 +293,10 @@ def create_mesh(
                 if material_index == -1
                 else bpy.data.materials[material_index]
             )
+            if mesh_path:
+                from ..ogretools.material_source import attach_source
+
+                attach_source(material, mesh_path)
             me.materials.append(material=material)
 
         if submesh.geometry.has_texture_coord:
@@ -652,6 +657,7 @@ def load(
             use_filename=use_filename,
             cleanup_vertices=cleanup_vertices,
             submesh_name_delimiter=submesh_name_delimiter,
+            mesh_path=filepath,
         )
 
         if import_animations and skeleton_data:

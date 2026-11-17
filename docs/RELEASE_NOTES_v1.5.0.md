@@ -28,6 +28,7 @@ The release also preserves the existing native CPython 3.11 backend as an oracle
 - Ogre import now preserves source topology by default instead of automatically merging vertices.
 - Custom split-normal remapping after optional cleanup now uses original face/loop indices rather than vertex indices.
 - Pure export avoids an unnecessary BMesh triangulation pass for meshes that are already triangle lists, preserving imported custom split normals.
+- Ogre `.material` export now round-trips imported stock materials: the raw block and file preamble are kept on the Blender material at import and written back on export, so the parent (`BZBase` / `BZBaseCockpit`), real texture aliases and parameters survive; only a changed diffuse colour or diffuse texture is rewritten. Materials without a source are generated exactly as before.
 - Updated the public add-on identity and release packaging to **Battlezone Blender Toolkit** while retaining the internal `bz98tools` package name for compatibility.
 - Bumped the add-on version to 1.5.0.
 
