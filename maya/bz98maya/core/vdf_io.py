@@ -128,7 +128,7 @@ def mesh_to_geo(name: str, mesh: Mesh):
     out_normals: List[tuple] = []
 
     geo = bzgeo.Geo()
-    geo.name = name[:15]
+    geo.name = name[:16]
     geo._checksum = GEO_HEADER_UNKNOWN
     geo.flags = 0
 
@@ -182,43 +182,24 @@ def _bounds_from_mesh(mesh: Optional[Mesh]):
     return [float(v) for v in center], radius, [float(v) for v in half]
 
 
-# --- read ------------------------------------------------------------------
+# --- shared read / write (VDF and SDF) ---------------------------------------
 
-def read_vdf(path: str) -> Scene:
-    vdf_classes, vdf_file, _, _, GeoSerializer = _modules()
-    with open(path, "rb") as handle:
-        parsed = vdf_file.parse_vdf(handle.read())
+def build_nodes(records, folder: str, scene: Scene, extra_props=None, quiet_duplicates=False) -> None:
+    """Fill ``scene.nodes`` from ``(lod, record)`` pairs, loading ``<name>.geo`` from ``folder``.
 
-    folder = os.path.dirname(os.path.abspath(path))
-    scene = Scene()
-    scene.meta = {
-        "name": parsed.vdfc_name,
-        "vehicletype": int(parsed.vdfc_vehicletype),
-        "vehiclesize": int(parsed.vdfc_vehiclesize),
-        "lod_dists": [float(v) for v in parsed.vdfc_lod_dists],
-        "mass": float(parsed.vdfc_mass),
-        "multiplyer": float(parsed.vdfc_multiplyer),
-        "drag": float(parsed.vdfc_drag),
-        "colp": [float(v) for v in parsed.colp_data] if parsed.colp_data is not None else None,
-    }
-
-    records = []  # (lod, GEOData)
-    for lod, band in enumerate(LOD_BANDS, start=1):
-        for slot in range(parsed.geocount):
-            index = band * parsed.geocount + slot
-            if index >= len(parsed.records):
-                break
-            geo_data = vdf_classes.GEOData()
-            geo_data.Read(parsed.records[index], 0)
-            if geo_data.name[0:4].lower() == "null" or not geo_data.name:
-                continue
-            records.append((lod, geo_data))
-
+    ``record`` is a vdf_classes / sdf_classes GEOData and ``owner`` the (lower-case) name of the
+    LOD1 record in the same slot, or None. ``extra_props(record)`` returns
+    additional per-node props (SDF: ddr, x, y, z, time).
+    """
+    _, _, _, _, GeoSerializer = _modules()
     nodes: Dict[str, Node] = {}
     parents: Dict[str, str] = {}
-    for lod, geo_data in records:
+    for lod, geo_data, owner in records:
         key = geo_data.name.lower()
         if key in nodes:
+            # SDF files repeat LOD1 records in the LOD2/3 bands; only warn for real clashes.
+            if quiet_duplicates:
+                continue
             scene.warnings.append(f"duplicate part name {geo_data.name}; later record ignored")
             continue
         mesh = None
@@ -236,7 +217,13 @@ def read_vdf(path: str) -> Scene:
             "geocenter": [float(v) for v in geo_data.geocenter],
             "sphereradius": float(geo_data.sphereradius),
             "boxhalfheight": [float(v) for v in geo_data.boxhalfheight],
+            # The record's band decides the LOD; some stock names (g1431024) disagree with it.
+            "lod": int(lod),
         }
+        if lod > 1 and owner:
+            props["slot"] = owner  # the LOD1 part this one shares its slot with
+        if extra_props is not None:
+            props.update(extra_props(geo_data))
         matrix12 = [float(v) for v in geo_data.matrix]
         if part_type == SPINNER_TYPE:
             # Spinner records store axis * speed in the first three floats, not a rotation.
@@ -278,49 +265,101 @@ def read_vdf(path: str) -> Scene:
             scene.warnings.append(f"{node.name}: parent {parent_key} not found; made a root")
 
     scene.nodes = list(nodes.values())
-    return scene
 
-
-# --- write -----------------------------------------------------------------
 
 def _lod_of(name: str) -> Optional[int]:
+    """The LOD digit: the 4th character of ``abc11bdy``-style names."""
     if len(name) >= 5 and name[3] in "123":
         return int(name[3])
     return None
 
 
 def _slot_key(name: str) -> str:
+    if _lod_of(name) is None:
+        return name
     return name[:3] + name[5:]  # export_transforms.lod_slot
 
 
-def write_vdf(scene: Scene, path: str) -> List[str]:
-    """Write ``path`` and a ``<name>.geo`` beside it for every part with a mesh.
+class Layout:
+    """Which parts are written, in what slot order, with which parent / matrix."""
 
-    Returns warnings (skipped parts etc.).
+    def __init__(self):
+        self.entries: Dict[str, Node] = {}
+        self.lods: Dict[str, int] = {}
+        self.by_lod: Dict[int, Dict[str, str]] = {1: {}, 2: {}, 3: {}}  # slot key -> name
+        self.resolved: Dict[str, Tuple[Optional[str], list]] = {}
+        self.placed: List[Tuple[str, str]] = []
+
+    def lod(self, name: str) -> int:
+        return self.lods[name]
+
+    def parent_record_name(self, name: str) -> str:
+        parent_name = self.resolved[name][0]
+        if parent_name is None:
+            return "WORLD"
+        lod = self.lod(name)
+        if self.lod(parent_name) != lod:
+            candidate = parent_name[:3] + str(lod) + parent_name[4:]
+            if candidate in self.entries:
+                return candidate
+        return parent_name
+
+    def world(self, name: str):
+        matrix = axes.identity4()
+        seen = set()
+        current: Optional[str] = name
+        while current is not None and current not in seen:
+            seen.add(current)
+            parent, local = self.resolved[current]
+            matrix = axes.matmul(local, matrix)
+            current = parent
+        return matrix
+
+
+def make_layout(scene: Scene, warnings: List[str]) -> Layout:
+    """Decide what gets written.
+
+    The LOD is the ``lod`` prop kept from import (the file's band decides, and some stock
+    names such as ``g1431024`` disagree with it), else the 4th character of the name.
+    Names without a LOD digit are accepted as LOD1 only when the node carries BZ props (it
+    came from a BZ file or was tagged with ``bzType``): stock files do contain free-form
+    names such as ``op1bda01`` or ``g083700b``.
     """
-    vdf_classes, vdf_file, _, _, GeoSerializer = _modules()
-    folder = os.path.dirname(os.path.abspath(path))
-    warnings: List[str] = list(scene.warnings)
-
+    layout = Layout()
     entries: Dict[str, Node] = {}
+    lods: Dict[str, int] = {}
     for node in scene.nodes:
         name = node.name.lower()
         if len(name) > 8:
             warnings.append(f"{node.name}: name longer than 8 characters, truncated")
             name = name[:8]
-        if _lod_of(name) is None:
+        props = node.props or {}
+        lod = int(props["lod"]) if props.get("lod") in (1, 2, 3) else _lod_of(name)
+        if lod is None and "type" in props:
+            lod = 1
+        if lod is None:
             warnings.append(
-                f"{node.name}: skipped, VDF part names need a LOD digit (1-3) as the 4th character"
+                f"{node.name}: skipped, part names need a LOD digit (1-3) as the 4th character"
             )
             continue
         if name in entries:
             warnings.append(f"{node.name}: duplicate part name after truncation, skipped")
             continue
         entries[name] = node
+        lods[name] = lod
 
-    by_lod: Dict[int, Dict[str, str]] = {1: {}, 2: {}, 3: {}}  # slot key -> name
+    by_lod = layout.by_lod
     for name in entries:
-        by_lod[_lod_of(name)][_slot_key(name)] = name
+        if lods[name] == 1:
+            by_lod[1][_slot_key(name)] = name
+    for name in entries:
+        lod = lods[name]
+        if lod == 1:
+            continue
+        owner = str((entries[name].props or {}).get("slot") or "")[:8]
+        # Files pair LOD parts by slot position; stock names do not always show it.
+        key = _slot_key(owner) if owner and _slot_key(owner) in by_lod[1] else _slot_key(name)
+        by_lod[lod][key] = name
     for lod in (2, 3):
         for key, name in list(by_lod[lod].items()):
             if key not in by_lod[1]:
@@ -330,10 +369,12 @@ def write_vdf(scene: Scene, path: str) -> List[str]:
     # Only parts that survived the LOD filtering are written. A skipped node (an
     # organising group, an orphaned LOD part) is removed from the hierarchy and its
     # matrix is composed into its children, so their world transforms stay put.
-    entries = {n: entries[n] for lod_names in by_lod.values() for n in lod_names.values()}
+    layout.entries = entries = {
+        n: entries[n] for lod_names in by_lod.values() for n in lod_names.values()
+    }
+    layout.lods = {n: lods[n] for n in entries}
     entry_of = {id(node): name for name, node in entries.items()}
     by_node_name = {node.name: node for node in scene.nodes}
-    resolved: Dict[str, Tuple[Optional[str], list]] = {}
     for name, node in entries.items():
         matrix = node.matrix
         parent_name = None
@@ -346,49 +387,150 @@ def write_vdf(scene: Scene, path: str) -> List[str]:
                 break
             matrix = axes.matmul(walker.matrix, matrix)
             walker = by_node_name.get(walker.parent) if walker.parent else None
-        resolved[name] = (parent_name, matrix)
-
-    def parent_record_name(name: str) -> str:
-        parent_name = resolved[name][0]
-        if parent_name is None:
-            return "WORLD"
-        lod = _lod_of(name)
-        if _lod_of(parent_name) != lod:
-            candidate = parent_name[:3] + str(lod) + parent_name[4:]
-            if candidate in entries:
-                return candidate
-        return parent_name
+        layout.resolved[name] = (parent_name, matrix)
 
     # Parents must precede children in the LOD1 slot order.
     pending = list(by_lod[1].items())
-    placed: List[Tuple[str, str]] = []
     placed_names = set()
     lod1_names = set(by_lod[1].values())
     while pending:
         progress = False
         for item in list(pending):
             key, name = item
-            parent = parent_record_name(name)
+            parent = layout.parent_record_name(name)
             if parent == "WORLD" or parent not in lod1_names or parent in placed_names:
-                placed.append(item)
+                layout.placed.append(item)
                 placed_names.add(name)
                 pending.remove(item)
                 progress = True
         if not progress:  # cycle: keep file order rather than loop forever
             warnings.append("parent cycle among LOD1 parts; slot order may be wrong")
-            placed.extend(pending)
+            layout.placed.extend(pending)
             break
+    return layout
 
-    geocount = len(placed)
+
+def fill_records(layout: Layout, folder: str, warnings: List[str], new_record, serialize,
+                 null_record: bytes, bands, band_count: int, extras=None):
+    """Serialised record grid (``band * geocount + slot``), writing ``.geo`` files.
+
+    Returns ``(records, lod1_world_points_in_bz_space)``.
+    """
+    _, _, _, _, GeoSerializer = _modules()
+    geocount = len(layout.placed)
+    records = [null_record] * (band_count * geocount)
+    all_points = []
+    for slot, (key, _lod1_name) in enumerate(layout.placed):
+        for lod, band in zip((1, 2, 3), bands):
+            name = layout.by_lod[lod].get(key)
+            if name is None:
+                continue
+            node = layout.entries[name]
+            record = new_record()
+            record.name = name
+            record.parent = layout.parent_record_name(name)
+            props = node.props or {}
+            part_type = props.get("type")
+            if part_type is None:
+                part_type = 70 if node.kind == KIND_HARDPOINT else 0
+            record.type = int(part_type)
+            record.geoflags = int(props.get("flags", 0))
+            matrix12 = axes.maya_matrix_to_bz12(layout.resolved[name][1])
+            if record.type == SPINNER_TYPE and props.get("spin") is not None:
+                matrix12[0:3] = [float(v) for v in props["spin"]]
+            record.matrix = matrix12
+            center, radius, half = _bounds_from_mesh(node.mesh)
+            has_mesh = node.mesh is not None and bool(node.mesh.faces)
+            if has_mesh:  # bounds always follow the geometry that is being written
+                record.geocenter, record.sphereradius, record.boxhalfheight = center, radius, half
+            else:
+                record.geocenter = list(props.get("geocenter") or center)
+                record.sphereradius = float(props.get("sphereradius", radius))
+                record.boxhalfheight = list(props.get("boxhalfheight") or half)
+            if extras is not None:
+                extras(record, props)
+            records[band * geocount + slot] = serialize(record)
+
+            if has_mesh:
+                bad = 0
+                for face in node.mesh.faces:
+                    non_planar, concave = axes.polygon_issues(
+                        [node.mesh.positions[i] for i in face]
+                    )
+                    bad += int(non_planar or concave)
+                if bad:
+                    warnings.append(
+                        f"{name}: {bad} non-planar or concave face(s); GEO needs convex planar polygons"
+                    )
+                geo = mesh_to_geo(name, node.mesh)
+                with open(os.path.join(folder, name + ".geo"), "wb") as handle:
+                    GeoSerializer(handle).write(geo)
+                if lod == 1:
+                    world = layout.world(name)
+                    all_points.extend(
+                        axes.maya_point_to_bz(axes.transform_point(world, p))
+                        for p in node.mesh.positions
+                    )
+    return records, all_points
+
+
+# --- VDF -------------------------------------------------------------------
+
+def read_vdf(path: str) -> Scene:
+    vdf_classes, vdf_file, _, _, _ = _modules()
+    with open(path, "rb") as handle:
+        parsed = vdf_file.parse_vdf(handle.read())
+
+    scene = Scene()
+    scene.meta = {
+        "format": "vdf",
+        "name": parsed.vdfc_name,
+        "vehicletype": int(parsed.vdfc_vehicletype),
+        "vehiclesize": int(parsed.vdfc_vehiclesize),
+        "lod_dists": [float(v) for v in parsed.vdfc_lod_dists],
+        "mass": float(parsed.vdfc_mass),
+        "multiplyer": float(parsed.vdfc_multiplyer),
+        "drag": float(parsed.vdfc_drag),
+        "colp": [float(v) for v in parsed.colp_data] if parsed.colp_data is not None else None,
+    }
+
+    records = []  # (lod, GEOData, owner)
+    owners = {}
+    for lod, band in enumerate(LOD_BANDS, start=1):
+        for slot in range(parsed.geocount):
+            index = band * parsed.geocount + slot
+            if index >= len(parsed.records):
+                break
+            geo_data = vdf_classes.GEOData()
+            geo_data.Read(parsed.records[index], 0)
+            if geo_data.name[0:4].lower() == "null" or not geo_data.name:
+                continue
+            if lod == 1:
+                owners[slot] = geo_data.name.lower()
+            records.append((lod, geo_data, owners.get(slot)))
+
+    build_nodes(records, os.path.dirname(os.path.abspath(path)), scene)
+    return scene
+
+
+def write_vdf(scene: Scene, path: str) -> List[str]:
+    """Write ``path`` and a ``<name>.geo`` beside it for every part with a mesh.
+
+    Returns warnings (skipped parts etc.).
+    """
+    vdf_classes, vdf_file, _, _, _ = _modules()
+    folder = os.path.dirname(os.path.abspath(path))
+    warnings: List[str] = list(scene.warnings)
+    layout = make_layout(scene, warnings)
+
+    geocount = len(layout.placed)
     model = vdf_file.ParsedVDF()
     model.plan = list(vdf_file.new_empty_plan())
     meta = scene.meta or {}
-    model.vdfc_name = str(meta.get("name") or os.path.splitext(os.path.basename(path))[0])[:15]
+    model.vdfc_name = str(meta.get("name") or os.path.splitext(os.path.basename(path))[0])[:16]
     model.vdfc_vehicletype = int(meta.get("vehicletype", 0))
     model.vdfc_vehiclesize = int(meta.get("vehiclesize", 0))
-    lod_dists = list(meta.get("lod_dists") or [])
-    lod_dists = (lod_dists + [0.0] * 5)[:5]
-    model.vdfc_lod_dists = [float(v) for v in lod_dists]
+    model.vdfc_lod_dists = _lod_dists(meta)
     model.vdfc_mass = float(meta.get("mass", 1.0))
     model.vdfc_multiplyer = float(meta.get("multiplyer", 1.0))
     model.vdfc_drag = float(meta.get("drag", 0.0))
@@ -404,61 +546,11 @@ def write_vdf(scene: Scene, path: str) -> List[str]:
     null_geo.boxhalfheight = [0] * 3
     null_geo.type = 0
     null_geo.geoflags = 0
-    null_record = vdf_classes.serialize_section(null_geo)
 
-    records = [null_record] * (BAND_COUNT * geocount)
-    all_points = []
-    for slot, (key, lod1_name) in enumerate(placed):
-        for lod, band in zip((1, 2, 3), LOD_BANDS):
-            name = by_lod[lod].get(key)
-            if name is None:
-                continue
-            node = entries[name]
-            record = vdf_classes.GEOData()
-            record.name = name
-            record.parent = parent_record_name(name)
-            props = node.props or {}
-            part_type = props.get("type")
-            if part_type is None:
-                part_type = 70 if node.kind == KIND_HARDPOINT else 0
-            record.type = int(part_type)
-            record.geoflags = int(props.get("flags", 0))
-            matrix12 = axes.maya_matrix_to_bz12(resolved[name][1])
-            if record.type == SPINNER_TYPE and props.get("spin") is not None:
-                matrix12[0:3] = [float(v) for v in props["spin"]]
-            record.matrix = matrix12
-            center, radius, half = _bounds_from_mesh(node.mesh)
-            has_mesh = node.mesh is not None and bool(node.mesh.faces)
-            if has_mesh:  # bounds always follow the geometry that is being written
-                record.geocenter, record.sphereradius, record.boxhalfheight = center, radius, half
-            else:
-                record.geocenter = list(props.get("geocenter") or center)
-                record.sphereradius = float(props.get("sphereradius", radius))
-                record.boxhalfheight = list(props.get("boxhalfheight") or half)
-            records[band * geocount + slot] = vdf_classes.serialize_section(record)
-
-            if node.mesh is not None and node.mesh.faces:
-                bad = 0
-                for face in node.mesh.faces:
-                    non_planar, concave = axes.polygon_issues(
-                        [node.mesh.positions[i] for i in face]
-                    )
-                    bad += int(non_planar or concave)
-                if bad:
-                    warnings.append(
-                        f"{name}: {bad} non-planar or concave face(s); GEO needs convex planar polygons"
-                    )
-                geo = mesh_to_geo(name, node.mesh)
-                with open(os.path.join(folder, name + ".geo"), "wb") as handle:
-                    GeoSerializer(handle).write(geo)
-                if lod == 1:
-                    all_points.extend(
-                        axes.maya_point_to_bz(
-                            axes.transform_point(_world(resolved, entries, name), p)
-                        )
-                        for p in node.mesh.positions
-                    )
-    model.records = records
+    model.records, all_points = fill_records(
+        layout, folder, warnings, vdf_classes.GEOData, vdf_classes.serialize_section,
+        vdf_classes.serialize_section(null_geo), LOD_BANDS, BAND_COUNT,
+    )
 
     colp = meta.get("colp")
     if not colp or len(colp) != 12:
@@ -470,16 +562,9 @@ def write_vdf(scene: Scene, path: str) -> List[str]:
     return warnings
 
 
-def _world(resolved, entries: Dict[str, Node], name: str):
-    matrix = axes.identity4()
-    seen = set()
-    current: Optional[str] = name
-    while current is not None and current not in seen:
-        seen.add(current)
-        parent, local = resolved[current]
-        matrix = axes.matmul(local, matrix)
-        current = parent
-    return matrix
+def _lod_dists(meta) -> List[float]:
+    lod_dists = list(meta.get("lod_dists") or [])
+    return [float(v) for v in (lod_dists + [0.0] * 5)[:5]]
 
 
 def _default_colp(points_bz) -> List[float]:

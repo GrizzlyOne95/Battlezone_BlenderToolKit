@@ -33,7 +33,7 @@ import _bootstrap  # noqa: F401,E402
 
 import numpy as np  # noqa: E402
 
-from bz98maya.core import axes, ogre_io, vdf_io  # noqa: E402
+from bz98maya.core import axes, ogre_io, sdf_io, vdf_io  # noqa: E402
 from bz98maya.core.model import (  # noqa: E402
     KIND_EMPTY,
     KIND_HARDPOINT,
@@ -44,7 +44,7 @@ from bz98maya.core.model import (  # noqa: E402
     Scene,
 )
 
-from bz98tools import vdf_file  # noqa: E402
+from bz98tools import sdf_classes, vdf_file  # noqa: E402
 from bz98tools.bzrmodelporter import bzgeo, spacial  # noqa: E402
 from bz98tools.bzrmodelporter.bzgeo_serializer import GeoSerializer  # noqa: E402
 from bz98tools.ogrefast.pure import import_compat, kenshi_compat  # noqa: E402
@@ -366,6 +366,151 @@ class VdfRoundTripTests(unittest.TestCase):
         self.assertEqual(kinds["cxp11"], KIND_HARDPOINT)  # eyepoint
         self.assertEqual(kinds["cxa11"], KIND_EMPTY)  # no GEO beside the fixture
         self.assertEqual({n.props["type"] for n in scene.nodes}, {60, 40, 66, 9})
+
+
+def _sdf_record(name, parent="WORLD", matrix=None, type_=61, ddr=0, x=0.0, y=0.0, z=0.0, time=0.0):
+    geo = sdf_classes.GEOData()
+    geo.name, geo.parent = name, parent
+    geo.matrix = list(matrix or [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0])
+    geo.geocenter, geo.sphereradius, geo.boxhalfheight = [0.0, 0.0, 0.0], 1.0, [1.0, 1.0, 1.0]
+    geo.type, geo.geoflags = type_, 0
+    geo.ddr, geo.x, geo.y, geo.z, geo.time = ddr, x, y, z, time
+    return geo
+
+
+def _write_sdf(path, names_by_band, parts, geocount):
+    """A minimal SDF the way stock files are laid out (bands 0/2/4 = LOD1/2/3, 1/3/5 blank)."""
+    sdfc = sdf_classes.SDFCHeader()
+    sdfc.name, sdfc.structuretype = "Test Depot", 1
+    sdfc.lod1dist, sdfc.lod2dist, sdfc.lod3dist, sdfc.lod4dist, sdfc.lod5dist = 400.0, 800.0, 50000.0, 50000.0, 50000.0
+    sdfc.ddr, sdfc.explosioneffect, sdfc.explosionsound = 500000, "xbldx1.xdf", "null"
+    sgeo = sdf_classes.SGEOHeader()
+    sgeo.geocount = geocount
+    sgeo.sectionlength = geocount * 120 * 6 + sgeo.binlength
+    null = _sdf_record("NULL", "NULL", [0] * 12, 0, 50000)
+    with open(path, "wb") as handle:
+        sdf_classes.SDFHeader().Write(handle, 0)
+        sdfc.Write(handle, 0)
+        sgeo.Write(handle, 0)
+        for band in range(6):
+            names = names_by_band.get(band, [])
+            for slot in range(geocount):
+                if slot < len(names):
+                    parts[names[slot]].Write(handle, 0)
+                else:
+                    null.Write(handle, 0)
+        exit_section = sdf_classes.EXITSection()
+        exit_section.Write(handle, 0)
+        exit_section.Write(handle, 0)
+
+
+class SdfRoundTripTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="bzmaya_")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def _make_source(self):
+        src = os.path.join(self.tmp, "src")
+        os.makedirs(src)
+        record = _sdf_record
+        parts = {
+            "tst11bdy": record("tst11bdy", ddr=3, time=1.5),
+            "tst11dck": record(
+                "tst11dck", "tst11bdy", [0, 0, -1, 0, 1, 0, 1, 0, 0, 1.0, 2.0, 3.0], 9, 0, 0.25, 0.5, 0.75, 2.0
+            ),
+            "tst11hp1": record("tst11hp1", "tst11bdy", None, 70, 0),
+            "tst21bdy": record("tst21bdy", ddr=3),
+            "op1bda01": record("op1bda01"),
+        }
+        path = os.path.join(src, "tstdep.sdf")
+        _write_sdf(
+            path,
+            {
+                0: ["tst11bdy", "tst11dck", "tst11hp1", "op1bda01"],
+                2: ["tst21bdy", "tst11dck", "tst11hp1"],  # stock style: LOD1 names repeated
+            },
+            parts,
+            4,
+        )
+        for name in ("tst11bdy", "tst11dck", "tst21bdy", "op1bda01"):
+            _write_cube_geo(os.path.join(src, name + ".geo"), name)
+        return src, path
+
+    def test_sdf_roundtrip_keeps_parts_matrices_and_sdf_fields(self):
+        src, path = self._make_source()
+        scene = sdf_io.read_sdf(path)
+        self.assertEqual(scene.warnings, [])
+        by_name = {n.name: n for n in scene.nodes}
+        self.assertEqual(set(by_name), {"tst11bdy", "tst11dck", "tst11hp1", "tst21bdy", "op1bda01"})
+        self.assertEqual(by_name["tst11dck"].parent, "tst11bdy")
+        self.assertEqual(by_name["tst11hp1"].kind, KIND_HARDPOINT)
+        self.assertEqual(by_name["tst21bdy"].kind, KIND_LOD)
+        self.assertEqual(len(by_name["tst11bdy"].mesh.faces), 6)
+        self.assertEqual(scene.meta["name"], "Test Depot")
+        self.assertEqual(scene.meta["structuretype"], 1)
+        self.assertEqual(scene.meta["ddr"], 500000)
+        self.assertEqual(by_name["tst11dck"].props["x"], 0.25)
+        self.assertEqual(by_name["tst11dck"].props["time"], 2.0)
+        self.assertEqual(by_name["tst11bdy"].props["ddr"], 3)
+
+        out_dir = os.path.join(self.tmp, "out")
+        os.makedirs(out_dir)
+        out = os.path.join(out_dir, "tstdep.sdf")
+        self.assertEqual(sdf_io.write_sdf(scene, out), [])
+        for name in ("tst11bdy", "tst11dck", "tst21bdy", "op1bda01"):
+            self.assertTrue(os.path.isfile(os.path.join(out_dir, name + ".geo")), name)
+        self.assertFalse(os.path.exists(os.path.join(out_dir, "tst11hp1.geo")))
+
+        # Container read back with the toolkit's own section classes.
+        with open(out, "rb") as handle:
+            data = handle.read()
+        header = sdf_classes.SDFHeader()
+        pos = header.Read(data, 0)
+        self.assertEqual((header.BWDHeader, header.REVHeader, header.Unknown), (b"BWD2", b"REV\0", 8))
+        sdfc = sdf_classes.SDFCHeader()
+        pos = sdfc.Read(data, pos)
+        sgeo = sdf_classes.SGEOHeader()
+        pos = sgeo.Read(data, pos)
+        self.assertEqual((sdfc.name, sdfc.structuretype, sdfc.ddr), ("Test Depot", 1, 500000))
+        self.assertEqual((sdfc.explosioneffect, sdfc.explosionsound), ("xbldx1.xdf", "null"))
+        self.assertEqual(sgeo.geocount, 4)
+        self.assertEqual(sgeo.sectionlength, 4 * 120 * 6 + 12)
+        bands = []
+        for _band in range(6):
+            names = []
+            for _slot in range(sgeo.geocount):
+                geo = sdf_classes.GEOData()
+                pos = geo.Read(data, pos)
+                names.append(geo)
+            bands.append(names)
+        self.assertEqual([g.name for g in bands[0]], ["tst11bdy", "tst11dck", "tst11hp1", "op1bda01"])
+        self.assertEqual(bands[2][0].name, "tst21bdy")
+        self.assertTrue(all(g.name == "NULL" for g in bands[1] + bands[3] + bands[5]))
+        self.assertEqual(data[pos:], b"EXIT\x08\0\0\0" * 2)
+        deck = bands[0][1]
+        np.testing.assert_allclose(deck.matrix, [0, 0, -1, 0, 1, 0, 1, 0, 0, 1.0, 2.0, 3.0], atol=TOL)
+        self.assertEqual((deck.type, deck.parent.lower(), deck.ddr), (9, "tst11bdy", 0))
+        self.assertEqual((deck.x, deck.y, deck.z, deck.time), (0.25, 0.5, 0.75, 2.0))
+
+        again = sdf_io.read_sdf(out)
+        self.assertEqual({k: v for k, v in again.meta.items()}, scene.meta)
+        self.assertEqual({n.name: n.parent for n in again.nodes}, {n.name: n.parent for n in scene.nodes})
+        for node in scene.nodes:
+            twin = next(n for n in again.nodes if n.name == node.name)
+            np.testing.assert_allclose(twin.matrix, node.matrix, atol=TOL)
+            self.assertEqual(twin.props["type"], node.props["type"])
+            self.assertEqual(twin.props["ddr"], node.props["ddr"])
+            self.assertEqual(twin.mesh is None, node.mesh is None)
+            if node.mesh:
+                self.assertEqual(len(twin.mesh.faces), len(node.mesh.faces))
+                self.assertEqual(len(twin.mesh.positions), len(node.mesh.positions))
+
+    def test_sdf_rejects_non_sdf(self):
+        bad = os.path.join(self.tmp, "bad.sdf")
+        with open(bad, "wb") as handle:
+            handle.write(b"\0" * 200)
+        with self.assertRaises(ValueError):
+            sdf_io.read_sdf(bad)
 
 
 class OgreRoundTripTests(unittest.TestCase):

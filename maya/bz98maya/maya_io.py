@@ -43,7 +43,7 @@ from .core.toolkit import ensure_toolkit
 # Keep the native Ogre backend probe (a global side effect) out of Maya.
 ensure_toolkit(stub_ogrefast=True)
 
-from .core import ogre_io, vdf_io  # noqa: E402
+from .core import ogre_io, sdf_io, vdf_io  # noqa: E402
 
 DEFAULT_CAMERAS = ("persp", "top", "front", "side", "bottom", "back", "left")
 TEXTURE_EXTENSIONS = (".png", ".tga", ".dds", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")
@@ -495,12 +495,22 @@ def import_vdf(path: str) -> str:
     return _import(vdf_io.read_vdf(path), path)
 
 
+def import_sdf(path: str) -> str:
+    return _import(sdf_io.read_sdf(path), path)
+
+
 def import_ogre_mesh(path: str) -> str:
     return _import(ogre_io.read_ogre_mesh(path), path)
 
 
 def export_vdf(path: str) -> None:
     warnings = vdf_io.write_vdf(collect_scene(), path)
+    _report(warnings)
+    om.MGlobal.displayInfo("Battlezone: wrote %s (+ .geo files beside it)" % path)
+
+
+def export_sdf(path: str) -> None:
+    warnings = sdf_io.write_sdf(collect_scene(), path)
     _report(warnings)
     om.MGlobal.displayInfo("Battlezone: wrote %s (+ .geo files beside it)" % path)
 
