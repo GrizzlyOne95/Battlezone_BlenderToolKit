@@ -33,7 +33,7 @@ import _bootstrap  # noqa: F401,E402
 
 import numpy as np  # noqa: E402
 
-from bz98maya.core import axes, ogre_io, sdf_io, vdf_io  # noqa: E402
+from bz98maya.core import authoring, axes, ogre_io, schema, sdf_io, validate, vdf_io  # noqa: E402
 from bz98maya.core.model import (  # noqa: E402
     KIND_EMPTY,
     KIND_HARDPOINT,
@@ -153,8 +153,9 @@ class VdfRoundTripTests(unittest.TestCase):
         _write_cube_geo(os.path.join(folder, "fxh11.geo"), "fxh11")
 
         scene = vdf_io.read_vdf(path)
-        self.assertEqual([n.name for n in scene.nodes], ["fxh11", "fxp11"])
-        hull, pov = scene.nodes
+        # The COLP box becomes the inner_col / outer_col helper meshes, as in Blender.
+        self.assertEqual([n.name for n in scene.nodes], ["fxh11", "fxp11", "inner_col", "outer_col"])
+        hull, pov = scene.nodes[:2]
         self.assertEqual(hull.kind, KIND_PART)
         self.assertIsNone(hull.parent)
         self.assertEqual(pov.parent, "fxh11")
@@ -200,7 +201,7 @@ class VdfRoundTripTests(unittest.TestCase):
 
         # Through the neutral layer again: same hierarchy, transforms, geometry.
         again = vdf_io.read_vdf(out_path)
-        self.assertEqual([n.name.lower() for n in again.nodes], ["fxh11", "fxp11"])
+        self.assertEqual([n.name.lower() for n in again.nodes], ["fxh11", "fxp11", "inner_col", "outer_col"])
         self.assertEqual(again.nodes[1].parent.lower(), "fxh11")
         self.assertEqual(again.nodes[1].kind, KIND_HARDPOINT)
         for before, after in zip(scene.nodes, again.nodes):
@@ -337,7 +338,9 @@ class VdfRoundTripTests(unittest.TestCase):
 
         back = vdf_io.read_vdf(out)
         by_name = {n.name: n for n in back.nodes}
-        self.assertEqual(set(by_name), {"tst11bdy", "tst21bdy", "tst11tur", "tst11hp1", "tst11pov"})
+        self.assertEqual(
+            set(by_name), {"tst11bdy", "tst21bdy", "tst11tur", "tst11hp1", "tst11pov", "inner_col", "outer_col"}
+        )
         self.assertEqual(back.meta["name"], "tstveh")
         self.assertEqual(back.meta["vehicletype"], 1)
         self.assertAlmostEqual(back.meta["mass"], 5.0)
@@ -357,7 +360,9 @@ class VdfRoundTripTests(unittest.TestCase):
         order = [n.name for n in back.nodes if n.name.startswith("tst1")]
         self.assertLess(order.index("tst11bdy"), order.index("tst11tur"))
         self.assertLess(order.index("tst11tur"), order.index("tst11hp1"))
-        self.assertEqual(len(back.meta["colp"]), 12)
+        # No helpers were given: the collision box defaults to the parts' bounding box.
+        inner = by_name["inner_col"].mesh.positions
+        self.assertEqual(len(inner), 8)
 
     def test_combination_fixture_keeps_part_classes(self):
         _folder, path = self._copy_fixture("combination.vdf")
@@ -365,7 +370,7 @@ class VdfRoundTripTests(unittest.TestCase):
         kinds = {n.name: n.kind for n in scene.nodes}
         self.assertEqual(kinds["cxp11"], KIND_HARDPOINT)  # eyepoint
         self.assertEqual(kinds["cxa11"], KIND_EMPTY)  # no GEO beside the fixture
-        self.assertEqual({n.props["type"] for n in scene.nodes}, {60, 40, 66, 9})
+        self.assertEqual({n.props["type"] for n in scene.nodes if "type" in n.props}, {60, 40, 66, 9})
 
 
 def _sdf_record(name, parent="WORLD", matrix=None, type_=61, ddr=0, x=0.0, y=0.0, z=0.0, time=0.0):
@@ -511,6 +516,408 @@ class SdfRoundTripTests(unittest.TestCase):
             handle.write(b"\0" * 200)
         with self.assertRaises(ValueError):
             sdf_io.read_sdf(bad)
+
+
+def _non_default(fld, index=1):
+    """A value different from the field's default, inside its range."""
+    kind = fld.kind
+    if kind == "bool":
+        return not bool(fld.default)
+    if kind == "int":
+        lo, hi = fld.lo, fld.hi
+        value = int(fld.default or 0) + 3 + index
+        if hi is not None and value > hi:
+            value = int(hi) - 1
+        return value
+    if kind == "float":
+        return float(fld.default or 0.0) + 1.5 + index
+    if kind == "string":
+        return "ab%d" % index
+    if kind == "enum":
+        values = [v for _l, v in fld.enum]
+        default = fld.default if isinstance(fld.default, int) else 0
+        return next(v for v in values if v != default)
+    if kind == "float3":
+        return (1.25 + index, -2.5, 3.75)
+    if kind == "int3":
+        return (7, -8, 9)
+    if kind == "floatarray":
+        return tuple(float(i) * 0.5 + index for i in range(12))
+    raise AssertionError(kind)
+
+
+class AuthoringMappingTests(unittest.TestCase):
+    """Attribute values <-> neutral props, for every schema field, with non-default values."""
+
+    def test_schema_uses_blenders_own_text_and_geo_types(self):
+        fields = {f.blender: f for f in schema.part_fields()}
+        self.assertIn("What kind of GEO", fields["GEOType"].tip)
+        self.assertIn("Sets where the center", fields["GeoCenter"].tip)
+        self.assertEqual(fields["SphereRadius"].default, 3.0)
+        types = dict(schema.geo_types())
+        self.assertEqual(len(types), 42)
+        self.assertTrue(types[70].startswith("WEAPON_HARDPOINT"))
+        self.assertTrue(types[71].startswith("CANNON_HARDPOINT"))
+        self.assertEqual(len(fields["GEOType"].enum), 42)
+        self.assertIn(40, schema.geo_type_hints())
+        self.assertIn("70 - WEAPON_HARDPOINT", schema.geo_type_reference_text())
+        self.assertEqual(schema.blender_constant("VALIDATION_PRESET_ITEMS")[0][0], "AUTO")
+        # no attribute name collisions
+        attrs = [f.attr for f in schema.part_fields()] + [f.attr for f in schema.model_fields()]
+        self.assertEqual(len(attrs), len(set(attrs)))
+
+    def test_every_part_field_round_trips_with_non_default_values(self):
+        props = {}
+        for i, fld in enumerate(schema.part_fields()):
+            if fld.derived:
+                continue
+            value = _non_default(fld, i)
+            if fld.keys:
+                for key, component in zip(fld.keys, value):
+                    props[key] = component
+            elif fld.key == "bounds_mode":
+                props[fld.key] = schema.BOUNDS_MODES[value]
+            elif fld.key.startswith("damage") and fld.key[-1:] in "123":
+                props.setdefault("damage", ["", "", ""])[int(fld.key[-1]) - 1] = value
+            elif fld.kind in ("float3", "floatarray"):
+                props[fld.key] = list(value)
+            else:
+                props[fld.key] = value
+        props["lod"] = 2  # a key with no schema field travels as extra
+        values, extra = authoring.part_attr_values(props)
+        self.assertEqual(extra, {"lod": 2})
+        for fld in schema.part_fields():
+            self.assertIn(fld.attr, values, fld.attr)
+        back = authoring.part_props_from_attrs(values, extra)
+        for key, value in props.items():
+            if isinstance(value, (list, tuple)) and value and isinstance(value[0], str):
+                self.assertEqual(list(back[key]), list(value), key)
+            elif isinstance(value, (list, tuple)):
+                np.testing.assert_allclose(back[key], value, err_msg=key)
+            elif isinstance(value, float):
+                self.assertAlmostEqual(back[key], value, places=6, msg=key)
+            elif key == "flags":
+                continue
+            else:
+                self.assertEqual(back[key], value, key)
+
+    def test_object_flags_bits_are_decoded_edited_and_unknown_bits_survive(self):
+        raw = 0x1 | 0x10 | 0x2000 | (1 << 16) | 0x40000020  # keep bounds, view render, collision, team 1, 2 unknown bits
+        values, _ = authoring.part_attr_values({"flags": raw})
+        self.assertTrue(values["bzFlagKeepBounds"])
+        self.assertFalse(values["bzFlagDestroyedSeed"])
+        self.assertEqual(values["bzCollisionClass"], raw & 0xF000)
+        self.assertEqual(values["bzObjFlagTeam"], (raw & 0xF0000) >> 16)
+        self.assertEqual(values["bzGEOFlags"], raw)
+        # untouched attributes recompose to the same raw value
+        self.assertEqual(authoring.part_props_from_attrs(values)["flags"], raw)
+        # toggling bits through the decoded attributes keeps every unknown bit
+        values["bzFlagKeepBounds"] = False
+        values["bzFlagDestroyedSeed"] = True
+        values["bzObjFlagTeam"] = 7
+        edited = authoring.part_props_from_attrs(values)["flags"]
+        self.assertEqual(edited & 0x1, 0)
+        self.assertEqual(edited & 0x200, 0x200)
+        self.assertEqual((edited & 0xF0000) >> 16, 7)
+        self.assertEqual(edited & 0x40000020, 0x40000020)  # unknown bit 30 and bit 5
+        # bit 31 uses Maya's signed 32-bit int
+        values, _ = authoring.part_attr_values({"flags": 0x80000001})
+        self.assertLess(values["bzGEOFlags"], 0)
+        self.assertEqual(authoring.part_props_from_attrs(values)["flags"], values["bzGEOFlags"])
+
+    def test_every_model_field_round_trips_with_non_default_values(self):
+        meta = {}
+        for i, fld in enumerate(schema.model_fields()):
+            if fld.key.startswith("lod") and fld.key[3:].isdigit():
+                continue
+            meta[fld.key] = _non_default(fld, i)
+        meta["lod_dists"] = [11.0, 22.0, 33.0, 44.0, 55.0]
+        meta["preserved"] = {"plan": ["vdfc"]}
+        values, extra = authoring.meta_attr_values(meta)
+        self.assertEqual(extra, {"preserved": {"plan": ["vdfc"]}})
+        self.assertEqual(values["bzLOD3"], 33.0)
+        back = authoring.meta_from_attr_values(values, extra)
+        self.assertEqual(back["lod_dists"], [11.0, 22.0, 33.0, 44.0, 55.0])
+        for key, value in meta.items():
+            if key in ("lod_dists", "preserved"):
+                continue
+            if isinstance(value, (list, tuple)):
+                self.assertEqual(list(back[key]), list(value), key)
+            elif isinstance(value, float):
+                self.assertAlmostEqual(back[key], value, places=6, msg=key)
+            else:
+                self.assertEqual(back[key], value, key)
+        defaults = authoring.default_meta()
+        self.assertEqual(defaults["vehiclesize"], 2)
+        self.assertEqual(defaults["lod_dists"][0], 5.0)
+
+
+class AuthoringFileTests(unittest.TestCase):
+    """Non-default authoring values survive write -> read through the real VDF / SDF / GEO files."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="bzmaya_")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def _scene(self):
+        cube = vdf_io.box_mesh((0, 0, 0), (2, 2, 2))
+        cube.face_materials = ["hull"] * 6
+        props = {
+            "type": 60, "flags": 0x40000001 | 0x2000 | (3 << 16),
+            "bounds_mode": "PRESERVE", "authored_bounds": True,
+            "geocenter": [1.5, 2.5, 3.5], "sphereradius": 9.25, "boxhalfheight": [4.0, 5.0, 6.0],
+            "damage": ["tst11d1", "", "tst11d3"],
+            "ddr": 777, "x": 1.0, "y": 0.2, "z": 3.0, "time": 4.5,
+            "header_unknown": 71, "header_flags": 5,
+            "face_unknown": 0, "face_shade": 5, "face_texture": 1, "face_xlu": 2, "face_parent": 3, "face_node": 4,
+        }
+        spinner = {
+            "type": 15, "flags": 0, "is_spinner": True, "spinner_axis": [0.0, 1.0, 0.0],
+            "spinner_speed": 2.5, "spinner_target": "tst11bdy",
+        }
+        raw = {
+            "type": 61, "use_raw_matrix": True,
+            "raw_matrix": [2.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 4.0, 1.0, 2.0, 3.0],
+        }
+        scene = Scene(
+            nodes=[
+                Node("tst11bdy", None, axes.identity4(), KIND_PART, cube, props),
+                Node("tst11spn", "tst11bdy", axes.identity4(), KIND_EMPTY, None, spinner),
+                Node("tst11raw", "tst11bdy", _identity_translated(9, 9, 9), KIND_PART, cube, raw),
+            ],
+            meta={
+                "name": "Authored", "vehicletype": 3, "vehiclesize": 4, "mass": 999.0, "multiplyer": 2.0,
+                "drag": 0.5, "lod_dists": [10.0, 20.0, 30.0, 40.0, 50.0], "vdfc_null": 12,
+                "use_scps": True, "scps_data": [1, 2, 3], "structuretype": 5, "ddr": 4242,
+                "explosioneffect": "boom.xdf", "explosionsound": "boom",
+            },
+        )
+        return scene
+
+    def test_vdf_part_and_model_fields_survive_a_file_round_trip(self):
+        out = os.path.join(self.tmp, "tst.vdf")
+        scene = self._scene()
+        self.assertEqual([w for w in vdf_io.write_vdf(scene, out) if "concave" not in w], [])
+        back = vdf_io.read_vdf(out)
+        by_name = {n.name: n for n in back.nodes}
+        body = by_name["tst11bdy"].props
+        self.assertEqual(body["type"], 60)
+        self.assertEqual(body["flags"], 0x40000001 | 0x2000 | (3 << 16))
+        self.assertEqual(body["bounds_mode"], "PRESERVE")
+        np.testing.assert_allclose(body["geocenter"], [1.5, 2.5, 3.5], atol=TOL)  # stored, not recomputed
+        self.assertAlmostEqual(body["sphereradius"], 9.25, places=5)
+        np.testing.assert_allclose(body["boxhalfheight"], [4.0, 5.0, 6.0], atol=TOL)
+        self.assertEqual(body["damage"], ["tst11d1", "", "tst11d3"])
+        self.assertEqual((body["header_unknown"], body["header_flags"]), (71, 5))
+        self.assertEqual(
+            (body["face_shade"], body["face_texture"], body["face_xlu"], body["face_parent"], body["face_node"]),
+            (5, 1, 2, 3, 4),
+        )
+        spin = by_name["tst11spn"].props
+        self.assertTrue(spin["is_spinner"])
+        np.testing.assert_allclose(spin["spinner_axis"], [0.0, 1.0, 0.0], atol=TOL)
+        self.assertAlmostEqual(spin["spinner_speed"], 2.5, places=5)
+        self.assertEqual(spin["spinner_target"], "tst11bdy")
+        raw = by_name["tst11raw"]
+        np.testing.assert_allclose(raw.props["raw_matrix"], [2, 0, 0, 0, 3, 0, 0, 0, 4, 1, 2, 3], atol=TOL)
+        # the raw matrix is what was written, not the node's own transform
+        np.testing.assert_allclose(np.array(raw.matrix)[:3, :3].diagonal(), [2.0, 3.0, 4.0], atol=TOL)
+        self.assertEqual(
+            {k: back.meta[k] for k in ("name", "vehicletype", "vehiclesize", "vdfc_null", "use_scps")},
+            {"name": "Authored", "vehicletype": 3, "vehiclesize": 4, "vdfc_null": 12, "use_scps": True},
+        )
+        self.assertEqual(back.meta["scps_data"], [1, 2, 3])
+        self.assertAlmostEqual(back.meta["mass"], 999.0, places=3)
+        self.assertAlmostEqual(back.meta["drag"], 0.5, places=5)
+        np.testing.assert_allclose(back.meta["lod_dists"], [10, 20, 30, 40, 50])
+        # Spinner helpers are written right after their target slot.
+        order = [n.name for n in back.nodes if n.name.startswith("tst11")]
+        self.assertEqual(order.index("tst11spn"), order.index("tst11bdy") + 1)
+        # damage names are real VGEO band records (lod slot 0, states 1 and 3)
+        with open(out, "rb") as handle:
+            parsed = vdf_file.parse_vdf(handle.read())
+        names = [r[:8].split(b"\0")[0].decode() for r in parsed.records]
+        self.assertEqual(names[1 * parsed.geocount], "tst11d1")
+        self.assertEqual(names[3 * parsed.geocount], "tst11d3")
+        self.assertEqual(names[2 * parsed.geocount], "")  # state 2 stays zeros, as Blender writes it
+
+    def test_bounds_modes_follow_blenders_export_rules(self):
+        cube = vdf_io.box_mesh((0, 0, 0), (2, 2, 2))
+        cube.face_materials = ["h"] * 6
+        stored = {"type": 60, "geocenter": [9.0, 9.0, 9.0], "sphereradius": 99.0, "boxhalfheight": [8.0, 8.0, 8.0]}
+
+        def radius(extra):
+            scene = Scene(nodes=[Node("tst11bdy", None, axes.identity4(), KIND_PART, cube, dict(stored, **extra))])
+            out = os.path.join(self.tmp, "b.vdf")
+            vdf_io.write_vdf(scene, out)
+            return vdf_io.read_vdf(out).nodes[0].props["sphereradius"]
+
+        self.assertAlmostEqual(radius({"bounds_mode": "PRESERVE", "authored_bounds": True}), 99.0, places=4)
+        self.assertAlmostEqual(radius({"bounds_mode": "AUTO", "generate_collision": False}), 99.0, places=4)
+        derived = radius({"bounds_mode": "RECALC"})
+        self.assertAlmostEqual(derived, 3 ** 0.5, places=4)
+        self.assertAlmostEqual(radius({"bounds_mode": "AUTO", "generate_collision": True}), derived, places=4)
+        self.assertAlmostEqual(radius({"bounds_mode": "PRESERVE", "authored_bounds": False}), derived, places=4)
+
+    def test_sdf_target_fields_and_header_survive(self):
+        scene = self._scene()
+        out = os.path.join(self.tmp, "tst.sdf")
+        sdf_io.write_sdf(scene, out)
+        back = sdf_io.read_sdf(out)
+        by_name = {n.name: n for n in back.nodes}
+        body = by_name["tst11bdy"].props
+        self.assertEqual((body["ddr"], body["x"], body["time"]), (777, 1.0, 4.5))
+        self.assertAlmostEqual(body["y"], 0.2, places=6)
+        self.assertEqual(
+            (back.meta["structuretype"], back.meta["ddr"], back.meta["explosioneffect"], back.meta["explosionsound"]),
+            (5, 4242, "boom.xdf", "boom"),
+        )
+
+    def test_geo_header_and_face_defaults_survive_standalone_geo(self):
+        node = self._scene().nodes[0]
+        path = os.path.join(self.tmp, "solo.geo")
+        vdf_io.write_geo(node, path)
+        back = vdf_io.read_geo(path).nodes[0]
+        self.assertEqual(back.name, "solo")
+        self.assertEqual(len(back.mesh.faces), 6)
+        self.assertEqual((back.props["header_unknown"], back.props["header_flags"]), (71, 5))
+        self.assertEqual(
+            (back.props["face_shade"], back.props["face_texture"], back.props["face_xlu"],
+             back.props["face_parent"], back.props["face_node"]),
+            (5, 1, 2, 3, 4),
+        )
+        with self.assertRaises(ValueError):
+            vdf_io.write_geo(Node("empty"), os.path.join(self.tmp, "none.geo"))
+
+    def test_preserved_chunks_vloc_and_damage_bands_round_trip(self):
+        for fixture in ("combination.vdf", "damage_rep.vdf"):
+            src = os.path.join(FIXTURES, fixture)
+            scene = vdf_io.read_vdf(src)
+            out = os.path.join(self.tmp, fixture)
+            vdf_io.write_vdf(scene, out)
+            back = vdf_io.read_vdf(out)
+            for key in ("chunks", "vlocs", "bands"):
+                self.assertEqual(back.meta["preserved"][key], scene.meta["preserved"][key], (fixture, key))
+        combo = vdf_io.read_vdf(os.path.join(FIXTURES, "combination.vdf"))
+        self.assertEqual(len(combo.meta["preserved"]["vlocs"]), 4)
+        self.assertEqual(len(combo.meta["preserved"]["chunks"]), 1)  # the SCHK chunk
+        damage = vdf_io.read_vdf(os.path.join(FIXTURES, "damage_rep.vdf"))
+        self.assertEqual(
+            {n.name: n.props["damage"] for n in damage.nodes if n.props}["fxv11"], ["fxvd1", "fxvd2", "fxvd3"]
+        )
+
+    def test_collision_helpers_become_colp_with_the_files_axis_slots(self):
+        cube = vdf_io.box_mesh((0, 0, 0), (1, 1, 1))
+        cube.face_materials = ["h"] * 6
+        # BZ extents: x -2..2, y (up) 0..1, z (forward) -3..4  -> Maya z is mirrored
+        lo_i = [min(a, b) for a, b in zip(axes.bz_point_to_maya((-1, 0.25, -1)), axes.bz_point_to_maya((1, 0.75, 2)))]
+        hi_i = [max(a, b) for a, b in zip(axes.bz_point_to_maya((-1, 0.25, -1)), axes.bz_point_to_maya((1, 0.75, 2)))]
+        lo_o = [min(a, b) for a, b in zip(axes.bz_point_to_maya((-2, 0, -3)), axes.bz_point_to_maya((2, 1, 4)))]
+        hi_o = [max(a, b) for a, b in zip(axes.bz_point_to_maya((-2, 0, -3)), axes.bz_point_to_maya((2, 1, 4)))]
+        scene = Scene(nodes=[
+            Node("tst11bdy", None, axes.identity4(), KIND_PART, cube, {"type": 60}),
+            Node("inner_col", None, axes.identity4(), KIND_PART, vdf_io.box_mesh(lo_i, hi_i)),
+            Node("outer_col", None, _identity_translated(0, 0, 0), KIND_PART, vdf_io.box_mesh(lo_o, hi_o)),
+        ])
+        out = os.path.join(self.tmp, "col.vdf")
+        self.assertEqual([w for w in vdf_io.write_vdf(scene, out) if "inner_col" in w or "outer_col" in w], [])
+        with open(out, "rb") as handle:
+            colp = vdf_file.parse_vdf(handle.read()).colp_data
+        # [Y out max, Y in max, Y in min, Y out min, X ..., Z ...]: file "Y" = BZ z, file "Z" = BZ y
+        np.testing.assert_allclose(
+            colp, [4, 2, -1, -3, 2, 1, -1, -2, 1.0, 0.75, 0.25, 0.0], atol=TOL
+        )
+        back = vdf_io.read_vdf(out)
+        helpers = {n.name: n for n in back.nodes}
+        pts = np.array(helpers["outer_col"].mesh.positions)
+        np.testing.assert_allclose(pts.min(axis=0), lo_o, atol=TOL)
+        np.testing.assert_allclose(pts.max(axis=0), hi_o, atol=TOL)
+        self.assertEqual(len(helpers["inner_col"].mesh.faces), 6)
+
+
+class ValidationTests(unittest.TestCase):
+    def _broken(self):
+        cube = vdf_io.box_mesh((0, 0, 0), (1, 1, 1))
+        cube.face_materials = ["averyloongtexture"] * 6
+
+        def node(name, parent=None, mesh=cube, props=None, matrix=None):
+            return Node(name, parent, matrix or axes.identity4(), KIND_PART if mesh else KIND_EMPTY, mesh, props or {})
+
+        scaled = np.identity(4)
+        scaled[0][0] = 2.0
+        return Scene(nodes=[
+            node("abc11bdy", props={"type": 60}),
+            node("abc11gc9", "abc11bdy", cube, {"type": 71}),  # cannon hardpoint, suffix gc9
+            node("abc21cok", "abc11bdy", cube, {"type": 69}),  # LOD2 not parented to its LOD1 twin
+            node("toolongname1", None, cube),
+            node("x", None, cube),
+            node("abc11sca", "abc11bdy", cube, {"type": 60}, scaled.tolist()),
+            node("abc11pov", None, None, {"type": 40}),
+            node("abc11pv2", None, None, {"type": 40}),
+        ])
+
+    def test_broken_scene_reports_the_same_issues_as_blenders_validator(self):
+        issues = validate.validate_scene(self._broken(), export_mode="VDF")
+        found = {(i["severity"], i["scope"], i["target"]) for i in issues}
+        expected = {
+            ("ERROR", "Scene", "POV"),  # two type-40 parts
+            ("WARNING", "Eyepoint", "abc11pov, abc11pv2"),
+            ("WARNING", "LOD", "abc21cok"),  # no LOD1 twin
+            ("WARNING", "Object", "abc21cok"),  # parent in another LOD set
+            ("WARNING", "Object", "toolongname1"),  # name too long
+            ("WARNING", "Object", "x"),  # name too short
+            ("WARNING", "GEO Type", "abc11gc9"),  # hardpoint suffix
+            ("WARNING", "Transform", "abc11sca"),  # non-applied scale
+            ("WARNING", "Material", "averyloongtexture"),  # > 8 character texture
+            ("WARNING", "Scene", "inner_col"),
+            ("WARNING", "Scene", "outer_col"),
+            ("INFO", "Orientation", "vehicle front"),
+        }
+        self.assertTrue(expected <= found, expected - found)
+        messages = " ".join(i["message"] for i in issues)
+        self.assertIn("Multiple exportable Type 40 POV GEOs detected", messages)
+        self.assertIn("Type 71 cannon hardpoint GEOs should use suffix gc1-gc5", messages)
+        self.assertIn("exceeds 8 characters", messages)
+        self.assertEqual(validate.counts(issues, "VDF")["ERROR"], 1)
+        # an SDF check scope: type-40 / spinner helpers are VDF-only
+        self.assertFalse(any(i["scope"] in ("Animation", "Armature") for i in issues))
+
+    def test_clean_vehicle_has_no_errors_or_warnings(self):
+        cube = vdf_io.box_mesh((0, 0, 0), (1, 1, 1))
+        cube.face_materials = ["hull"] * 6
+        scene = Scene(nodes=[
+            Node("abc11bdy", None, axes.identity4(), KIND_PART, cube, {"type": 60}),
+            Node("abc11pov", "abc11bdy", axes.identity4(), KIND_HARDPOINT, None, {"type": 40}),
+            Node("abc11gc1", "abc11bdy", axes.identity4(), KIND_HARDPOINT, None, {"type": 71}),
+            Node("inner_col", None, axes.identity4(), KIND_PART, vdf_io.box_mesh((0, 0, 0), (1, 1, 1))),
+            Node("outer_col", None, axes.identity4(), KIND_PART, vdf_io.box_mesh((0, 0, 0), (1, 1, 1))),
+        ])
+        issues = validate.validate_scene(scene, export_mode="VDF")
+        counts = validate.counts(issues, "VDF")
+        self.assertEqual((counts["ERROR"], counts["WARNING"]), (0, 0), [i["message"] for i in issues])
+
+    def test_geometry_checks_use_blender_axes(self):
+        # A BRIDGE root with an upward deck: the Maya +Y face must count as "up" (Blender +Z).
+        cube = vdf_io.box_mesh((-1, -1, -1), (1, 0, 1))
+        cube.face_materials = ["deck"] * 6
+        scene = Scene(nodes=[
+            Node("brg11bdy", None, axes.identity4(), KIND_PART, cube, {"type": 8}),
+            Node("brg11dck", "brg11bdy", axes.identity4(), KIND_PART, cube, {"type": 9}),
+        ])
+        issues = validate.validate_scene(scene, export_mode="VDF")
+        self.assertFalse(any(i["scope"] == "Deck" and i["severity"] == "WARNING" for i in issues), issues)
+
+    def test_fix_legacy_name_matches_blenders_rules(self):
+        fixed = validate.fix_legacy_name("My Tank", [])
+        self.assertEqual(len(fixed), 7)
+        self.assertEqual((fixed[3], fixed[4]), ("3", "1"))  # LOD defaults to 3 like Blender
+        self.assertEqual(validate.fix_legacy_name("abc2yy", [])[3], "2")
+        taken = validate.fix_legacy_name("zzz", [])
+        self.assertNotEqual(validate.fix_legacy_name("zzz", [taken]), taken)
+        specs = validate.quick_vehicle_specs()
+        self.assertEqual([s[0] for s in specs][:2], ["bod", "pov"])
+        self.assertEqual({s[1] for s in specs}, {60, 40, 71, 72, 74, 73, 66, 67})
+
 
 
 class OgreRoundTripTests(unittest.TestCase):

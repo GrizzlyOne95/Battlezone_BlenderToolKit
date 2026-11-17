@@ -46,8 +46,8 @@ import maya.cmds as cmds  # noqa: E402
 
 import _bootstrap  # noqa: F401,E402
 
-from bz98maya import maya_io, menu  # noqa: E402
-from bz98maya.core import axes, ogre_io, sdf_io, vdf_io  # noqa: E402
+from bz98maya import attributes, maya_io, menu, panel  # noqa: E402
+from bz98maya.core import axes, ogre_io, schema, sdf_io, validate, vdf_io  # noqa: E402
 from bz98tools import sdf_classes, vdf_classes, vdf_file  # noqa: E402
 
 from test_maya_core import _sdf_record, _write_cube_geo, _write_sdf  # noqa: E402
@@ -105,8 +105,8 @@ def maya_parts(root):
     """bzName -> long transform name, for everything under the import group."""
     out = {}
     for transform in cmds.listRelatives(root, allDescendents=True, type="transform", fullPath=True) or []:
-        if cmds.attributeQuery("bzName", node=transform, exists=True):
-            out[cmds.getAttr(transform + ".bzName")] = transform
+        if cmds.attributeQuery("bzPartName", node=transform, exists=True):
+            out[cmds.getAttr(transform + ".bzPartName")] = transform
     return out
 
 
@@ -177,6 +177,8 @@ class MayaCase(unittest.TestCase):
                 self.assertEqual(found, wanted, node.name)
             else:
                 self.assertIsNone(shape, node.name)
+            if node.props:
+                self.check_props(attributes.read_part(transform), node.props, node.name)
             if node.kind == "hardpoint" and node.mesh is None:
                 shapes = cmds.listRelatives(transform, shapes=True, fullPath=True) or []
                 self.assertTrue(any(cmds.nodeType(s) == "locator" for s in shapes), node.name)
@@ -186,6 +188,19 @@ class MayaCase(unittest.TestCase):
                 axes.row_vector_flat_to_matrix(flat)[:3], np.array(worlds[node.name])[:3], atol=1e-3,
                 err_msg=node.name,
             )
+
+    def check_props(self, got, wanted, name):
+        """Attribute values read back from Maya equal the neutral props that were imported."""
+        for key, value in wanted.items():
+            label = "%s %s" % (name, key)
+            if key == "damage":
+                self.assertEqual(list(got.get(key, ["", "", ""])), list(value), label)
+            elif isinstance(value, (list, tuple)):
+                np.testing.assert_allclose(got[key], value, atol=1e-5, err_msg=label)
+            elif isinstance(value, float):
+                self.assertAlmostEqual(got[key], value, places=4, msg=label)
+            else:
+                self.assertEqual(got[key], value, label)
 
     def check_same_scene(self, src, out, legacy):
         """Re-read export equals the source: names, hierarchy, transforms, geometry."""
@@ -197,7 +212,7 @@ class MayaCase(unittest.TestCase):
             twin = out_nodes[name]
             self.assertEqual(key(twin.parent) if twin.parent else None, key(node.parent) if node.parent else None, name)
             np.testing.assert_allclose(twin.matrix, node.matrix, atol=TOL, err_msg=name)
-            if legacy:
+            if legacy and node.props:
                 self.assertEqual(twin.props["type"], node.props["type"], name)
                 self.assertEqual(twin.props["flags"], node.props["flags"], name)
                 self.assertEqual(twin.props["lod"], node.props["lod"], name)
@@ -233,7 +248,7 @@ class MayaCase(unittest.TestCase):
         exporter = menu.export_vdf if fmt == "vdf" else menu.export_sdf
         self.inject(importer, source_path)
         root = cmds.ls(selection=True, long=True)[0]
-        self.assertEqual(cmds.getAttr(root + ".bzMeta") is not None, True)
+        self.assertTrue(cmds.attributeQuery("bzLOD1", node=root, exists=True))
         self.check_imported(src, root)
 
         out_dir = os.path.join(self.tmp, "out")
@@ -245,13 +260,15 @@ class MayaCase(unittest.TestCase):
         out = reader(out_path)
         self.check_same_scene(src, out, legacy=True)
         for node in src.nodes:
-            if node.mesh is not None:
+            if node.mesh is not None and node.name not in ("inner_col", "outer_col"):
                 self.assertTrue(
                     any(f.lower() == node.name.lower() + ".geo" for f in os.listdir(out_dir)), node.name
                 )
         # Container fields survive (header / meta values the neutral model keeps).
         for key, value in src.meta.items():
-            if key == "colp" and value is None:
+            if key == "preserved":  # the plan loses its ANIM block (animation is a later tier)
+                for sub in ("chunks", "vlocs", "bands"):
+                    self.assertEqual(out.meta[key][sub], value[sub], sub)
                 continue
             if isinstance(value, list):
                 np.testing.assert_allclose(out.meta[key], value, atol=TOL, err_msg=key)
@@ -477,7 +494,7 @@ class SceneBehaviourTests(MayaCase):
         vdf_path = os.path.join(self.tmp, "bake.vdf")
         self.inject(menu.export_vdf, vdf_path)
         scene = vdf_io.read_vdf(vdf_path)
-        nodes = {n.name: n for n in scene.nodes}
+        nodes = {n.name: n for n in scene.nodes if n.name not in ("inner_col", "outer_col")}
         self.assertEqual(set(nodes), {"tst11bdy", "tst11tur"})
         self.assertIsNone(nodes["tst11bdy"].parent)
         self.assertEqual(nodes["tst11tur"].parent, "tst11bdy")
@@ -493,7 +510,7 @@ class SceneBehaviourTests(MayaCase):
         out = os.path.join(self.tmp, "w.vdf")
         warnings = vdf_io.write_vdf(maya_io.collect_scene(), out)
         self.assertTrue(any("locator1" in w and "skipped" in w for w in warnings), warnings)
-        self.assertEqual([n.name for n in vdf_io.read_vdf(out).nodes], ["tst11bdy"])
+        self.assertEqual([n.name for n in vdf_io.read_vdf(out).nodes][:1], ["tst11bdy"])
 
     def test_import_flushes_undo_without_error(self):
         path = self.fixture_vdf()
@@ -504,16 +521,352 @@ class SceneBehaviourTests(MayaCase):
     def test_hardpoint_locator_attrs_and_user_tagged_locator_export(self):
         path = self.fixture_vdf()
         self.inject(menu.import_vdf, path)
-        self.assertEqual(cmds.getAttr("fxp11.bzType"), 40)
+        self.assertEqual(cmds.getAttr("fxp11.bzGEOType"), 40)
         cmds.spaceLocator(name="usr11hp1")
-        cmds.addAttr("usr11hp1", longName="bzType", attributeType="long")
-        cmds.setAttr("usr11hp1.bzType", 71)
+        attributes.ensure_part("usr11hp1")
+        cmds.setAttr("usr11hp1.bzGEOType", 71)
         cmds.select(clear=True)
         out = os.path.join(self.tmp, "u.vdf")
         self.inject(menu.export_vdf, out)
         by_name = {n.name: n for n in vdf_io.read_vdf(out).nodes}
         self.assertEqual(by_name["usr11hp1"].props["type"], 71)
         self.assertEqual(by_name["usr11hp1"].kind, "hardpoint")
+
+
+class AuthoringAttributeTests(MayaCase):
+    def tagged_locator(self, name="tst11bdy"):
+        transform = cmds.spaceLocator(name=name)[0]
+        attributes.ensure_part(transform)
+        return transform
+
+    def test_every_field_becomes_a_typed_attribute_with_blenders_defaults(self):
+        node = self.tagged_locator()
+        for fld in schema.part_fields():
+            self.assertTrue(attributes.exists(node, fld.attr), fld.attr)
+        self.assertEqual(cmds.getAttr(node + ".bzGEOType"), 60)  # Blender's default
+        self.assertEqual(cmds.getAttr(node + ".bzSphereRadius"), 3.0)
+        self.assertEqual(cmds.getAttr(node + ".bzGEOFaceShadeTypeDefault"), 4)
+        self.assertEqual(cmds.getAttr(node + ".bzSpinnerAxis")[0], (1.0, 0.0, 0.0))
+        self.assertEqual(len(cmds.getAttr(node + ".bzRawVDFMatrix")), 12)
+        self.assertEqual(cmds.attributeQuery("bzGEOType", node=node, attributeType=True), "enum")
+        self.assertEqual(cmds.attributeQuery("bzBoundsMode", node=node, attributeType=True), "enum")
+        self.assertEqual(cmds.attributeQuery("bzGeoCenter", node=node, attributeType=True), "double3")
+        # the enum lists Blender's full GEO type list
+        listed = cmds.attributeQuery("bzGEOType", node=node, listEnum=True)[0]
+        self.assertIn("70 - WEAPON_HARDPOINT", listed)
+        self.assertIn("81 - PARKING_LOT", listed)
+        self.assertEqual(listed.count(":") + 1, len(schema.geo_types()))
+
+    def test_every_part_field_round_trips_through_maya_attributes(self):
+        node = self.tagged_locator()
+        props = {}
+        for i, fld in enumerate(schema.part_fields()):
+            if fld.derived:
+                continue
+            if fld.kind == "bool":
+                value = not bool(fld.default)
+            elif fld.kind == "int":
+                value = min(int(fld.default or 0) + 3 + i, int(fld.hi) - 1 if fld.hi is not None else 10 ** 6)
+            elif fld.kind == "float":
+                value = float(fld.default or 0.0) + 1.5 + i
+            elif fld.kind == "string":
+                value = "ab%d" % i
+            elif fld.kind == "enum":
+                value = next(v for _l, v in fld.enum if v != fld.default)
+            elif fld.kind == "float3":
+                value = (1.25 + i, -2.5, 3.75)
+            else:
+                value = tuple(float(k) * 0.5 + i for k in range(12))
+            if fld.keys:
+                for key, comp in zip(fld.keys, value):
+                    props[key] = comp
+            elif fld.key == "bounds_mode":
+                props[fld.key] = schema.BOUNDS_MODES[value]
+            elif fld.key.startswith("damage") and fld.key[-1:] in "123":
+                props.setdefault("damage", ["", "", ""])[int(fld.key[-1]) - 1] = value
+            elif fld.kind in ("float3", "floatarray"):
+                props[fld.key] = list(value)
+            else:
+                props[fld.key] = value
+        props["lod"] = 2
+        attributes.write_part(node, props)
+        back = attributes.read_part(node)
+        self.check_props(back, dict(props), "all fields")
+        self.assertEqual(back["lod"], 2)  # extra JSON
+
+    def test_flags_type_and_unknown_enum_values_survive_maya(self):
+        node = self.tagged_locator()
+        attributes.write_part(node, {"type": 99, "flags": 0x40000001 | 0x2000 | (3 << 16) | 0x7000000})
+        self.assertEqual(cmds.getAttr(node + ".bzGEOType"), 99)  # outside Blender's list: kept, not remapped
+        self.assertEqual(attributes.read_part(node)["type"], 99)
+        self.assertTrue(cmds.getAttr(node + ".bzFlagKeepBounds"))
+        self.assertEqual(cmds.getAttr(node + ".bzObjFlagTeam"), 3)
+        self.assertEqual(cmds.getAttr(node + ".bzCollisionClass"), 0x2000)
+        cmds.setAttr(node + ".bzFlagDestroyedSeed", True)
+        cmds.setAttr(node + ".bzFlagKeepBounds", False)
+        flags = attributes.read_part(node)["flags"]
+        self.assertEqual(flags & 0x201, 0x200)
+        self.assertEqual(flags & 0x7000000, 0x7000000)  # unknown bits stay
+        self.assertEqual(panel.flags_unknown_hex(node), "0x47000000")
+        # a reserved collision nibble value is kept and the attribute shows it
+        attributes.write_part(node, {"type": 5, "flags": 0x5000 | 0x50000})
+        self.assertEqual(attributes.read_part(node)["flags"], 0x5000 | 0x50000)
+        self.assertEqual(cmds.getAttr(node + ".bzCollisionClass"), 0x5000)
+
+    def test_attributes_drive_the_exported_files(self):
+        cube = cmds.ls(cmds.polyCube(name="tst11bdy")[0], long=True)[0]
+        pov = cmds.ls(cmds.spaceLocator(name="tst11pov")[0], long=True)[0]
+        cmds.setAttr(cube + ".translate", 0, 1, 2)
+        attributes.ensure_part(cube)
+        attributes.ensure_part(pov)
+        cmds.setAttr(cube + ".bzGEOType", 65)
+        cmds.setAttr(cube + ".bzBoundsMode", 1)  # PRESERVE
+        cmds.setAttr(cube + ".bzHasAuthoredBounds", True)
+        cmds.setAttr(cube + ".bzGeoCenter", 1.5, 2.5, 3.5, type="double3")
+        cmds.setAttr(cube + ".bzSphereRadius", 12.5)
+        cmds.setAttr(cube + ".bzBoxHalfHeight", 4, 5, 6, type="double3")
+        cmds.setAttr(cube + ".bzDamageGeo1", "tst11d1", type="string")
+        cmds.setAttr(cube + ".bzFlagKeepBounds", True)
+        cmds.setAttr(cube + ".bzObjFlagTeam", 2)
+        cmds.setAttr(cube + ".bzSDFDDR", 333)
+        cmds.setAttr(cube + ".bzSDFTarget", 1.0, 2.0, 3.0, type="double3")
+        cmds.setAttr(cube + ".bzSDFTime", 6.5)
+        cmds.setAttr(cube + ".bzGEOHeaderUnknown2", 9)
+        cmds.setAttr(cube + ".bzGEOFaceShadeTypeDefault", 5)
+        cmds.setAttr(pov + ".bzGEOType", 40)
+        root = panel.create_model_node("vehicle_header")
+        cmds.setAttr(root + ".bzName", "Attr Tank", type="string")
+        cmds.setAttr(root + ".bzVehicleSize", 3)
+        cmds.setAttr(root + ".bzMass", 4321.0)
+        cmds.setAttr(root + ".bzLOD2", 77.0)
+        cmds.setAttr(root + ".bzDeathExplosion", "x.xdf", type="string")
+        cmds.select(clear=True)
+
+        vdf_path = os.path.join(self.tmp, "attr.vdf")
+        self.inject(menu.export_vdf, vdf_path)
+        back = vdf_io.read_vdf(vdf_path)
+        by_name = {n.name: n for n in back.nodes}
+        body = by_name["tst11bdy"].props
+        self.assertEqual(body["type"], 65)
+        self.assertEqual(body["flags"], 0x1 | (2 << 16))
+        np.testing.assert_allclose(body["geocenter"], [1.5, 2.5, 3.5], atol=1e-5)
+        self.assertAlmostEqual(body["sphereradius"], 12.5, places=4)
+        np.testing.assert_allclose(body["boxhalfheight"], [4, 5, 6], atol=1e-5)
+        self.assertEqual(body["damage"][0], "tst11d1")
+        self.assertEqual((body["header_flags"], body["face_shade"]), (9, 5))
+        self.assertEqual(by_name["tst11pov"].props["type"], 40)
+        self.assertEqual((back.meta["name"], back.meta["vehiclesize"]), ("Attr Tank", 3))
+        self.assertAlmostEqual(back.meta["mass"], 4321.0, places=2)
+        self.assertAlmostEqual(back.meta["lod_dists"][1], 77.0, places=3)
+
+        sdf_path = os.path.join(self.tmp, "attr.sdf")
+        self.inject(menu.export_sdf, sdf_path)
+        sdf = sdf_io.read_sdf(sdf_path)
+        part = {n.name: n for n in sdf.nodes}["tst11bdy"].props
+        self.assertEqual((part["ddr"], part["x"], part["y"], part["z"], part["time"]), (333, 1.0, 2.0, 3.0, 6.5))
+        self.assertEqual(sdf.meta["explosioneffect"], "x.xdf")
+
+    def test_model_header_attributes_are_created_on_import_and_read_on_export(self):
+        path = self.fixture_sdf()
+        root = maya_io.import_sdf(path)
+        self.assertEqual(cmds.getAttr(root + ".bzName"), "Test Depot")
+        self.assertEqual(cmds.getAttr(root + ".bzStructureType"), 1)
+        self.assertEqual(cmds.getAttr(root + ".bzDefensive"), 500000)
+        self.assertEqual(cmds.getAttr(root + ".bzLOD1"), 400.0)
+        cmds.setAttr(root + ".bzStructureType", 4)
+        out = os.path.join(self.tmp, "hdr.sdf")
+        cmds.select(root, replace=True)
+        self.inject(menu.export_sdf, out)
+        self.assertEqual(sdf_io.read_sdf(out).meta["structuretype"], 4)
+
+
+class ValidationAndPanelTests(MayaCase):
+    def broken_scene(self):
+        for name in ("abc11bdy", "abc21cok", "x", "toolongname1"):
+            transform = cmds.polyCube(name=name)[0]
+            attributes.ensure_part(transform)
+        cmds.setAttr("abc11bdy.bzGEOType", 60)
+        cmds.parent("abc21cok", "abc11bdy")
+        cmds.setAttr("abc21cok.bzGEOType", 69)
+        gc = cmds.spaceLocator(name="abc11gc9")[0]
+        attributes.ensure_part(gc)
+        cmds.setAttr(gc + ".bzGEOType", 71)
+        pov = cmds.spaceLocator(name="abc11pov")[0]
+        attributes.ensure_part(pov)
+        cmds.setAttr(pov + ".bzGEOType", 40)
+        cmds.setAttr("abc11bdy.scale", 2, 1, 1)
+        cmds.select(clear=True)
+
+    def test_validation_reports_the_blender_issues_for_a_broken_scene(self):
+        self.broken_scene()
+        issues = maya_io.validate_scene("VDF")
+        found = {(i["severity"], i["scope"], i["target"]) for i in issues}
+        for expected in (
+            ("WARNING", "LOD", "abc21cok"),
+            ("WARNING", "Object", "x"),
+            ("WARNING", "Object", "toolongname1"),
+            ("WARNING", "Transform", "abc11bdy"),
+            ("WARNING", "Scene", "inner_col"),
+            ("WARNING", "Scene", "outer_col"),
+        ):
+            self.assertIn(expected, found)
+        messages = [i["message"] for i in issues]
+        self.assertTrue(any("exceeds 8 characters" in m for m in messages))
+        self.assertTrue(any("shorter than 5 characters" in m for m in messages))
+        # the same scene through the core validator (the code Blender runs) gives the same issues
+        scene = maya_io.collect_scene()
+        again = validate.validate_scene(scene, export_mode="VDF")
+        self.assertEqual(
+            sorted((i["severity"], i["scope"], i["target"], i["message"]) for i in again),
+            sorted((i["severity"], i["scope"], i["target"], i["message"]) for i in issues),
+        )
+        self.assertEqual(maya_io.LAST_ISSUES, issues)
+        self.assertEqual(len(menu.validate_scene()), len(issues))
+
+    def test_export_validates_first_but_never_blocks(self):
+        self.broken_scene()
+        out = os.path.join(self.tmp, "warned.vdf")
+        self.inject(menu.export_vdf, out)
+        self.assertTrue(os.path.isfile(out))
+        found = validate.counts(maya_io.LAST_ISSUES, "VDF")
+        self.assertGreater(found["WARNING"], 0)
+
+    def test_select_target_and_fix_legacy_name(self):
+        self.broken_scene()
+        issues = maya_io.validate_scene("VDF")
+        issue = next(i for i in issues if i["target"] == "x" and i["action"] == "fix_name")
+        self.assertEqual(panel.select_issue_target(issue), cmds.ls("|x", long=True)[0])
+        self.assertEqual(cmds.ls(selection=True), ["x"])
+        new_name = panel.fix_issue_name(issue)
+        self.assertEqual(len(new_name), 5)
+        self.assertEqual((new_name[3], new_name[4]), ("3", "1"))
+        self.assertTrue(cmds.objExists(new_name))
+        self.assertEqual(cmds.getAttr(new_name + ".bzPartName"), new_name)
+        self.assertFalse(
+            any(i["target"] == new_name and i["scope"] == "Object" for i in maya_io.validate_scene("VDF"))
+        )
+
+    def test_panel_controller_reads_and_writes_the_selected_part(self):
+        cube = cmds.ls(cmds.polyCube(name="tst11bdy")[0], long=True)[0]
+        cmds.select(cube, replace=True)
+        self.assertEqual(panel.selected_part(), cube)
+        state = panel.part_state(cube)
+        self.assertEqual(state["bzGEOType"], 60)  # untagged: Blender's defaults
+        self.assertFalse(attributes.is_part(cube))
+        panel.set_part_attr(cube, "bzGEOType", 70)  # editing tags the transform
+        self.assertTrue(attributes.is_part(cube))
+        self.assertEqual(panel.part_state(cube)["bzGEOType"], 70)
+        self.assertIn("WEAPON_HARDPOINT", panel.role_text(70))
+        self.assertIn("WARNING", panel.hint_text(70))
+        self.assertIn("LOD1", panel.lod_text("tst11bdy"))
+        panel.set_part_attr(cube, "bzFlagViewRender", True)
+        self.assertEqual(panel.effective_flags(cube), 0x10)
+        self.assertIsNone(panel.model_node(cube))
+        model = panel.create_model_node()
+        self.assertEqual(panel.model_node(cube), model)
+        panel.set_model_attr(model, "bzMass", 5.5)
+        self.assertEqual(panel.model_state(model)["bzMass"], 5.5)
+        self.assertIn("Unit scale", panel.eyepoint_scale_warning(cube))
+        cmds.setAttr(cube + ".scale", 2, 2, 2)
+        self.assertIn("multiplies POV basis rows by 25", panel.eyepoint_scale_warning(cube))
+        self.assertIn("Redux", panel.info_text("DUAL_COMPONENT_INFO_LINES"))
+        self.assertIn("70 - WEAPON_HARDPOINT", schema.geo_type_reference_text())
+
+    def test_panel_ui_builds_when_the_ui_is_available(self):
+        with self.assertRaises(RuntimeError):
+            panel.show_panel()  # needs a main window; says so instead of failing obscurely
+        try:
+            window = cmds.window("bzTestWindow")
+            cmds.columnLayout()
+        except RuntimeError as exc:
+            self.skipTest("UI layouts are unavailable in standalone: %s" % exc)
+        form = panel.build_ui()
+        cube = cmds.ls(cmds.polyCube(name="tst11bdy")[0], long=True)[0]
+        cmds.select(cube, replace=True)
+        form.refresh()
+        self.assertEqual(form.node, cube)
+        self.assertTrue(form.part_controls and form.model_controls)
+        # Standalone Maya creates the controls but they hold no state (queries return False),
+        # so feed the change handlers the value a user would have typed.
+        ctrl, fld = form.part_controls["bzSphereRadius"]
+        form._control_value = lambda c, f: 7.5 if f.attr == "bzSphereRadius" else 71
+        form.on_part_change(fld, None)
+        self.assertEqual(cmds.getAttr(cube + ".bzSphereRadius"), 7.5)
+        ctrl, fld = form.part_controls["bzGEOType"]
+        form.on_part_change(fld, None)
+        self.assertEqual(cmds.getAttr(cube + ".bzGEOType"), 71)
+        del form._control_value
+        form.validate()
+        self.assertGreater(len(form.issues), 0)
+        cmds.deleteUI(window)
+
+
+class ToolTests(MayaCase):
+    def test_create_vehicle_geo_set(self):
+        created = maya_io.create_vehicle_geo_set("tst")
+        names = [c.split("|")[-1] for c in created]
+        self.assertEqual(
+            names, ["tst11bod", "tst11pov", "tst11gc1", "tst11gr1", "tst11gs1", "tst11gm1", "tst11rot", "tst11nac"]
+        )
+        types = {n: cmds.getAttr(n + ".bzGEOType") for n in names}
+        self.assertEqual(types["tst11pov"], 40)
+        self.assertEqual(types["tst11gc1"], 71)
+        pov = cmds.listRelatives("tst11pov", shapes=True)[0]
+        self.assertEqual(cmds.nodeType(pov), "locator")  # invisible classes are locators
+        self.assertIsNotNone(mesh_shape(cmds.ls("tst11bod", long=True)[0]))
+        self.assertEqual(cmds.listRelatives("tst11gc1", parent=True)[0], "tst11bod")
+        self.assertTrue(cmds.getAttr("tst11bod.bzGenerateCollision"))
+        # a second set picks a free prefix
+        again = maya_io.create_vehicle_geo_set("tst")
+        self.assertNotEqual(again[0].split("|")[-1], "tst11bod")
+        # the set validates and exports
+        cmds.select(created[0], replace=True)
+        issues = maya_io.validate_scene("VDF")
+        self.assertFalse([i for i in issues if i["severity"] == "ERROR"], issues)
+        out = os.path.join(self.tmp, "set.vdf")
+        self.inject(menu.export_vdf, out)
+        back = {n.name: n for n in vdf_io.read_vdf(out).nodes}
+        self.assertEqual(back["tst11gr1"].props["type"], 72)
+        self.assertEqual(back["tst11gr1"].parent, "tst11bod")
+
+    def test_select_mesh_and_non_mesh_parts(self):
+        maya_io.create_vehicle_geo_set("tst")
+        meshes = menu.select_mesh_parts()
+        self.assertEqual({m.split("|")[-1] for m in meshes}, {"tst11bod", "tst11rot", "tst11nac"})
+        others = menu.select_non_mesh_parts()
+        self.assertEqual(len(others), 5)
+
+    def test_generate_collision_settings(self):
+        cube = cmds.ls(cmds.polyCube(name="tst11bdy", width=2, height=4, depth=6)[0], long=True)[0]
+        maya_io.generate_collision(cube)
+        np.testing.assert_allclose(cmds.getAttr(cube + ".bzGeoCenter")[0], (0, 0, 0), atol=1e-5)
+        # BZ half extents: x 1, y (up) 2, z (forward) 3
+        np.testing.assert_allclose(cmds.getAttr(cube + ".bzBoxHalfHeight")[0], (1, 2, 3), atol=1e-5)
+        self.assertAlmostEqual(cmds.getAttr(cube + ".bzSphereRadius"), (1 + 4 + 9) ** 0.5, places=4)
+
+    def test_standalone_geo_import_and_export(self):
+        folder = os.path.join(self.tmp, "geo")
+        os.makedirs(folder)
+        geo_path = os.path.join(folder, "solo.geo")
+        from test_maya_core import _write_cube_geo
+
+        _write_cube_geo(geo_path, "solo")
+        self.inject(menu.import_geo, geo_path)
+        root = cmds.ls(selection=True, long=True)[0]
+        part = list(maya_parts(root).values())[0]
+        self.assertEqual(cmds.polyEvaluate(mesh_shape(part), face=True), 6)
+        self.assertEqual(cmds.getAttr(part + ".bzGEOHeaderUnknown"), 69)
+        cmds.setAttr(part + ".bzGEOHeaderUnknown", 71)
+        cmds.setAttr(part + ".bzGEOFaceXluscentTypeDefault", 2)
+        cmds.select(part, replace=True)
+        out = os.path.join(folder, "out.geo")
+        self.inject(menu.export_geo, out)
+        back = vdf_io.read_geo(out).nodes[0]
+        self.assertEqual(len(back.mesh.faces), 6)
+        self.assertEqual((back.props["header_unknown"], back.props["face_xlu"]), (71, 2))
+        cmds.file(new=True, force=True)
+        with self.assertRaises(RuntimeError):  # nothing in the scene to export
+            self.inject(menu.export_geo, os.path.join(folder, "none.geo"))
 
 
 def main():

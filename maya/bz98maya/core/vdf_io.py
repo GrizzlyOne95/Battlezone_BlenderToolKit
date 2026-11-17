@@ -5,17 +5,23 @@ for the vehicle container and ``bzrmodelporter.bzgeo_serializer.GeoSerializer``
 for the parts. This module only converts between those objects and the neutral
 model (see ``axes.py`` for the coordinate conventions).
 
-Not round-tripped (dropped on read, rewritten with defaults on write):
-ANIM block, damage-state variant bands, SCPS, VLOC chunks, unknown chunks,
-trailing bytes, the VDFC trailing int, per-face shade/texture/translucency
-bytes, face colour (written 204,204,204), face parent / tree branch, the
-GEO header unknown/flags words, the "unknown" float after each face plane,
-and the authored plane / plane distance (recomputed from the winding).
+Per-part GEO / VDF / SDF fields live in ``Node.props`` (keys in ``schema.py``);
+model header values in ``Scene.meta``. Data the neutral model has no field for is
+kept as ``meta["preserved"]`` (base64): the section plan, unrecognised chunks, VLOC
+chunks and damage-band records that are not simple name swaps.
+
+Not round-tripped (dropped on read, rewritten with defaults on write): the ANIM
+block (animation is a later tier), trailing bytes, per-face shade / texture /
+translucency bytes, face colour (written 204,204,204), face parent / tree branch
+(a single per-part default is kept instead), and the stored plane / plane
+distance (recomputed from the winding).
 """
 
 from __future__ import annotations
 
+import base64
 import os
+import struct
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -35,11 +41,16 @@ from .toolkit import ensure_toolkit
 # GEO part classes that never load geometry on vehicles (semantics.VEHICLE_INVISIBLE_CLASSES).
 HARDPOINT_TYPES = frozenset({38, 40, 70, 71, 72, 73, 74, 75, 76, 77})
 SPINNER_TYPE = 15
+EYEPOINT_TYPE = 40
+DEFAULT_PART_TYPE = 60  # Blender's GEOType default (VEHICLE_GEOMETRY)
 LOD_BANDS = (0, 4, 8)  # semantics.band_index(lod_slot, damage_state 0) for LOD1/2/3
 BAND_COUNT = 28  # semantics.VGEO_BAND_COUNT
 DEFAULT_FACE_COLOR = (204, 204, 204)
-GEO_HEADER_UNKNOWN = 69  # value the toolkit exporter writes (GEOHeaderUnknown default)
 MAX_TEXTURE_CHARS = 8  # export_geo._derive_legacy_texture_name
+INNER_COLLISION = "inner_col"
+OUTER_COLLISION = "outer_col"
+# Faces (as corner index quads) of a box whose corners are indexed x-major: i = 4x + 2y + z.
+_BOX_QUADS = ((0, 1, 3, 2), (4, 6, 7, 5), (0, 4, 5, 1), (2, 3, 7, 6), (0, 2, 6, 4), (1, 5, 7, 3))
 
 
 def _modules():
@@ -49,6 +60,24 @@ def _modules():
     from bz98tools.bzrmodelporter.bzgeo_serializer import GeoSerializer
 
     return vdf_classes, vdf_file, bzgeo, spacial, GeoSerializer
+
+
+def _validation():
+    ensure_toolkit()
+    from bz98tools import validation
+
+    return validation
+
+
+def collision_helper_kind(name: str) -> Optional[str]:
+    """"inner" / "outer" for the VDF collision helper meshes, else None."""
+    lowered = (name or "").strip().lower()
+    validation = _validation()
+    if lowered in validation.INNER_COLLISION_NAMES:
+        return "inner"
+    if lowered in validation.OUTER_COLLISION_NAMES:
+        return "outer"
+    return None
 
 
 def _find_case_insensitive(folder: str, filename: str) -> Optional[str]:
@@ -96,6 +125,23 @@ def geo_to_mesh(geo) -> Mesh:
     return mesh
 
 
+def geo_part_props(geo) -> Dict[str, object]:
+    """GEO header words and the first face's raw bytes, kept as the part's defaults."""
+    props: Dict[str, object] = {
+        "header_unknown": int(geo._checksum),
+        "header_flags": int(geo.flags),
+    }
+    if geo.face_list:
+        face = geo.face_list[0]
+        props["face_unknown"] = struct.unpack("<i", struct.pack("<f", float(face.poly_area)))[0]
+        props["face_shade"] = int(face.shade_type)
+        props["face_texture"] = int(face.texture_type)
+        props["face_xlu"] = int(face.xluscent_type)
+        props["face_parent"] = int(face.parent_face_index)
+        props["face_node"] = int(face.tree_branch)
+    return props
+
+
 def face_normal(points) -> Tuple[float, float, float]:
     """Unit CCW normal of a polygon (Maya space), by Newell's method."""
     return axes.newell_normal(points)
@@ -117,9 +163,14 @@ def texture_name(material: str) -> str:
     return base.replace(" ", "_").lower()[:MAX_TEXTURE_CHARS]
 
 
-def mesh_to_geo(name: str, mesh: Mesh):
-    """Build a bzgeo.Geo. Vertices are welded on (position, normal)."""
+def mesh_to_geo(name: str, mesh: Mesh, props: Optional[Dict[str, object]] = None):
+    """Build a bzgeo.Geo. Vertices are welded on (position, normal).
+
+    ``props`` supplies the header words and the per-face defaults
+    (``header_unknown`` ... ``face_node``); Blender's exporter writes the same defaults.
+    """
     _, _, bzgeo, spacial, _ = _modules()
+    props = props or {}
     normals = with_normals(mesh)
     uvs = mesh.uv_sets[0] if mesh.uv_sets else None
 
@@ -129,8 +180,10 @@ def mesh_to_geo(name: str, mesh: Mesh):
 
     geo = bzgeo.Geo()
     geo.name = name[:16]
-    geo._checksum = GEO_HEADER_UNKNOWN
-    geo.flags = 0
+    geo._checksum = int(props.get("header_unknown", 69))
+    geo.flags = int(props.get("header_flags", 0))
+    face_unknown = int(props.get("face_unknown", 0))
+    poly_area = 0.0 if face_unknown == 0 else struct.unpack("<f", struct.pack("<i", face_unknown))[0]
 
     loop = 0
     for face_index, face in enumerate(mesh.faces):
@@ -145,13 +198,13 @@ def mesh_to_geo(name: str, mesh: Mesh):
         gface.plane = bzgeo.SurfacePlane(
             spacial.Vector3(*(float(v) for v in bz_face_normal)), plane_d
         )
-        gface.poly_area = 0.0
-        gface.shade_type = 4
-        gface.texture_type = 0
-        gface.xluscent_type = 0
+        gface.poly_area = poly_area
+        gface.shade_type = int(props.get("face_shade", 4)) & 0xFF
+        gface.texture_type = int(props.get("face_texture", 0)) & 0xFF
+        gface.xluscent_type = int(props.get("face_xlu", 0)) & 0xFF
         gface.texture_name = texture_name(mesh.face_materials[face_index])
-        gface.parent_face_index = 0
-        gface.tree_branch = 0
+        gface.parent_face_index = int(props.get("face_parent", 0))
+        gface.tree_branch = int(props.get("face_node", 0))
         for vi in face:
             normal = axes.maya_normal_to_bz(normals[loop])
             key = (vi, tuple(round(c, 6) for c in normal))
@@ -182,10 +235,104 @@ def _bounds_from_mesh(mesh: Optional[Mesh]):
     return [float(v) for v in center], radius, [float(v) for v in half]
 
 
-# --- shared read / write (VDF and SDF) ---------------------------------------
+# --- standalone GEO --------------------------------------------------------
+
+def read_geo(path: str) -> Scene:
+    """A single .geo as a one-node scene named after the file."""
+    _, _, _, _, GeoSerializer = _modules()
+    with open(path, "rb") as handle:
+        geo = GeoSerializer(handle).read()
+    name = os.path.splitext(os.path.basename(path))[0]
+    props = geo_part_props(geo)
+    return Scene(nodes=[Node(name=name, mesh=geo_to_mesh(geo), props=props)])
+
+
+def write_geo(node: Node, path: str) -> List[str]:
+    """Write one node's mesh as a .geo (local space, no hierarchy)."""
+    _, _, _, _, GeoSerializer = _modules()
+    if node.mesh is None or not node.mesh.faces:
+        raise ValueError("%s has no mesh faces to export as GEO" % node.name)
+    warnings = _geo_warnings(node.name, node.mesh)
+    name = os.path.splitext(os.path.basename(path))[0]
+    with open(path, "wb") as handle:
+        GeoSerializer(handle).write(mesh_to_geo(name, node.mesh, node.props))
+    return warnings
+
+
+def _geo_warnings(name: str, mesh: Mesh) -> List[str]:
+    bad = 0
+    for face in mesh.faces:
+        non_planar, concave = axes.polygon_issues([mesh.positions[i] for i in face])
+        bad += int(non_planar or concave)
+    if bad:
+        return [f"{name}: {bad} non-planar or concave face(s); GEO needs convex planar polygons"]
+    return []
+
+
+# --- collision helper boxes --------------------------------------------------
+
+def box_mesh(lo, hi) -> Mesh:
+    """An outward-facing box in Maya space from two corner points."""
+    corners = []
+    for ix in (0, 1):
+        for iy in (0, 1):
+            for iz in (0, 1):
+                corners.append((
+                    (lo, hi)[ix][0], (lo, hi)[iy][1], (lo, hi)[iz][2],
+                ))
+    center = np.array([(lo[i] + hi[i]) / 2.0 for i in range(3)])
+    faces = []
+    for quad in _BOX_QUADS:
+        pts = [np.array(corners[i]) for i in quad]
+        normal = np.cross(pts[1] - pts[0], pts[2] - pts[0])
+        if float(np.dot(normal, sum(pts) / 4.0 - center)) < 0:
+            quad = tuple(reversed(quad))
+        faces.append(quad)
+    return Mesh(positions=corners, faces=faces, face_materials=[""] * len(faces))
+
+
+def _colp_boxes(colp) -> Tuple[Mesh, Mesh]:
+    """Inner / outer helper meshes from the 12 COLP floats.
+
+    The file's "Y" slots are BZ Z (forward) and its "Z" slots BZ Y (up); this is the
+    toolkit's convention (import_vdf.py) and agrees with stock files.
+    """
+    (y_out_max, y_in_max, y_in_min, y_out_min,
+     x_out_max, x_in_max, x_in_min, x_out_min,
+     z_out_max, z_in_max, z_in_min, z_out_min) = [float(v) for v in colp]
+
+    def box(x0, x1, up0, up1, fwd0, fwd1):
+        a = axes.bz_point_to_maya((x0, up0, fwd0))
+        b = axes.bz_point_to_maya((x1, up1, fwd1))
+        lo = tuple(min(a[i], b[i]) for i in range(3))
+        hi = tuple(max(a[i], b[i]) for i in range(3))
+        return box_mesh(lo, hi)
+
+    inner = box(x_in_min, x_in_max, z_in_min, z_in_max, y_in_min, y_in_max)
+    outer = box(x_out_min, x_out_max, z_out_min, z_out_max, y_out_min, y_out_max)
+    return inner, outer
+
+
+def _extent(points_bz):
+    """(min, max) per BZ axis (x, y, z) of a point list."""
+    pts = np.array(points_bz, dtype=float)
+    return pts.min(axis=0), pts.max(axis=0)
+
+
+def colp_from_extents(inner, outer) -> List[float]:
+    """COLP floats from (min, max) BZ extents; see ``_colp_boxes`` for the slot axes."""
+    (ilo, ihi), (olo, ohi) = inner, outer
+    return [
+        ohi[2], ihi[2], ilo[2], olo[2],
+        ohi[0], ihi[0], ilo[0], olo[0],
+        ohi[1], ihi[1], ilo[1], olo[1],
+    ]
+
+
+# --- shared read (VDF and SDF) ---------------------------------------------
 
 def build_nodes(records, folder: str, scene: Scene, extra_props=None, quiet_duplicates=False) -> None:
-    """Fill ``scene.nodes`` from ``(lod, record)`` pairs, loading ``<name>.geo`` from ``folder``.
+    """Fill ``scene.nodes`` from ``(lod, record, owner)`` triples, loading ``<name>.geo`` from ``folder``.
 
     ``record`` is a vdf_classes / sdf_classes GEOData and ``owner`` the (lower-case) name of the
     LOD1 record in the same slot, or None. ``extra_props(record)`` returns
@@ -203,31 +350,48 @@ def build_nodes(records, folder: str, scene: Scene, extra_props=None, quiet_dupl
             scene.warnings.append(f"duplicate part name {geo_data.name}; later record ignored")
             continue
         mesh = None
+        geo_props: Dict[str, object] = {}
         geo_path = _find_case_insensitive(folder, geo_data.name + ".geo")
         if geo_path is not None:
             try:
                 with open(geo_path, "rb") as handle:
-                    mesh = geo_to_mesh(GeoSerializer(handle).read())
+                    geo = GeoSerializer(handle).read()
+                mesh = geo_to_mesh(geo)
+                geo_props = geo_part_props(geo)
             except Exception as exc:  # corrupt GEO: keep the part as an empty
                 scene.warnings.append(f"could not read {os.path.basename(geo_path)}: {exc}")
         part_type = int(geo_data.type)
+        matrix12 = [float(v) for v in geo_data.matrix]
         props = {
             "type": part_type,
             "flags": int(geo_data.geoflags),
             "geocenter": [float(v) for v in geo_data.geocenter],
             "sphereradius": float(geo_data.sphereradius),
             "boxhalfheight": [float(v) for v in geo_data.boxhalfheight],
+            # Authored bounds survive round trips by default (Blender: BoundsMode PRESERVE).
+            "bounds_mode": "PRESERVE",
+            "authored_bounds": True,
+            "raw_matrix": list(matrix12),
+            "use_raw_matrix": False,
             # The record's band decides the LOD; some stock names (g1431024) disagree with it.
             "lod": int(lod),
         }
+        props.update(geo_props)
         if lod > 1 and owner:
             props["slot"] = owner  # the LOD1 part this one shares its slot with
+        if part_type == EYEPOINT_TYPE and mesh is None:
+            props["pov_helper"] = True
         if extra_props is not None:
             props.update(extra_props(geo_data))
-        matrix12 = [float(v) for v in geo_data.matrix]
         if part_type == SPINNER_TYPE:
             # Spinner records store axis * speed in the first three floats, not a rotation.
-            props["spin"] = matrix12[0:3]
+            x, y, z = matrix12[0:3]
+            speed = (x * x + y * y + z * z) ** 0.5
+            props["is_spinner"] = True
+            props["spinner_axis"] = [x / speed, y / speed, z / speed] if speed > 1e-8 else [1.0, 0.0, 0.0]
+            props["spinner_speed"] = speed if speed > 1e-8 else 0.0
+            if geo_data.parent.lower() != "world":
+                props["spinner_target"] = geo_data.parent.lower()
             matrix12 = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0] + matrix12[9:12]
         if part_type in HARDPOINT_TYPES:
             kind = KIND_HARDPOINT
@@ -267,6 +431,8 @@ def build_nodes(records, folder: str, scene: Scene, extra_props=None, quiet_dupl
     scene.nodes = list(nodes.values())
 
 
+# --- shared write layout (VDF and SDF) -------------------------------------
+
 def _lod_of(name: str) -> Optional[int]:
     """The LOD digit: the 4th character of ``abc11bdy``-style names."""
     if len(name) >= 5 and name[3] in "123":
@@ -289,6 +455,8 @@ class Layout:
         self.by_lod: Dict[int, Dict[str, str]] = {1: {}, 2: {}, 3: {}}  # slot key -> name
         self.resolved: Dict[str, Tuple[Optional[str], list]] = {}
         self.placed: List[Tuple[str, str]] = []
+        self.helpers: Dict[str, Node] = {}  # "inner" / "outer" collision helper nodes
+        self.helper_worlds: Dict[str, list] = {}
 
     def lod(self, name: str) -> int:
         return self.lods[name]
@@ -315,6 +483,12 @@ class Layout:
             current = parent
         return matrix
 
+    def slot_of(self, lod1_name: str) -> Optional[int]:
+        for index, (_key, name) in enumerate(self.placed):
+            if name == lod1_name.lower():
+                return index
+        return None
+
 
 def make_layout(scene: Scene, warnings: List[str]) -> Layout:
     """Decide what gets written.
@@ -322,13 +496,18 @@ def make_layout(scene: Scene, warnings: List[str]) -> Layout:
     The LOD is the ``lod`` prop kept from import (the file's band decides, and some stock
     names such as ``g1431024`` disagree with it), else the 4th character of the name.
     Names without a LOD digit are accepted as LOD1 only when the node carries BZ props (it
-    came from a BZ file or was tagged with ``bzType``): stock files do contain free-form
-    names such as ``op1bda01`` or ``g083700b``.
+    came from a BZ file or was tagged with a GEO type): stock files do contain free-form
+    names such as ``op1bda01`` or ``g083700b``. ``inner_col`` / ``outer_col`` meshes are
+    the VDF collision helpers, not parts.
     """
     layout = Layout()
     entries: Dict[str, Node] = {}
     lods: Dict[str, int] = {}
     for node in scene.nodes:
+        helper = collision_helper_kind(node.name)
+        if helper:
+            layout.helpers[helper] = node
+            continue
         name = node.name.lower()
         if len(name) > 8:
             warnings.append(f"{node.name}: name longer than 8 characters, truncated")
@@ -389,6 +568,16 @@ def make_layout(scene: Scene, warnings: List[str]) -> Layout:
             walker = by_node_name.get(walker.parent) if walker.parent else None
         layout.resolved[name] = (parent_name, matrix)
 
+    for kind, helper in layout.helpers.items():
+        matrix = helper.matrix
+        seen = {helper.name}
+        walker = by_node_name.get(helper.parent) if helper.parent else None
+        while walker is not None and walker.name not in seen:
+            seen.add(walker.name)
+            matrix = axes.matmul(walker.matrix, matrix)
+            walker = by_node_name.get(walker.parent) if walker.parent else None
+        layout.helper_worlds[kind] = matrix
+
     # Parents must precede children in the LOD1 slot order.
     pending = list(by_lod[1].items())
     placed_names = set()
@@ -407,18 +596,50 @@ def make_layout(scene: Scene, warnings: List[str]) -> Layout:
             warnings.append("parent cycle among LOD1 parts; slot order may be wrong")
             layout.placed.extend(pending)
             break
+    _order_spinner_helpers(layout)
     return layout
 
 
+def _order_spinner_helpers(layout: Layout) -> None:
+    """Spinner helpers are written right after their target slot (export_vdf.py)."""
+    slot_names = [name for _key, name in layout.placed]
+    helpers: Dict[str, List[Tuple[str, str]]] = {}
+    moved = set()
+    for item in layout.placed:
+        _key, name = item
+        props = layout.entries[name].props or {}
+        if int(props.get("type", -1)) != SPINNER_TYPE or not props.get("is_spinner"):
+            continue
+        target = str(props.get("spinner_target") or "").lower()[:8]
+        if target and target != name and target in slot_names:
+            helpers.setdefault(target, []).append(item)
+            moved.add(name)
+    if not moved:
+        return
+    ordered: List[Tuple[str, str]] = []
+    for item in layout.placed:
+        if item[1] in moved:
+            continue
+        ordered.append(item)
+        ordered.extend(helpers.get(item[1], []))
+    layout.placed = ordered
+
+
+# --- shared write (VDF and SDF) --------------------------------------------
+
 def fill_records(layout: Layout, folder: str, warnings: List[str], new_record, serialize,
-                 null_record: bytes, bands, band_count: int, extras=None):
+                 null_record: bytes, bands, band_count: int, extras=None, empty_record: Optional[bytes] = None):
     """Serialised record grid (``band * geocount + slot``), writing ``.geo`` files.
 
     Returns ``(records, lod1_world_points_in_bz_space)``.
     """
     _, _, _, _, GeoSerializer = _modules()
     geocount = len(layout.placed)
-    records = [null_record] * (band_count * geocount)
+    # Empty slots of the LOD bands are NULL records; other bands default to empty_record
+    # (zeros for VDF, as Blender writes them; NULL records for SDF).
+    records = [empty_record if empty_record is not None else null_record] * (band_count * geocount)
+    for band in bands:
+        records[band * geocount:(band + 1) * geocount] = [null_record] * geocount
     all_points = []
     for slot, (key, _lod1_name) in enumerate(layout.placed):
         for lod, band in zip((1, 2, 3), bands):
@@ -432,37 +653,41 @@ def fill_records(layout: Layout, folder: str, warnings: List[str], new_record, s
             props = node.props or {}
             part_type = props.get("type")
             if part_type is None:
-                part_type = 70 if node.kind == KIND_HARDPOINT else 0
+                part_type = 70 if node.kind == KIND_HARDPOINT else DEFAULT_PART_TYPE
             record.type = int(part_type)
             record.geoflags = int(props.get("flags", 0))
-            matrix12 = axes.maya_matrix_to_bz12(layout.resolved[name][1])
-            if record.type == SPINNER_TYPE and props.get("spin") is not None:
-                matrix12[0:3] = [float(v) for v in props["spin"]]
-            record.matrix = matrix12
-            center, radius, half = _bounds_from_mesh(node.mesh)
-            has_mesh = node.mesh is not None and bool(node.mesh.faces)
-            if has_mesh:  # bounds always follow the geometry that is being written
-                record.geocenter, record.sphereradius, record.boxhalfheight = center, radius, half
+
+            raw = props.get("raw_matrix")
+            if props.get("use_raw_matrix") and raw is not None and len(raw) == 12:
+                matrix12 = [float(v) for v in raw]
             else:
-                record.geocenter = list(props.get("geocenter") or center)
-                record.sphereradius = float(props.get("sphereradius", radius))
-                record.boxhalfheight = list(props.get("boxhalfheight") or half)
+                matrix12 = axes.maya_matrix_to_bz12(layout.resolved[name][1])
+                if record.type == SPINNER_TYPE and props.get("is_spinner"):
+                    axis = props.get("spinner_axis") or [1.0, 0.0, 0.0]
+                    speed = float(props.get("spinner_speed", 1.0))
+                    matrix12[0:3] = [float(axis[0]) * speed, float(axis[1]) * speed, float(axis[2]) * speed]
+            record.matrix = matrix12
+
+            has_mesh = node.mesh is not None and bool(node.mesh.faces)
+            mode = props.get("bounds_mode", "AUTO")
+            generate = has_mesh and (
+                mode == "RECALC"
+                or (mode == "AUTO" and props.get("generate_collision", True))
+                or (mode == "PRESERVE" and not props.get("authored_bounds", False))
+            )
+            if generate:
+                record.geocenter, record.sphereradius, record.boxhalfheight = _bounds_from_mesh(node.mesh)
+            else:
+                record.geocenter = [float(v) for v in props.get("geocenter") or (0.0, 0.0, 0.0)]
+                record.sphereradius = float(props.get("sphereradius", 3.0))
+                record.boxhalfheight = [float(v) for v in props.get("boxhalfheight") or (0.0, 0.0, 0.0)]
             if extras is not None:
                 extras(record, props)
             records[band * geocount + slot] = serialize(record)
 
             if has_mesh:
-                bad = 0
-                for face in node.mesh.faces:
-                    non_planar, concave = axes.polygon_issues(
-                        [node.mesh.positions[i] for i in face]
-                    )
-                    bad += int(non_planar or concave)
-                if bad:
-                    warnings.append(
-                        f"{name}: {bad} non-planar or concave face(s); GEO needs convex planar polygons"
-                    )
-                geo = mesh_to_geo(name, node.mesh)
+                warnings.extend(_geo_warnings(name, node.mesh))
+                geo = mesh_to_geo(name, node.mesh, props)
                 with open(os.path.join(folder, name + ".geo"), "wb") as handle:
                     GeoSerializer(handle).write(geo)
                 if lod == 1:
@@ -476,8 +701,14 @@ def fill_records(layout: Layout, folder: str, warnings: List[str], new_record, s
 
 # --- VDF -------------------------------------------------------------------
 
+def _b64(data: bytes) -> str:
+    return base64.b64encode(bytes(data)).decode("ascii")
+
+
 def read_vdf(path: str) -> Scene:
     vdf_classes, vdf_file, _, _, _ = _modules()
+    from bz98tools import semantics
+
     with open(path, "rb") as handle:
         parsed = vdf_file.parse_vdf(handle.read())
 
@@ -491,11 +722,13 @@ def read_vdf(path: str) -> Scene:
         "mass": float(parsed.vdfc_mass),
         "multiplyer": float(parsed.vdfc_multiplyer),
         "drag": float(parsed.vdfc_drag),
-        "colp": [float(v) for v in parsed.colp_data] if parsed.colp_data is not None else None,
+        "vdfc_null": int(parsed.vdfc_null),
+        "use_scps": bool(parsed.scps_tag),
+        "scps_data": [int(v) for v in (parsed.scps_data or [0, 0, 0])[:3]],
     }
 
     records = []  # (lod, GEOData, owner)
-    owners = {}
+    owners: Dict[int, str] = {}
     for lod, band in enumerate(LOD_BANDS, start=1):
         for slot in range(parsed.geocount):
             index = band * parsed.geocount + slot
@@ -510,7 +743,58 @@ def read_vdf(path: str) -> Scene:
             records.append((lod, geo_data, owners.get(slot)))
 
     build_nodes(records, os.path.dirname(os.path.abspath(path)), scene)
+    nodes = {n.name.lower(): n for n in scene.nodes}
+
+    # Damage bands: lod-slot-0 bands 1..3 are per-part mesh swaps; every other populated
+    # band is kept verbatim (Blender stores them the same way).
+    preserved = {"plan": [kind for kind, _ in parsed.plan], "chunks": [], "vlocs": [], "bands": []}
+    for index, raw in enumerate(parsed.records):
+        band, slot = divmod(index, max(1, parsed.geocount))
+        if band in LOD_BANDS or len(raw) < 8:
+            continue
+        name = raw[:8].split(b"\0")[0].decode("ascii", "ignore").strip().lower()
+        if not name or name.startswith("null"):
+            continue
+        lod_slot, state = semantics.band_coords(band)
+        part = nodes.get(owners.get(slot, ""))
+        if lod_slot == 0 and state in semantics.AUTHORED_DAMAGE_STATES and part is not None:
+            damage = part.props.setdefault("damage", ["", "", ""])
+            if not damage[state - 1] or damage[state - 1] == name:
+                damage[state - 1] = name[:8]
+                part.props["has_damage_variants"] = True
+                continue
+        preserved["bands"].append(
+            {"part": owners.get(slot, ""), "slot": slot, "band": band, "data": _b64(raw)}
+        )
+    for chunk in parsed.raw_chunks:
+        preserved["chunks"].append(_b64(chunk.full_bytes))
+    for chunk in parsed.vlocs:
+        raw = getattr(chunk, "raw_full_bytes", None)
+        if raw:
+            preserved["vlocs"].append(_b64(raw))
+    scene.meta["preserved"] = preserved
+
+    if parsed.colp_data is not None:
+        inner, outer = _colp_boxes(parsed.colp_data)
+        scene.nodes.append(Node(name=INNER_COLLISION, mesh=inner))
+        scene.nodes.append(Node(name=OUTER_COLLISION, mesh=outer))
     return scene
+
+
+def _clean_anim_from_plan(plan):
+    """Drop the ANIM block and its terminating EXIT (animation is not modelled yet)."""
+    cleaned = []
+    skip_exit = False
+    for kind, index in plan:
+        if skip_exit:
+            skip_exit = False
+            if kind == "exit":
+                continue
+        if kind == "anim":
+            skip_exit = True
+            continue
+        cleaned.append((kind, index))
+    return cleaned
 
 
 def write_vdf(scene: Scene, path: str) -> List[str]:
@@ -519,22 +803,53 @@ def write_vdf(scene: Scene, path: str) -> List[str]:
     Returns warnings (skipped parts etc.).
     """
     vdf_classes, vdf_file, _, _, _ = _modules()
+    from bz98tools import semantics
+    from . import authoring
+
     folder = os.path.dirname(os.path.abspath(path))
     warnings: List[str] = list(scene.warnings)
     layout = make_layout(scene, warnings)
 
     geocount = len(layout.placed)
     model = vdf_file.ParsedVDF()
+    meta = dict(authoring.default_meta())
+    meta.update(scene.meta or {})
+    preserved = meta.get("preserved") or {}
+
     model.plan = list(vdf_file.new_empty_plan())
-    meta = scene.meta or {}
+    if preserved.get("plan"):
+        plan = []
+        vloc_index = raw_index = 0
+        for kind in preserved["plan"]:
+            if kind == "vloc":
+                plan.append(("vloc", vloc_index))
+                vloc_index += 1
+            elif kind == "raw":
+                plan.append(("raw", raw_index))
+                raw_index += 1
+            else:
+                plan.append((kind, None))
+        model.plan = _clean_anim_from_plan(plan)
+    for data in preserved.get("chunks", []):
+        model.raw_chunks.append(vdf_file.RawChunk(base64.b64decode(data)[:4], base64.b64decode(data)))
+    for data in preserved.get("vlocs", []):
+        chunk = semantics.VLOCChunk()
+        chunk.raw_full_bytes = base64.b64decode(data)
+        chunk.preserve_raw = True
+        model.vlocs.append(chunk)
+    while sum(1 for kind, _ in model.plan if kind == "vloc") < len(model.vlocs):
+        model.plan.append(("vloc", sum(1 for kind, _ in model.plan if kind == "vloc")))
+    while sum(1 for kind, _ in model.plan if kind == "raw") < len(model.raw_chunks):
+        model.plan.append(("raw", sum(1 for kind, _ in model.plan if kind == "raw")))
+
     model.vdfc_name = str(meta.get("name") or os.path.splitext(os.path.basename(path))[0])[:16]
-    model.vdfc_vehicletype = int(meta.get("vehicletype", 0))
-    model.vdfc_vehiclesize = int(meta.get("vehiclesize", 0))
+    model.vdfc_vehicletype = int(meta["vehicletype"])
+    model.vdfc_vehiclesize = int(meta["vehiclesize"])
     model.vdfc_lod_dists = _lod_dists(meta)
-    model.vdfc_mass = float(meta.get("mass", 1.0))
-    model.vdfc_multiplyer = float(meta.get("multiplyer", 1.0))
-    model.vdfc_drag = float(meta.get("drag", 0.0))
-    model.vdfc_null = 0
+    model.vdfc_mass = float(meta["mass"])
+    model.vdfc_multiplyer = float(meta["multiplyer"])
+    model.vdfc_drag = float(meta["drag"])
+    model.vdfc_null = int(meta.get("vdfc_null", 0))
     model.geocount = geocount
 
     null_geo = vdf_classes.GEOData()
@@ -549,32 +864,67 @@ def write_vdf(scene: Scene, path: str) -> List[str]:
 
     model.records, all_points = fill_records(
         layout, folder, warnings, vdf_classes.GEOData, vdf_classes.serialize_section,
-        vdf_classes.serialize_section(null_geo), LOD_BANDS, BAND_COUNT,
+        vdf_classes.serialize_section(null_geo), LOD_BANDS, BAND_COUNT, empty_record=bytes(100),
     )
+    _write_damage_bands(model.records, layout, geocount, preserved, semantics)
 
-    colp = meta.get("colp")
-    if not colp or len(colp) != 12:
-        colp = _default_colp(all_points)
-    model.colp_data = [float(v) for v in colp]
+    if any(kind == "colp" for kind, _ in model.plan):
+        model.colp_data = _collision_floats(layout, all_points, meta)
+    if any(kind == "scps" for kind, _ in model.plan):
+        model.scps_tag = "SPCS"
+        model.scps_data = (
+            [int(v) for v in meta.get("scps_data", [0, 0, 0])] if meta.get("use_scps") else [0, 0, 0]
+        )
 
     with open(path, "wb") as handle:
         handle.write(vdf_file.serialize_vdf(model))
     return warnings
 
 
+def _write_damage_bands(records, layout: Layout, geocount: int, preserved, semantics) -> None:
+    for slot, (_key, lod1_name) in enumerate(layout.placed):
+        names = (layout.entries[lod1_name].props or {}).get("damage") or []
+        for state in semantics.AUTHORED_DAMAGE_STATES:
+            variant = str(names[state - 1] if len(names) >= state else "").strip().lower()
+            if variant and variant != "null":
+                records[semantics.band_index(0, state) * geocount + slot] = semantics.synthesize_variant_record(
+                    records[slot], variant[:8]
+                )
+    for entry in preserved.get("bands", []):
+        slot = layout.slot_of(entry.get("part") or "")
+        if slot is None:
+            slot = int(entry.get("slot", -1))
+        band = int(entry.get("band", -1))
+        if not 0 <= slot < geocount or not 0 <= band < BAND_COUNT:
+            continue
+        index = band * geocount + slot
+        if records[index][:4] in (b"\0\0\0\0", b"NULL"):  # an authored swap wins over a preserved one
+            records[index] = base64.b64decode(entry["data"])[:100]
+
+
+def _collision_floats(layout: Layout, lod1_points_bz, meta) -> List[float]:
+    """COLP from the inner_col / outer_col helper meshes, else the parts' bounding box."""
+    extents = {}
+    for kind, node in layout.helpers.items():
+        if node.mesh is None or not node.mesh.positions:
+            continue
+        world = layout.helper_worlds[kind]
+        extents[kind] = _extent([
+            axes.maya_point_to_bz(axes.transform_point(world, p)) for p in node.mesh.positions
+        ])
+    if extents:
+        inner = extents.get("inner") or extents["outer"]
+        outer = extents.get("outer") or extents["inner"]
+        return colp_from_extents(inner, outer)
+    colp = meta.get("colp")
+    if colp and len(colp) == 12:
+        return [float(v) for v in colp]
+    if not lod1_points_bz:
+        return [0.0] * 12
+    box = _extent(lod1_points_bz)
+    return colp_from_extents(box, box)
+
+
 def _lod_dists(meta) -> List[float]:
     lod_dists = list(meta.get("lod_dists") or [])
     return [float(v) for v in (lod_dists + [0.0] * 5)[:5]]
-
-
-def _default_colp(points_bz) -> List[float]:
-    """COLP order: Y max/min (out,in,in,out), X ..., Z ...; inner = outer."""
-    if not points_bz:
-        return [0.0] * 12
-    pts = np.array(points_bz, dtype=float)
-    lo, hi = pts.min(axis=0), pts.max(axis=0)
-    return [
-        hi[1], hi[1], lo[1], lo[1],
-        hi[0], hi[0], lo[0], lo[0],
-        hi[2], hi[2], lo[2], lo[2],
-    ]

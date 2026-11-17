@@ -11,16 +11,14 @@ scene's UI linear unit does not change the numbers: 1 BZ unit = 1 internal
 unit.
 
 Per-node data Maya has no slot for is kept in string / int attributes on the
-transform: ``bzName`` (original part name), ``bzType`` and ``bzFlags`` (GEO
-class and object flags), ``bzProps`` (JSON: geocenter, sphereradius,
-boxhalfheight, spin). Vehicle header values and the COLP box live in a JSON
-``bzMeta`` attribute on the group created by a VDF import. Materials carry
-``bzMaterial`` with the original (possibly Maya-illegal) name.
+transform: ``bzPartName`` (original part name) and the authoring attributes
+(``bzGEOType``, ``bzGEOFlags``, ...) defined by ``core/schema.py`` and handled by
+``attributes.py``. Model header values live on the group created by an import.
+Materials carry ``bzMaterial`` with the original (possibly Maya-illegal) name.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import re
 from typing import Dict, List, Optional
@@ -28,6 +26,7 @@ from typing import Dict, List, Optional
 import maya.api.OpenMaya as om
 import maya.cmds as cmds
 
+from . import attributes
 from .core import axes
 from .core.model import (
     KIND_EMPTY,
@@ -43,7 +42,7 @@ from .core.toolkit import ensure_toolkit
 # Keep the native Ogre backend probe (a global side effect) out of Maya.
 ensure_toolkit(stub_ogrefast=True)
 
-from .core import ogre_io, sdf_io, vdf_io  # noqa: E402
+from .core import ogre_io, sdf_io, validate, vdf_io  # noqa: E402
 
 DEFAULT_CAMERAS = ("persp", "top", "front", "side", "bottom", "back", "left")
 TEXTURE_EXTENSIONS = (".png", ".tga", ".dds", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")
@@ -273,14 +272,9 @@ def _create_node(node: Node, root: str, texture_folder: Optional[str], cache: Di
     transform = cmds.ls(transform, long=True)[0]
     if node.mesh is not None and node.mesh.faces:
         _create_mesh(transform, node.mesh, texture_folder, cache)
-    _add_attr(transform, "bzName", node.name)
-    props = dict(node.props or {})
-    if "type" in props:
-        _add_attr(transform, "bzType", int(props.pop("type")))
-    if "flags" in props:
-        _add_attr(transform, "bzFlags", int(props.pop("flags")))
-    if props:
-        _add_attr(transform, "bzProps", json.dumps(props))
+    _add_attr(transform, attributes.PART_NAME_ATTR, node.name)
+    if node.props:
+        attributes.write_part(transform, node.props)
     return _uuid(transform)
 
 
@@ -289,7 +283,7 @@ def build_scene(scene: Scene, group_name: str, texture_folder: Optional[str] = N
     root = cmds.group(empty=True, name=_valid_name(group_name))
     root = cmds.ls(root, long=True)[0]
     if scene.meta:
-        _add_attr(root, "bzMeta", json.dumps(scene.meta))
+        attributes.write_model(root, scene.meta)
     cache: Dict[str, str] = {}
     uuids: Dict[str, str] = {}
     for node in scene.nodes:
@@ -330,7 +324,7 @@ def _classify(transform: str):
     """(kind, mesh shape or None) for a transform, or (None, None) to skip it."""
     shapes = cmds.listRelatives(transform, shapes=True, fullPath=True, noIntermediate=True) or []
     mesh_shapes = [s for s in shapes if cmds.nodeType(s) == "mesh"]
-    bz_type = _get_attr(transform, "bzType")
+    bz_type = _get_attr(transform, attributes.PART_MARKER)
     if mesh_shapes:
         if bz_type is not None and int(bz_type) in vdf_io.HARDPOINT_TYPES:
             return KIND_HARDPOINT, mesh_shapes[0]
@@ -418,29 +412,13 @@ def collect_scene(triangulate: bool = False) -> Scene:
     exported: Dict[str, Node] = {}
     shapes: Dict[str, str] = {}
     for transform in transforms:
-        meta = _get_attr(transform, "bzMeta")
-        if meta and not scene.meta:
-            try:
-                scene.meta = json.loads(meta)
-            except ValueError:
-                scene.warnings.append("ignored unreadable bzMeta on %s" % transform)
+        if attributes.is_model(transform) and not scene.meta:
+            scene.meta = attributes.read_model(transform)
         kind, shape = _classify(transform)
         if kind is None:
             continue
-        name = _get_attr(transform, "bzName") or transform.split("|")[-1].split(":")[-1]
-        props = {}
-        extra = _get_attr(transform, "bzProps")
-        if extra:
-            try:
-                props.update(json.loads(extra))
-            except ValueError:
-                scene.warnings.append("ignored unreadable bzProps on %s" % name)
-        bz_type = _get_attr(transform, "bzType")
-        if bz_type is not None:
-            props["type"] = int(bz_type)
-        bz_flags = _get_attr(transform, "bzFlags")
-        if bz_flags is not None:
-            props["flags"] = int(bz_flags)
+        name = _get_attr(transform, attributes.PART_NAME_ATTR) or transform.split("|")[-1].split(":")[-1]
+        props = attributes.read_part(transform) if attributes.is_part(transform) else {}
         exported[transform] = Node(name=name, kind=kind, props=props)
         if shape:
             shapes[transform] = shape
@@ -462,10 +440,12 @@ def collect_scene(triangulate: bool = False) -> Scene:
             node.parent = exported[ancestor].name
             node.matrix = axes.matmul(axes.inverse(_world_matrix(ancestor)), world)
         if transform in shapes:
+            # Collision helper boxes have no UVs by design; do not warn about them.
+            sink = [] if vdf_io.collision_helper_kind(node.name) else scene.warnings
             if triangulate:
-                node.mesh = _extract_triangulated(transform, shapes[transform], scene.warnings, node.name)
+                node.mesh = _extract_triangulated(transform, shapes[transform], sink, node.name)
             else:
-                node.mesh = _extract_mesh(shapes[transform], scene.warnings, node.name)
+                node.mesh = _extract_mesh(shapes[transform], sink, node.name)
         scene.nodes.append(node)
     if not scene.nodes:
         raise RuntimeError("nothing to export: no meshes, locators or tagged transforms found")
@@ -491,6 +471,9 @@ def _import(scene: Scene, path: str) -> str:
     return root
 
 
+LAST_ISSUES: List[dict] = []  # result of the most recent validation (the panel shows it)
+
+
 def import_vdf(path: str) -> str:
     return _import(vdf_io.read_vdf(path), path)
 
@@ -499,23 +482,173 @@ def import_sdf(path: str) -> str:
     return _import(sdf_io.read_sdf(path), path)
 
 
+def import_geo(path: str) -> str:
+    return _import(vdf_io.read_geo(path), path)
+
+
 def import_ogre_mesh(path: str) -> str:
     return _import(ogre_io.read_ogre_mesh(path), path)
 
 
+def validate_scene(export_mode: str = "ALL", preset: str = "AUTO", scene: Optional[Scene] = None) -> List[dict]:
+    """Validate the selection (or whole scene) exactly as Blender's validator does."""
+    scene = scene or collect_scene()
+    issues = validate.validate_scene(scene, export_mode=export_mode, preset=preset, active=_active_part_name(scene))
+    LAST_ISSUES[:] = issues
+    return issues
+
+
+def _active_part_name(scene: Scene) -> Optional[str]:
+    selected = cmds.ls(selection=True, long=True) or []
+    if selected:
+        name = _get_attr(selected[0], attributes.PART_NAME_ATTR) or selected[0].split("|")[-1]
+        if scene.node_by_name(name):
+            return name
+    return next((n.name for n in scene.nodes if n.mesh is not None), None)
+
+
+def _check_before_export(scene: Scene, export_mode: str) -> None:
+    """Blender validates before VDF / SDF / GEO export; here it warns and never blocks."""
+    issues = validate_scene(export_mode, scene=scene)
+    found = validate.counts(issues, export_mode)
+    if found["ERROR"] or found["WARNING"]:
+        om.MGlobal.displayWarning(
+            "Battlezone: %s export validation found %d error(s) and %d warning(s). "
+            "Run Validate Battlezone Scene for details." % (export_mode, found["ERROR"], found["WARNING"])
+        )
+
+
 def export_vdf(path: str) -> None:
-    warnings = vdf_io.write_vdf(collect_scene(), path)
+    scene = collect_scene()
+    _check_before_export(scene, "VDF")
+    warnings = vdf_io.write_vdf(scene, path)
     _report(warnings)
     om.MGlobal.displayInfo("Battlezone: wrote %s (+ .geo files beside it)" % path)
 
 
 def export_sdf(path: str) -> None:
-    warnings = sdf_io.write_sdf(collect_scene(), path)
+    scene = collect_scene()
+    _check_before_export(scene, "SDF")
+    warnings = sdf_io.write_sdf(scene, path)
     _report(warnings)
     om.MGlobal.displayInfo("Battlezone: wrote %s (+ .geo files beside it)" % path)
+
+
+def export_geo(path: str) -> None:
+    """The first selected mesh (or the first mesh in the scene) as one .geo."""
+    scene = collect_scene()
+    active = _active_part_name(scene)
+    node = scene.node_by_name(active) if active else None
+    if node is None or node.mesh is None:
+        raise RuntimeError("select a mesh to export as GEO")
+    _check_before_export(Scene(nodes=[node]), "GEO")
+    warnings = vdf_io.write_geo(node, path)
+    _report(warnings)
+    om.MGlobal.displayInfo("Battlezone: wrote %s" % path)
 
 
 def export_ogre_mesh(path: str) -> None:
     warnings = ogre_io.write_ogre_mesh(collect_scene(triangulate=True), path)
     _report(warnings)
     om.MGlobal.displayInfo("Battlezone: wrote %s" % path)
+
+
+# --- authoring tools ---------------------------------------------------------
+
+def select_battlezone_objects(mode: str = "MESH") -> List[str]:
+    """Blender's "Select Battlezone Objects": every mesh (or non-mesh) part transform."""
+    picked = []
+    for transform in cmds.ls(type="transform", long=True) or []:
+        if transform.lstrip("|") in DEFAULT_CAMERAS:
+            continue
+        kind, shape = _classify(transform)
+        if kind is None:
+            continue
+        if (mode == "MESH") == (shape is not None):
+            picked.append(transform)
+    cmds.select(picked, replace=True) if picked else cmds.select(clear=True)
+    return picked
+
+
+def fix_legacy_name(transform: str) -> str:
+    """Blender's "Fix Legacy Name": rename to a valid legacy GEO name; returns the new name."""
+    old = (_get_attr(transform, attributes.PART_NAME_ATTR) or transform.split("|")[-1])
+    existing = [
+        (_get_attr(t, attributes.PART_NAME_ATTR) or t.split("|")[-1])
+        for t in (cmds.ls(type="transform", long=True) or [])
+        if t != transform
+    ]
+    new = validate.fix_legacy_name(old, existing)
+    renamed = cmds.rename(transform, _valid_name(new))
+    _add_attr(renamed, attributes.PART_NAME_ATTR, new)
+    return new
+
+
+def generate_collision(transform: str) -> None:
+    """Blender's "Generate Collision Settings": write mesh-derived bounds into the attributes."""
+    shape = mesh_shape_of(transform)
+    if shape is None:
+        raise RuntimeError("%s has no mesh" % transform)
+    mesh = _extract_mesh(shape, [], transform)
+    center, radius, half = vdf_io._bounds_from_mesh(mesh)
+    attributes.ensure_part(transform)
+    props = attributes.read_part(transform)
+    props.update({"geocenter": center, "sphereradius": radius, "boxhalfheight": half})
+    attributes.write_part(transform, props)
+
+
+def mesh_shape_of(transform: str) -> Optional[str]:
+    kind, shape = _classify(transform)
+    return shape
+
+
+def create_vehicle_geo_set(prefix: str = "", parent_to_body: bool = True) -> List[str]:
+    """Blender's "Create Vehicle GEO Set": a movable starter set of tiny standard parts.
+
+    Meshes for body / rotor / nacelle, locators for the invisible classes (POV and hardpoints).
+    """
+    specs = validate.quick_vehicle_specs()
+    suffixes = [s[0] for s in specs]
+    prefix = _quick_prefix(prefix)
+
+    def free(candidate: str) -> bool:
+        return all(not cmds.objExists("%s11%s" % (candidate, suffix)) for suffix in suffixes)
+
+    if not free(prefix):
+        digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+        for first in digits:
+            for second in digits:
+                candidate = (prefix[0] + first + second)[:3]
+                if free(candidate):
+                    prefix = candidate
+                    break
+            else:
+                continue
+            break
+        else:
+            raise RuntimeError("could not find an unused 3-character GEO prefix")
+
+    created: List[str] = []
+    body = None
+    for suffix, geo_type, _label, location, size in specs:
+        name = "%s11%s" % (prefix, suffix)
+        if geo_type in vdf_io.HARDPOINT_TYPES:
+            transform = cmds.spaceLocator(name=name)[0]
+        else:
+            transform = cmds.polyCube(name=name, width=size, height=size, depth=size, constructionHistory=False)[0]
+        # Blender axes (x, y, z) -> Maya (x, z, -y)
+        cmds.xform(transform, translation=(location[0], location[2], -location[1]), worldSpace=True)
+        attributes.write_part(transform, {"type": int(geo_type), "generate_collision": geo_type == 60})
+        _add_attr(transform, attributes.PART_NAME_ATTR, name)
+        if suffix == "bod":
+            body = transform
+        elif parent_to_body and body is not None:
+            transform = cmds.parent(transform, body)[0]
+        created.append(transform)
+    cmds.select(created, replace=True)
+    return created
+
+
+def _quick_prefix(value: str) -> str:
+    chars = [ch for ch in (value or "").strip().lower() if ch.isalnum()] or list("veh")
+    return ("".join(chars) + "veh")[:3]

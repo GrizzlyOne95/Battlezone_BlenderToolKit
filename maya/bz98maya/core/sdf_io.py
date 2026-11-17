@@ -12,9 +12,9 @@ the single LOD1 node on read, and written as NULL unless a distinct LOD2 / LOD3
 part exists. SDF part names are not always LOD-digit style (``op1bda01``); such
 names are treated as LOD1 (see ``vdf_io.make_layout``).
 
-Kept as scene meta (``bzMeta``): structure name and type, LOD distances, the
-SDFC ``ddr`` value, death explosion effect and sound. Kept per part (``bzProps``):
-ddr, x, y, z, time, plus the VDF part fields. Not round-tripped: ANIM block and
+Kept as scene meta (model header attributes): structure name and type, LOD distances,
+the SDFC ``ddr`` value, death explosion effect and sound. Kept per part (authoring
+attributes): ddr, x, y, z, time, plus the VDF part fields. Not round-tripped: ANIM block and
 anything after it, damage-state data, and the same per-face fields listed in
 ``vdf_io``.
 """
@@ -113,15 +113,18 @@ def write_sdf(scene: Scene, path: str) -> List[str]:
     warnings: List[str] = list(scene.warnings)
     layout = vdf_io.make_layout(scene, warnings)
     geocount = len(layout.placed)
-    meta = scene.meta or {}
+    from . import authoring
+
+    meta = dict(authoring.default_meta())
+    meta.update(scene.meta or {})
 
     sdfc = sdf_classes.SDFCHeader()
     sdfc.name = str(meta.get("name") or os.path.splitext(os.path.basename(path))[0])[:16]
-    sdfc.structuretype = int(meta.get("structuretype", 0))
+    sdfc.structuretype = int(meta["structuretype"])
     (sdfc.lod1dist, sdfc.lod2dist, sdfc.lod3dist, sdfc.lod4dist, sdfc.lod5dist) = vdf_io._lod_dists(meta)
-    sdfc.ddr = int(meta.get("ddr", 0))
-    sdfc.explosioneffect = str(meta.get("explosioneffect", "") or "")[:12]
-    sdfc.explosionsound = str(meta.get("explosionsound", "") or "")[:12]
+    sdfc.ddr = int(meta["ddr"])
+    sdfc.explosioneffect = str(meta["explosioneffect"] or "")[:12]
+    sdfc.explosionsound = str(meta["explosionsound"] or "")[:12]
 
     null_geo = sdf_classes.GEOData()
     null_geo.name = "NULL"

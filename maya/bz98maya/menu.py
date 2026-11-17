@@ -14,6 +14,7 @@ RAISE_ERRORS = False  # tests set this so failures are not swallowed by a dialog
 
 VDF_FILTER = "Battlezone Vehicle (*.vdf)"
 SDF_FILTER = "Battlezone Structure (*.sdf)"
+GEO_FILTER = "Battlezone GEO (*.geo)"
 MESH_FILTER = "Ogre Mesh (*.mesh)"
 
 
@@ -75,6 +76,61 @@ def export_sdf(*_args):
     _export("export_sdf", SDF_FILTER, "Export Battlezone SDF (writes .geo files beside it)", ".sdf")
 
 
+def import_geo(*_args):
+    _import("import_geo", GEO_FILTER, "Import Battlezone GEO")
+
+
+def export_geo(*_args):
+    _export("export_geo", GEO_FILTER, "Export Battlezone GEO (selected mesh)", ".geo")
+
+
+def _call(action, *args):
+    try:
+        return action(*args)
+    except Exception as exc:
+        if RAISE_ERRORS:
+            raise
+        traceback.print_exc()
+        cmds.confirmDialog(title="Battlezone", message=str(exc), button=["OK"], icon="critical")
+
+
+def show_panel(*_args):
+    from . import panel
+
+    _call(panel.show_panel)
+
+
+def validate_scene(*_args):
+    """Validate the selection / scene and print the issues (the panel lists them too)."""
+    from .core import validate
+
+    def run():
+        issues = _maya_io().validate_scene("ALL")
+        found = validate.counts(issues, "ALL")
+        for issue in issues:
+            print("[%s] %s: %s" % (issue["severity"], issue.get("target", ""), issue["message"]))
+        cmds.inViewMessage(
+            assistMessage="Battlezone validation: %d errors, %d warnings, %d info" % (
+                found["ERROR"], found["WARNING"], found["INFO"]),
+            position="midCenter", fade=True,
+        ) if not cmds.about(batch=True) else None
+        return issues
+
+    return _call(run)
+
+
+def create_vehicle_geo_set(*_args):
+    return _call(_maya_io().create_vehicle_geo_set)
+
+
+def select_mesh_parts(*_args):
+    return _call(_maya_io().select_battlezone_objects, "MESH")
+
+
+def select_non_mesh_parts(*_args):
+    return _call(_maya_io().select_battlezone_objects, "NON_MESH")
+
+
 def import_mesh(*_args):
     _import("import_ogre_mesh", MESH_FILTER, "Import Ogre Mesh")
 
@@ -96,8 +152,17 @@ def create_menu():
     cmds.menuItem(label="Import SDF...", command=import_sdf, parent=MENU_NAME)
     cmds.menuItem(label="Export SDF...", command=export_sdf, parent=MENU_NAME)
     cmds.menuItem(divider=True, parent=MENU_NAME)
+    cmds.menuItem(label="Import GEO...", command=import_geo, parent=MENU_NAME)
+    cmds.menuItem(label="Export GEO (selected mesh)...", command=export_geo, parent=MENU_NAME)
+    cmds.menuItem(divider=True, parent=MENU_NAME)
     cmds.menuItem(label="Import Ogre Mesh...", command=import_mesh, parent=MENU_NAME)
     cmds.menuItem(label="Export Ogre Mesh...", command=export_mesh, parent=MENU_NAME)
+    cmds.menuItem(divider=True, parent=MENU_NAME)
+    cmds.menuItem(label="Battlezone Panel", command=show_panel, parent=MENU_NAME)
+    cmds.menuItem(label="Validate Battlezone Scene", command=validate_scene, parent=MENU_NAME)
+    cmds.menuItem(label="Create Vehicle GEO Set", command=create_vehicle_geo_set, parent=MENU_NAME)
+    cmds.menuItem(label="Select Mesh Parts", command=select_mesh_parts, parent=MENU_NAME)
+    cmds.menuItem(label="Select Non-Mesh Parts", command=select_non_mesh_parts, parent=MENU_NAME)
     return True
 
 
