@@ -7,9 +7,11 @@ directory; sub-modules and their relative imports then resolve while the
 add-on ``__init__`` never runs.
 
 Search order for the toolkit: ``$BZ98TOOLKIT_PATH`` (the repo root, or the
-``bz98tools`` folder itself), then the repository this file lives in
-(``maya/bz98maya/core`` -> three levels up), then a ``bz98tools`` folder
-bundled next to the ``bz98maya`` package.
+``bz98tools`` folder itself), then a ``bz98tools`` folder bundled next to the
+``bz98maya`` package (the release zip), then the repository this file lives in
+(``maya/bz98maya/core`` -> three levels up). The bundled copy comes before the
+repository so that an installed module never picks up an unrelated
+``bz98tools`` folder beside it in the modules folder.
 """
 
 from __future__ import annotations
@@ -30,8 +32,8 @@ def _candidates():
         yield os.path.join(env, _PKG)
     here = os.path.dirname(os.path.abspath(__file__))
     maya_dir = os.path.dirname(os.path.dirname(here))  # .../maya
+    yield os.path.join(maya_dir, _PKG)  # bundled copy (release zip)
     yield os.path.join(os.path.dirname(maya_dir), _PKG)  # repo checkout
-    yield os.path.join(maya_dir, _PKG)  # bundled copy
 
 
 def find_toolkit_dir():

@@ -53,6 +53,10 @@ jobs:
           print(f"Validated Blender add-on archive: {archive}")
           PY
 
+      - name: Validate Maya plug-in package layout
+        if: matrix.python-version == '3.13'
+        run: python tests/maya_package_test.py
+
   blender-5-smoke:
     runs-on: ubuntu-latest
     needs: unit
@@ -136,5 +140,16 @@ jobs:
         with:
           name: Battlezone_BlenderToolKit-v1.5.0-rc
           path: Battlezone_BlenderToolKit-v1.5.0-rc.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Package Maya plug-in release candidate
+        run: python scripts/package_maya.py --version v1.5.0-rc
+
+      - name: Upload Maya plug-in release candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: Battlezone_MayaToolKit-v1.5.0-rc
+          path: Battlezone_MayaToolKit-v1.5.0-rc.zip
           if-no-files-found: error
           retention-days: 14

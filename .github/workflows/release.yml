@@ -125,6 +125,12 @@ jobs:
           PY
           echo "archive=$archive" >> "$GITHUB_ENV"
 
+      - name: Package Maya plug-in
+        shell: bash
+        run: |
+          python scripts/package_maya.py --version "${GITHUB_REF_NAME}"
+          echo "maya_archive=Battlezone_MayaToolKit-${GITHUB_REF_NAME}.zip" >> "$GITHUB_ENV"
+
       - name: Resolve release notes
         id: notes
         shell: bash
@@ -136,7 +142,9 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ env.archive }}
+          files: |
+            ${{ env.archive }}
+            ${{ env.maya_archive }}
           name: Release ${{ github.ref_name }}
           body_path: ${{ steps.notes.outputs.body_path }}
           draft: false

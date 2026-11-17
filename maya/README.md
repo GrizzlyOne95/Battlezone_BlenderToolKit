@@ -1,7 +1,7 @@
 # Battlezone for Maya
 
-Autodesk Maya plug-in that imports and exports static Battlezone models: legacy `.vdf` and `.sdf`
-(with their `.geo` parts) and Redux Ogre `.mesh`.
+Autodesk Maya plug-in that imports and exports Battlezone models: legacy `.vdf` and `.sdf`
+(with their `.geo` parts and ANIM keys) and Redux Ogre `.mesh` / `.skeleton` (static or skinned, with clips).
 It reuses the toolkit's own serializers (`bz98tools`), so the file formats are handled by the
 same code as the Blender add-on.
 
@@ -15,10 +15,27 @@ been run: the menu itself (needs a main window) and the file dialogs are unteste
 - Maya 2027 is the tested version. Maya 2024+ (Python 3.10+) should work but is **untested**; the toolkit's
   Ogre serializer uses `dataclass(slots=True)`, so Maya 2022/2023 (Python 3.7/3.9) cannot work.
 - numpy (ships with Maya 2027's Python).
-- The toolkit checkout (this repository). The plug-in finds `bz98tools` next to `maya/`; set the
-  `BZ98TOOLKIT_PATH` environment variable to the repository root if you install it elsewhere.
+- The toolkit's `bz98tools` serializers. The release zip bundles a copy; a repository checkout uses the `bz98tools`
+  folder next to `maya/`. The `BZ98TOOLKIT_PATH` environment variable (the repository root) overrides both.
 
 ## Install
+
+### From the release zip
+
+1. Download `Battlezone_MayaToolKit-vX.Y.Z.zip` from the toolkit's
+   [Releases](https://github.com/GrizzlyOne95/Battlezone_BlenderToolKit/releases).
+2. Extract it straight into your Maya modules folder, so that `bz98maya.mod` sits directly in it (Windows:
+   `Documents\maya\modules\bz98maya.mod` next to `Documents\maya\modules\bz98maya\`; create `modules` if it does not
+   exist). Windows "Extract All" proposes a `Battlezone_MayaToolKit-...` subfolder: delete that part of the path, or Maya
+   never finds the `.mod`. Linux `~/maya/modules`, macOS `~/Library/Preferences/Autodesk/maya/modules`. Maya only reads
+   `.mod` files that sit directly in a modules folder, which is why the `.mod` is not inside `bz98maya`.
+3. Restart Maya, then enable `bz98maya_plugin.py` in Windows > Settings/Preferences > Plug-in Manager.
+
+The zip's `bz98maya` folder holds the plug-in, its Python package and a copy of the toolkit's `bz98tools` (without the
+terrain art and native binaries the plug-in does not use, except `lib/lzo_bridge.dll`, which reads compressed entries of
+the stock ZFS archive for texture import). `python scripts/package_maya.py` builds the zip.
+
+### From a repository checkout (development)
 
 Either:
 
@@ -36,7 +53,7 @@ A **Battlezone** menu appears in the main menu bar.
 | Export VDF | Writes the `.vdf` and one `.geo` per mesh part beside it. |
 | Import SDF / Export SDF | Same as VDF for structures (`.sdf`). Keeps the structure header (name, type, LOD distances, ddr, death effect / sound) and each part's ddr / x / y / z / time. |
 | Import GEO / Export GEO | One `.geo` as a single mesh part / the selected mesh as a `.geo` (header words and face defaults come from its attributes). |
-| Import Ogre Mesh | One transform per submesh, material per submesh, normals and every UV set. Rigged meshes (skeleton link) are rejected. |
+| Import Ogre Mesh | One transform per submesh, material per submesh, normals and every UV set. A mesh that links a `.skeleton` also gets its joints, skin weights and clips (see Rigs and animation). |
 | Export Ogre Mesh | "Redux Mesh Only" with Blender's default options: the BZR `.mesh` and its `.material` (see Export modes below). |
 | Export Options... | The export dialog: Blender's three modes, every option, presets. |
 | Battlezone Panel | Opens the dockable authoring panel (below). |
@@ -179,6 +196,10 @@ Maya space is Ogre space (Y up, right handed). Battlezone's own axes differ by a
   more than 0.25 s past their declared length cannot be placed on the timeline and are not round-tripped exactly. Faces that
   repeat a vertex cannot exist in Maya: a repeated neighbouring corner is collapsed (a quad `a b c c` becomes a triangle), other
   faces are dropped on import. Attribute values outside Blender's hard min / max are clamped, as Blender does. The `Armature` validation scope has no Maya counterpart.
+- Not ported from the Blender add-on: terrain (`.hg2` / BZMapIO map tools) and importing models out of a `.zfs` archive
+  (a ZFS archive is only used as a texture source, below).
+- Texture import from the stock ZFS archive (`MapTextureZFS`) needs the toolkit's `lib/lzo_bridge.dll`, so it works on
+  Windows only.
 - Not covered from Blender's panels: VLOC editing (entries are preserved verbatim), "Create Spinner Helper" / "Capture Raw VDF Matrix" / "Generate COL Boxes" operators.
 - Part LOD comes from the file's band (stored as `lod` / `slot` in `bzProps`); names that disagree with it (some stock parts do) are
   kept as they are. SDF files that repeat the LOD1 records in the LOD2/3 bands are folded into one set of parts and written back
@@ -248,6 +269,9 @@ Maya space is Ogre space (Y up, right handed). Battlezone's own axes differ by a
   (about 1 minute). It skips cleanly under plain Python. Set `BZ98_STOCK_DIR` to a folder laid out as
   `vdf/<name>/<name>.vdf` (+ `.geo`), `sdf/<name>/<name>.sdf` (+ `.geo`) and `mesh/*.mesh` to also round-trip real
   stock files; without it only the fixture-based cases run. Stock assets are not committed.
+- `python tests/maya_package_test.py` (plain Python: zip layout and the core importing from the extracted copy) and the
+  same under mayapy (also loads the extracted module through `MAYA_MODULE_PATH` and runs a VDF and a `.mesh` import /
+  export with only the bundled `bz98tools`).
 
 ## Layout
 
