@@ -67,6 +67,14 @@ def _literal(node):
         pass
     if isinstance(node, ast.Name):  # e.g. items=NORMAL_MODE_ITEMS
         return blender_constant(node.id)
+    # list(range(...)) inside a literal table (ANIMATION_PRESET_SLOTS); nothing else is evaluated
+    names = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+    if names and names <= {"list", "range", "tuple"}:
+        try:
+            return eval(compile(ast.Expression(node), "_addon_core.py", "eval"), {"__builtins__": {}},
+                        {"list": list, "range": range, "tuple": tuple})
+        except Exception:
+            return None
     return None
 
 
@@ -104,6 +112,41 @@ def blender_constant(name: str):
                 if value is not None:
                     cache[node.targets[0].id] = value
     return cache.get(name)
+
+
+def blender_function(name: str):
+    """A bpy-free module-level helper function of _addon_core.py, compiled on its own."""
+    cache = _SOURCE_CACHE.setdefault("functions", {})
+    if name not in cache:
+        for node in _tree().body:
+            if isinstance(node, ast.FunctionDef) and node.name == name:
+                namespace: Dict[str, Any] = {}
+                exec(compile(ast.Module(body=[node], type_ignores=[]), "_addon_core.py", "exec"), namespace)
+                cache[name] = namespace[name]
+                break
+        else:
+            raise KeyError("no function %s in _addon_core.py" % name)
+    return cache[name]
+
+
+def function_label_texts(name: str) -> List[str]:
+    """The ``label(text=...)`` strings of a Blender draw function, in order ("" for separators)."""
+    for node in _tree().body:
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            out: List[str] = []
+            calls = sorted((n for n in ast.walk(node) if isinstance(n, ast.Call)), key=lambda n: (n.lineno, n.col_offset))
+            for call in calls:
+                attr = getattr(call.func, "attr", "")
+                if attr == "label":
+                    for keyword in call.keywords:
+                        if keyword.arg == "text":
+                            value = _literal(keyword.value)
+                            if isinstance(value, str):
+                                out.append(value)
+                elif attr == "separator":
+                    out.append("")
+            return out
+    return []
 
 
 def geo_types() -> List[Tuple[int, str]]:
@@ -258,6 +301,7 @@ def part_fields() -> List[Field]:
     f.append(_make(p, "GEOFaceXluscentTypeDefault", "face_xlu", "int", "Experimental"))
     f.append(_make(p, "GEOFaceParentDefault", "face_parent", "int", "Experimental"))
     f.append(_make(p, "GEOFaceNodeDefault", "face_node", "int", "Experimental"))
+    f.append(_make(p, "ANIMOrientationFlags", "anim_orientation_flags", "int", "Experimental"))
 
     # Overrides where Blender's default is only meaningful for a Blender-authored object.
     for fld in f:
@@ -298,6 +342,11 @@ def model_fields() -> List[Field]:
     f.append(_make(p, "SCPSData", "scps_data", "int3", "Raw", children=("SCPSData0", "SCPSData1", "SCPSData2"),
                    default=(0, 0, 0)))
     f.append(_make(p, "VDFCRawNull", "vdfc_null", "int", "Raw"))
+    f.append(_make(p, "UseAdvancedAnimHeader", "use_advanced_anim_header", "bool", "Animation"))
+    f.append(_make(p, "AnimNull2", "anim_null2", "int", "Animation"))
+    f.append(_make(p, "AnimUnknown2", "anim_unknown2", "int", "Animation"))
+    f.append(_make(p, "AnimReserved", "anim_reserved", "intarray", "Animation", size=5, default=(0, 0, 0, 0, 0)))
+    f.append(_make(p, "UseTranslation2Track", "use_translation2", "bool", "Animation"))
     _MODEL_CACHE.extend(f)
     return _MODEL_CACHE
 

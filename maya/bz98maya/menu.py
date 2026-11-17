@@ -16,6 +16,7 @@ VDF_FILTER = "Battlezone Vehicle (*.vdf)"
 SDF_FILTER = "Battlezone Structure (*.sdf)"
 GEO_FILTER = "Battlezone GEO (*.geo)"
 MESH_FILTER = "Ogre Mesh (*.mesh)"
+SKELETON_FILTER = "Ogre Skeleton (*.skeleton)"
 
 
 def _maya_io():
@@ -145,6 +146,14 @@ def export_mesh(*_args):
     _export("export_ogre_mesh", MESH_FILTER, "Export Ogre Mesh", ".mesh")
 
 
+def import_skeleton(*_args):
+    _import("import_skeleton", SKELETON_FILTER, "Import Ogre Skeleton")
+
+
+def export_skeleton(*_args):
+    _export("export_skeleton", SKELETON_FILTER, "Export Ogre Skeleton (selected joints, or all)", ".skeleton")
+
+
 def create_menu():
     """Build the menu; a no-op without a main window (batch / standalone)."""
     if cmds.about(batch=True):
@@ -163,6 +172,8 @@ def create_menu():
     cmds.menuItem(divider=True, parent=MENU_NAME)
     cmds.menuItem(label="Import Ogre Mesh...", command=import_mesh, parent=MENU_NAME)
     cmds.menuItem(label="Export Ogre Mesh...", command=export_mesh, parent=MENU_NAME)
+    cmds.menuItem(label="Import Ogre Skeleton...", command=import_skeleton, parent=MENU_NAME)
+    cmds.menuItem(label="Export Ogre Skeleton...", command=export_skeleton, parent=MENU_NAME)
     cmds.menuItem(divider=True, parent=MENU_NAME)
     cmds.menuItem(label="Export Options (Legacy / Legacy + Redux / Redux)...", command=export_dialog, parent=MENU_NAME)
     cmds.menuItem(label="Battlezone Panel", command=show_panel, parent=MENU_NAME)

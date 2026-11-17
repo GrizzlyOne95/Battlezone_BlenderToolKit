@@ -180,9 +180,32 @@ def _baked(node: Node, world: np.ndarray, apply_transform: bool):
     return pos, flip
 
 
-def build_submeshes(scene: Scene, options: Dict[str, Any]) -> List[Tuple[Any, str]]:
+MAX_INFLUENCES = 3  # Blender's _collect_vertex_bone_assignments keeps the three heaviest
+
+
+def bone_assignments(weights, id_map: Dict[int, int], renormalize: bool = True):
+    """Blender's ``_collect_vertex_bone_assignments`` on neutral weights: [(vertex, bone id, weight)].
+
+    Per vertex the influences are sorted by weight, cut to the three heaviest and, with
+    ``renormalize``, scaled to sum to one (zero weights dropped); bone ids go through ``id_map``.
+    """
+    out = []
+    for vertex, influences in enumerate(weights):
+        valid = [(id_map[b], float(w)) for b, w in influences if b in id_map]
+        valid.sort(key=lambda item: item[1], reverse=True)
+        valid = valid[:MAX_INFLUENCES]
+        if renormalize and valid:
+            total = sum(w for _b, w in valid)
+            if total > 0:
+                valid = [(b, w / total) for b, w in valid if w != 0]
+        for bone, weight in valid:
+            out.append((vertex, bone, weight))
+    return out
+
+
+def build_submeshes(scene: Scene, options: Dict[str, Any], id_map: Optional[Dict[int, int]] = None) -> List[Tuple[Any, str]]:
     """``[(SubMeshData, material name)]`` for every mesh in the scene, as Blender's collector."""
-    _, pose_compat = _modules()
+    kenshi, pose_compat = _modules()
     tangent_format = map_tangent_format(
         options.get("export_tangents", True), options.get("export_binormals", True),
         options.get("zero_tangents_binormals", False), options.get("tangent_parity", True),
@@ -231,7 +254,13 @@ def build_submeshes(scene: Scene, options: Dict[str, Any]) -> List[Tuple[Any, st
             sub.submesh_name = node.name if len(groups) == 1 or not material_name else f"{node.name}_{material_name}"
             sub.material = material_name or node.name
             out_indices = sub.set_vertex(optimize=bool(options.get("mesh_optimize", True)), **arrays)
-            sub.set_bone_assignments([], out_indices)
+            assignments = []
+            if id_map is not None and mesh.weights is not None:
+                assignments = [
+                    kenshi.BoneAssignmentData(v, b, w)
+                    for v, b, w in bone_assignments(mesh.weights, id_map, options.get("renormalize_weights", True))
+                ]
+            sub.set_bone_assignments(assignments, out_indices)
             out.append((sub, sub.material))
     return out
 
@@ -286,13 +315,25 @@ def write_bzr_mesh(scene: Scene, path: str, options: Optional[Dict[str, Any]] = 
             raise ValueError("nothing to export: no mesh geometry in the selection")
         return warnings
 
-    submeshes = build_submeshes(scene, options)
+    skeleton = scene.skeleton if options.get("export_skeleton", True) else None
+    id_map = None
+    if skeleton is not None:
+        from . import skeleton_io
+
+        id_map = skeleton_io.renumbered(skeleton)
+    submeshes = build_submeshes(scene, options, id_map)
     if not submeshes:
         raise ValueError("nothing to export: no mesh geometry in the selection")
     serializer = kenshi_compat.KenshiObjectSerializer()
     mesh_data = serializer.create_mesh(os.path.basename(path))
     mesh_data.set_submeshes([sub for sub, _ in submeshes])
+    skeleton_file = os.path.splitext(os.path.basename(path))[0] + ".skeleton"
+    if skeleton is not None:
+        mesh_data.set_linked_skeleton_name(skeleton_file)
     serializer.save_mesh(mesh_data, path, kenshi_compat.MeshVersion.V_1_10)
+    if skeleton is not None:
+        write_skeleton_file(skeleton, os.path.join(os.path.dirname(path), skeleton_file), id_map,
+                            bool(options.get("export_animation", False)))
 
     if options.get("export_materials", True):
         materials: Dict[str, dict] = {}
@@ -302,6 +343,18 @@ def write_bzr_mesh(scene: Scene, path: str, options: Optional[Dict[str, Any]] = 
             path, materials, bool(options.get("overwrite_material")), bool(options.get("copy_textures"))
         )
     return warnings
+
+
+def write_skeleton_file(skeleton, path: str, id_map: Dict[int, int], with_animation: bool) -> None:
+    """The ``.skeleton``: bones renumbered 0..n-1 in id order (as Blender does); clips only on request."""
+    import dataclasses
+
+    from . import skeleton_io
+
+    bones = [dataclasses.replace(b, id=id_map[b.id]) for b in skeleton.bones]
+    skeleton_io.write_skeleton(
+        dataclasses.replace(skeleton, bones=bones, clips=list(skeleton.clips) if with_animation else []), path
+    )
 
 
 # --- Legacy + Redux ------------------------------------------------------------------

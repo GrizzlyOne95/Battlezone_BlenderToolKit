@@ -29,6 +29,8 @@ class Mesh:
     # Per face-vertex ("loop") data, flattened in face order. None / [] when absent.
     normals: Optional[List[Vec3]] = None
     uv_sets: List[List[UV]] = field(default_factory=list)
+    # Skin weights per position: [(bone id, weight), ...] (Redux skinned meshes), else None.
+    weights: Optional[List[List[Tuple[int, float]]]] = None
 
     def loop_count(self) -> int:
         return sum(len(face) for face in self.faces)
@@ -51,6 +53,46 @@ class Node:
     mesh: Optional[Mesh] = None
     # VDF only: type, flags, geocenter, sphereradius, boxhalfheight, spin (see vdf_io).
     props: Dict[str, object] = field(default_factory=dict)
+    # Legacy ANIM keys in Maya space: {"rot": [(frame, (w, x, y, z))], "pos": [(frame, xyz)], "scale": [...]}.
+    anim: Optional[Dict[str, list]] = None
+
+
+@dataclass
+class Bone:
+    """An Ogre bone: local TRS relative to its parent, which is also the bind pose."""
+
+    name: str
+    id: int
+    parent: Optional[str] = None
+    position: Vec3 = (0.0, 0.0, 0.0)
+    orientation: Tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0)  # w, x, y, z
+    scale: Vec3 = (1.0, 1.0, 1.0)
+
+
+@dataclass
+class Track:
+    """Keys of one bone in one clip. Values are Ogre's: offsets from the bind pose."""
+
+    bone: str
+    times: List[float] = field(default_factory=list)  # seconds from the clip start
+    translations: List[Vec3] = field(default_factory=list)
+    rotations: List[Tuple[float, float, float, float]] = field(default_factory=list)  # w, x, y, z
+    scales: List[Vec3] = field(default_factory=list)
+
+
+@dataclass
+class Clip:
+    name: str
+    length: float = 0.0
+    tracks: List[Track] = field(default_factory=list)
+
+
+@dataclass
+class Skeleton:
+    name: str = ""
+    bones: List[Bone] = field(default_factory=list)
+    clips: List[Clip] = field(default_factory=list)
+    blendmode: int = 0
 
 
 @dataclass
@@ -62,6 +104,7 @@ class Scene:
     # Material name -> info dict (ambient / diffuse / specular / emissive RGB, texture, texture_path),
     # the same keys Blender's bCollectMaterialData fills; used for the .material file.
     materials: Dict[str, dict] = field(default_factory=dict)
+    skeleton: Optional[Skeleton] = None
 
     def node_by_name(self, name: str) -> Optional[Node]:
         for node in self.nodes:

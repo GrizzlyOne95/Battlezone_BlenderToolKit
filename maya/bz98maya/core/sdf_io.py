@@ -24,6 +24,7 @@ from __future__ import annotations
 import os
 from typing import List
 
+from . import anim as anim_io
 from . import vdf_io
 from .model import Scene
 from .toolkit import ensure_toolkit
@@ -103,11 +104,37 @@ def read_sdf(path: str, import_options=None) -> Scene:
         },
         quiet_duplicates=True,
     )
+    _read_anim(scene, data, position, sdf_classes)
     vdf_io.attach_map_textures(scene, os.path.dirname(os.path.abspath(path)), import_options)
     return scene
 
 
-def write_sdf(scene: Scene, path: str, write_geos: bool = True, face_plane_mode: str = "STOCK") -> List[str]:
+def _read_anim(scene: Scene, data: bytes, position: int, sdf_classes) -> None:
+    """The ANIM block after the GEO table (import_sdf.py's reader), onto the nodes."""
+    if data[position:position + 4] != b"ANIM":
+        return
+    header = sdf_classes.ANIMHeader()
+    position = header.Read(data, position)
+
+    def many(cls, count):
+        nonlocal position
+        out = []
+        for _ in range(max(0, count)):
+            item = cls()
+            position = item.Read(data, position)
+            out.append(item)
+        return out
+
+    elements = many(sdf_classes.ANIMElement, header.elementscount)
+    orientations = many(sdf_classes.ANIMOrientation, header.orientationscount)
+    rotations = many(sdf_classes.ANIMRotation, header.rotationcount)
+    translations2 = many(sdf_classes.ANIMTranslation2, header.translation2count)
+    positions = many(sdf_classes.ANIMPosition, header.positioncount)
+    anim_io.read_anim(scene, header, elements, orientations, rotations, translations2, positions)
+
+
+def write_sdf(scene: Scene, path: str, write_geos: bool = True, face_plane_mode: str = "STOCK",
+              export_animations: bool = True) -> List[str]:
     """Write ``path`` and a ``<name>.geo`` beside it for every part with a mesh."""
     sdf_classes, vdf_classes = _modules()
     folder = os.path.dirname(os.path.abspath(path))
@@ -156,6 +183,9 @@ def write_sdf(scene: Scene, path: str, write_geos: bool = True, face_plane_mode:
     sgeo.geocount = geocount
     sgeo.sectionlength = geocount * SDF_RECORD_SIZE * SDF_BAND_COUNT + sgeo.binlength
 
+    block = anim_io.build_anim(
+        layout.entries, layout.matrices, meta, sdf_classes, os.path.splitext(os.path.basename(path))[0]
+    ) if export_animations else None
     with open(path, "wb") as handle:
         sdf_classes.SDFHeader().Write(handle, 0)
         sdfc.Write(handle, 0)
@@ -163,6 +193,22 @@ def write_sdf(scene: Scene, path: str, write_geos: bool = True, face_plane_mode:
         for record in records:
             handle.write(record)
         exit_section = sdf_classes.EXITSection()
+        if block is not None:
+            header, elements, orientations, rotations, translations2, positions = block
+            header.elementscount = len(elements)
+            header.orientationscount = len(orientations)
+            header.rotationcount = len(rotations)
+            header.translation2count = len(translations2)
+            header.positioncount = len(positions)
+            header.sectionlength = (
+                header.binlength + 148 * len(elements) + 132 * len(orientations) + 20 * len(rotations)
+                + 16 * len(translations2) + 16 * len(positions)
+            )
+            header.Write(handle, 0)
+            for group in (elements, orientations, rotations, translations2, positions):
+                for item in group:
+                    item.Write(handle, 0)
+            exit_section.Write(handle, 0)  # the extra EXIT an ANIM block carries
         exit_section.Write(handle, 0)
         exit_section.Write(handle, 0)
     return warnings

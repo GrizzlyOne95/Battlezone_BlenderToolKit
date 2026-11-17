@@ -183,8 +183,8 @@ def meta_attr_values(meta: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, An
         known.add(fld.key)
         if fld.key.startswith("lod") and fld.key[3:].isdigit():
             values[fld.attr] = float(dists[int(fld.key[3:]) - 1])
-        elif fld.kind == "int3":
-            values[fld.attr] = tuple(int(v) for v in merged.get(fld.key, fld.default))
+        elif fld.kind in ("int3", "intarray"):
+            values[fld.attr] = tuple(int(v) for v in (list(merged.get(fld.key, fld.default)) + [0] * fld.size)[:max(fld.size, 3)])
         else:
             values[fld.attr] = _scalar(fld, merged.get(fld.key, fld.default))
     extra = {k: v for k, v in meta.items() if k not in known}
@@ -200,7 +200,7 @@ def meta_from_attr_values(values: Dict[str, Any], extra: Dict[str, Any] = None) 
         value = values[fld.attr]
         if fld.key.startswith("lod") and fld.key[3:].isdigit():
             dists.append((int(fld.key[3:]), float(value)))
-        elif fld.kind == "int3":
+        elif fld.kind in ("int3", "intarray"):
             meta[fld.key] = [int(v) for v in value]
         else:
             meta[fld.key] = _scalar(fld, value)

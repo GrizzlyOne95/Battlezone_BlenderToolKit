@@ -74,6 +74,8 @@ def add_field(node: str, fld: schema.Field) -> None:
             cmds.addAttr(node, longName="bz" + child, attributeType=base, parent=attr)
     elif kind == "floatarray":
         cmds.addAttr(node, longName=attr, dataType="doubleArray")
+    elif kind == "intarray":
+        cmds.addAttr(node, longName=attr, dataType="Int32Array")
     else:
         raise ValueError("unsupported field kind %s" % kind)
 
@@ -103,12 +105,24 @@ def set_field(node: str, fld: schema.Field, value: Any) -> None:
         cmds.setAttr(plug, *[int(v) for v in value], type="long3")
     elif kind == "floatarray":
         cmds.setAttr(plug, [float(v) for v in value], type="doubleArray")
+    elif kind == "intarray":
+        cmds.setAttr(plug, [int(v) for v in value], type="Int32Array")
     elif kind == "bool":
         cmds.setAttr(plug, bool(value))
     elif kind == "int":
-        cmds.setAttr(plug, int(value))
+        cmds.setAttr(plug, int(_clamped(fld, value)))
     else:
-        cmds.setAttr(plug, float(value))
+        cmds.setAttr(plug, float(_clamped(fld, value)))
+
+
+def _clamped(fld: schema.Field, value):
+    """Blender's properties clamp to their hard min / max on assignment (stock files exceed some)."""
+    bounds = _bounded(fld)
+    if "minValue" in bounds:
+        value = max(value, bounds["minValue"])
+    if "maxValue" in bounds:
+        value = min(value, bounds["maxValue"])
+    return value
 
 
 def get_field(node: str, fld: schema.Field):
@@ -116,7 +130,7 @@ def get_field(node: str, fld: schema.Field):
     value = cmds.getAttr(plug)
     if fld.kind in ("float3", "int3"):
         return tuple(value[0])
-    if fld.kind == "floatarray":
+    if fld.kind in ("floatarray", "intarray"):
         return tuple(value or ())
     if fld.kind == "string":
         return value or ""

@@ -47,11 +47,14 @@ import maya.cmds as cmds  # noqa: E402
 
 import _bootstrap  # noqa: F401,E402
 
-from bz98maya import attributes, maya_io, menu, panel  # noqa: E402
+from bz98maya import animation_tools, attributes, legacy_anim, maya_io, menu, panel  # noqa: E402
 from bz98maya.core import axes, ogre_io, schema, sdf_io, validate, vdf_io  # noqa: E402
 from bz98tools import sdf_classes, vdf_classes, vdf_file  # noqa: E402
 
-from test_maya_core import _decode_mesh, _sdf_record, _write_cube_geo, _write_sdf  # noqa: E402
+from test_maya_core import (  # noqa: E402
+    _decode_mesh, _sdf_record, _two_bone_skeleton, _vehicle_scene_with_anim, _write_cube_geo, _write_sdf,
+)
+from skel_compare import compare_skeletons  # noqa: E402
 
 PLUGIN = os.path.join(_REPO_ROOT, "maya", "plug-ins", "bz98maya_plugin.py")
 STOCK = os.environ.get("BZ98_STOCK_DIR")
@@ -140,8 +143,23 @@ class MayaCase(unittest.TestCase):
 
     # --- shared checks -----------------------------------------------------
 
+    @staticmethod
+    def animated_names(scene):
+        """Names of keyed parts and their descendants: Maya shows the first key's pose, not the record matrix."""
+        by_name = {n.name: n for n in scene.nodes}
+
+        def under(node):
+            while node is not None:
+                if node.anim:
+                    return True
+                node = by_name.get(node.parent)
+            return False
+
+        return {n.name for n in scene.nodes if under(n)}
+
     def check_imported(self, scene, root, texture_dir_has_images=False):
         """Maya-side state of an import matches the neutral scene it came from."""
+        animated = self.animated_names(scene)
         parts = maya_parts(root)
         self.assertEqual(set(parts), {n.name for n in scene.nodes})
         worlds = world_matrices(scene)
@@ -157,15 +175,16 @@ class MayaCase(unittest.TestCase):
                 self.assertIsNotNone(shape, node.name)
                 self.assertEqual(cmds.polyEvaluate(shape, face=True), len(node.mesh.faces), node.name)
                 self.assertEqual(cmds.polyEvaluate(shape, vertex=True), len(node.mesh.positions), node.name)
-                # world bounding box follows the file's positions after the axis mapping
-                pts = np.array([axes.transform_point(worlds[node.name], p) for p in node.mesh.positions])
-                # (exactWorldBoundingBox is not exact for rotated parents, so measure the
-                # world-space vertices themselves.)
-                world_pts = np.array(
-                    [(p.x, p.y, p.z) for p in om.MFnMesh(maya_io._dag_path(shape)).getPoints(om.MSpace.kWorld)]
-                )
-                np.testing.assert_allclose(world_pts.min(axis=0), pts.min(axis=0), atol=1e-3, err_msg=node.name)
-                np.testing.assert_allclose(world_pts.max(axis=0), pts.max(axis=0), atol=1e-3, err_msg=node.name)
+                if node.name not in animated:  # Maya shows the first key's pose, not the record matrix
+                    # world bounding box follows the file's positions after the axis mapping
+                    pts = np.array([axes.transform_point(worlds[node.name], p) for p in node.mesh.positions])
+                    # (exactWorldBoundingBox is not exact for rotated parents, so measure the
+                    # world-space vertices themselves.)
+                    world_pts = np.array(
+                        [(p.x, p.y, p.z) for p in om.MFnMesh(maya_io._dag_path(shape)).getPoints(om.MSpace.kWorld)]
+                    )
+                    np.testing.assert_allclose(world_pts.min(axis=0), pts.min(axis=0), atol=1e-3, err_msg=node.name)
+                    np.testing.assert_allclose(world_pts.max(axis=0), pts.max(axis=0), atol=1e-3, err_msg=node.name)
                 if node.mesh.uv_sets:
                     names = cmds.polyUVSet(shape, query=True, allUVSets=True)
                     self.assertGreaterEqual(len(names), len(node.mesh.uv_sets))
@@ -187,10 +206,11 @@ class MayaCase(unittest.TestCase):
                 self.assertTrue(any(cmds.nodeType(s) == "locator" for s in shapes), node.name)
             # local transform: world matrix in Maya equals the composed neutral one
             flat = cmds.xform(transform, query=True, worldSpace=True, matrix=True)
-            np.testing.assert_allclose(
-                axes.row_vector_flat_to_matrix(flat)[:3], np.array(worlds[node.name])[:3], atol=1e-3,
-                err_msg=node.name,
-            )
+            if node.name not in animated:
+                np.testing.assert_allclose(
+                    axes.row_vector_flat_to_matrix(flat)[:3], np.array(worlds[node.name])[:3], atol=1e-3,
+                    err_msg=node.name,
+                )
 
     def check_props(self, got, wanted, name):
         """Attribute values read back from Maya equal the neutral props that were imported."""
@@ -214,7 +234,8 @@ class MayaCase(unittest.TestCase):
         for name, node in src_nodes.items():
             twin = out_nodes[name]
             self.assertEqual(key(twin.parent) if twin.parent else None, key(node.parent) if node.parent else None, name)
-            np.testing.assert_allclose(twin.matrix, node.matrix, atol=TOL, err_msg=name)
+            if not node.anim:  # a keyed part is written at its first key's pose
+                np.testing.assert_allclose(twin.matrix, node.matrix, atol=TOL, err_msg=name)
             if legacy and node.props:
                 self.assertEqual(twin.props["type"], node.props["type"], name)
                 self.assertEqual(twin.props["flags"], node.props["flags"], name)
@@ -269,9 +290,15 @@ class MayaCase(unittest.TestCase):
                 )
         # Container fields survive (header / meta values the neutral model keeps).
         for key, value in src.meta.items():
-            if key == "preserved":  # the plan loses its ANIM block (animation is a later tier)
+            if key == "preserved":  # the plan keeps its other chunks
                 for sub in ("chunks", "vlocs", "bands"):
                     self.assertEqual(out.meta[key][sub], value[sub], sub)
+                continue
+            if key == "use_translation2" and not any((n.anim or {}).get("scale") for n in src.nodes):
+                continue  # a scale-track flag with no scale keys is not written (stock files carry unused ones)
+            if key == "animations":  # slot table: same slots in the same order
+                self.assertEqual([(e["index"], e["start"], e["length"], e["loop"]) for e in out.meta[key]],
+                                 [(e["index"], e["start"], e["length"], e["loop"]) for e in value])
                 continue
             if isinstance(value, list):
                 np.testing.assert_allclose(out.meta[key], value, atol=TOL, err_msg=key)
@@ -1201,6 +1228,191 @@ class StockPortTests(MayaCase):
                 self.assertEqual(len(maya["materials"]), len(source["materials"]))
                 compared += 1
         self.assertGreater(compared, 0)
+
+
+class RigAndAnimationTests(MayaCase):
+    def _skinned_mesh(self):
+        from bz98maya.core import redux
+        from bz98maya.core.model import KIND_PART, Node, Scene
+
+        cube = vdf_io.box_mesh((-1, 0, -1), (1, 2, 1))
+        cube.face_materials = ["tex_a"] * 6
+        cube.weights = [[(0, 0.7), (1, 0.3)] if p[1] < 1 else [(1, 1.0)] for p in cube.positions]
+        scene = Scene(nodes=[Node("rig", None, axes.identity4(), KIND_PART, cube, {})])
+        scene.skeleton = _two_bone_skeleton()
+        path = os.path.join(self.tmp, "rig.mesh")
+        redux.write_bzr_mesh(scene, path, {"export_skeleton": True, "export_animation": True,
+                                           "export_materials": False})
+        return path, scene
+
+    def test_skinned_mesh_import_builds_joints_skin_and_clips_and_exports_back(self):
+        path, _source = self._skinned_mesh()
+        self.inject(menu.import_mesh, path)
+        self.assertEqual(len(cmds.ls(type="joint", long=True)), 2)
+        self.assertEqual(len(cmds.ls(type="skinCluster")), 1)
+        out_dir = os.path.join(self.tmp, "out")
+        os.makedirs(out_dir)
+        out = os.path.join(out_dir, "rig.mesh")
+        cmds.select(clear=True)
+        maya_io.export_redux_mesh(out, {"export_skeleton": True, "export_animation": True,
+                                        "export_materials": False})
+        back = ogre_io.read_ogre_mesh(out, import_materials=False)
+        want = ogre_io.read_ogre_mesh(path, import_materials=False).skeleton
+        self.assertEqual(compare_skeletons(want, back.skeleton), [])
+        weights = back.nodes[0].mesh.weights
+        self.assertEqual(len(weights), len(back.nodes[0].mesh.positions))
+        for influences in weights:
+            self.assertAlmostEqual(sum(w for _b, w in influences), 1.0, places=4)
+        out2 = os.path.join(out_dir, "noclip.mesh")
+        maya_io.export_redux_mesh(out2, {"export_skeleton": True, "export_animation": False,
+                                         "export_materials": False})
+        self.assertEqual(ogre_io.read_ogre_mesh(out2, import_materials=False).skeleton.clips, [])
+
+    def test_four_influences_are_cut_to_three_on_export(self):
+        path, _source = self._skinned_mesh()
+        self.inject(menu.import_mesh, path)
+        cluster = cmds.ls(type="skinCluster")[0]
+        shape = cmds.skinCluster(cluster, query=True, geometry=True)[0]
+        extra = [cmds.joint(name="extra1"), cmds.joint(name="extra2")]
+        cmds.skinCluster(cluster, edit=True, addInfluence=extra, weight=0.0)
+        influences = cmds.skinCluster(cluster, query=True, influence=True)
+        self.assertEqual(len(influences), 4)
+        cmds.setAttr(cluster + ".normalizeWeights", 0)
+        cmds.skinPercent(cluster, shape + ".vtx[0]", normalize=False,
+                         transformValue=list(zip(influences, (0.4, 0.3, 0.2, 0.1))))
+        cmds.select(clear=True)
+        scene = maya_io.collect_scene(triangulate=True)
+        four = scene.nodes[0].mesh.weights[0]
+        self.assertEqual(len([1 for _b, w in four if w > 1e-6]), 4)
+        from bz98maya.core import redux
+
+        cut = redux.bone_assignments([four], {b: b for b, _w in four}, True)
+        self.assertEqual(len(cut), 3)
+        self.assertAlmostEqual(sum(w for _v, _b, w in cut), 1.0, places=5)
+
+    def test_a_rig_built_in_maya_without_tags_exports(self):
+        cmds.select(clear=True)
+        root = cmds.joint(name="root", position=(0, 0, 0))
+        tip = cmds.joint(name="tip", position=(0, 2, 0))
+        cmds.select(clear=True)
+        cube = cmds.polyCube(name="body", width=1, height=2, depth=1)[0]
+        cmds.move(0, 1, 0, cube)
+        cmds.makeIdentity(cube, apply=True, translate=True)
+        cmds.skinCluster(root, tip, cube, toSelectedBones=True, maximumInfluences=2)
+        cmds.setKeyframe(tip, attribute="rotateZ", time=0, value=0)
+        cmds.setKeyframe(tip, attribute="rotateZ", time=30, value=45)
+        cmds.select(clear=True)
+        out = os.path.join(self.tmp, "mine.mesh")
+        maya_io.export_redux_mesh(out, {"export_skeleton": True, "export_animation": True, "export_materials": False})
+        back = ogre_io.read_ogre_mesh(out, import_materials=False)
+        self.assertEqual(sorted(b.name for b in back.skeleton.bones), ["root", "tip"])
+        self.assertEqual(sorted(b.id for b in back.skeleton.bones), [0, 1])
+        self.assertEqual(len(back.skeleton.clips), 1)  # one default take for keys without a clip table
+        self.assertEqual(len(back.nodes[0].mesh.weights), len(back.nodes[0].mesh.positions))
+
+    def test_standalone_skeleton_import_export_roundtrip(self):
+        from bz98maya.core import skeleton_io
+
+        src = os.path.join(self.tmp, "solo.skeleton")
+        skeleton_io.write_skeleton(_two_bone_skeleton(), src)
+        self.inject(menu.import_skeleton, src)
+        cmds.select(clear=True)
+        out = os.path.join(self.tmp, "solo_out.skeleton")
+        self.inject(menu.export_skeleton, out)
+        self.assertEqual(compare_skeletons(skeleton_io.read_skeleton(src), skeleton_io.read_skeleton(out)), [])
+
+    def _import_anim_vdf(self):
+        path = os.path.join(self.tmp, "av.vdf")
+        vdf_io.write_vdf(_vehicle_scene_with_anim(), path)
+        self.inject(menu.import_vdf, path)
+        return path
+
+    def test_vdf_anim_import_keys_the_part_and_export_writes_them_back(self):
+        path = self._import_anim_vdf()
+        turret = cmds.ls("abc11ty1", long=True)[0]
+        self.assertGreater(cmds.keyframe(turret, query=True, keyframeCount=True), 0)
+        self.assertEqual(sorted(set(cmds.keyframe(turret + ".translateX", query=True, timeChange=True))), [0, 10, 20])
+        self.assertAlmostEqual(cmds.getAttr(turret + ".translateX", time=10), 0.5, places=4)
+        self.assertEqual(cmds.playbackOptions(query=True, maxTime=True), 20)
+        keys = legacy_anim.collect_keys(turret)
+        self.assertEqual([f for f, _q in keys["rot"]], [0, 10, 20])
+        out = os.path.join(self.tmp, "av_out.vdf")
+        cmds.select(clear=True)
+        self.inject(menu.export_vdf, out)
+        back = vdf_io.read_vdf(out)
+        node = {n.name: n for n in back.nodes}["abc11ty1"]
+        np.testing.assert_allclose(node.anim["pos"][1][1], (0.5, 1.5, 0.0), atol=1e-3)
+        want = {n.name: n for n in vdf_io.read_vdf(path).nodes}["abc11ty1"].anim
+        for (f0, q0), (f1, q1) in zip(want["rot"], node.anim["rot"]):
+            self.assertEqual(f0, f1)
+            self.assertAlmostEqual(abs(sum(a * b for a, b in zip(q0, q1))), 1.0, places=4)
+        self.assertEqual(back.meta["animations"][0]["length"], 20)
+        with open(out, "rb") as handle:
+            self.assertTrue(vdf_file.parse_vdf(handle.read()).anim_present)
+
+    def test_sdf_anim_roundtrip_through_maya(self):
+        path = os.path.join(self.tmp, "as.sdf")
+        sdf_io.write_sdf(_vehicle_scene_with_anim(), path)
+        self.inject(menu.import_sdf, path)
+        turret = cmds.ls("abc11ty1", long=True)[0]
+        self.assertGreater(cmds.keyframe(turret, query=True, keyframeCount=True), 0)
+        out = os.path.join(self.tmp, "as_out.sdf")
+        cmds.select(clear=True)
+        self.inject(menu.export_sdf, out)
+        node = {n.name: n for n in sdf_io.read_sdf(out).nodes}["abc11ty1"]
+        self.assertEqual([f for f, _p in node.anim["pos"]], [0, 10, 20])
+
+    def test_export_animations_option_off_drops_the_block(self):
+        self._import_anim_vdf()
+        out = os.path.join(self.tmp, "noanim.vdf")
+        cmds.select(clear=True)
+        maya_io.export_vdf(out, {"ExportAnimations": False})
+        with open(out, "rb") as handle:
+            self.assertFalse(vdf_file.parse_vdf(handle.read()).anim_present)
+
+    def test_slot_tools_presets_duplicate_move_remove(self):
+        model = panel.create_model_node("bz_anim_model")
+        animation_tools.add_preset(model, "DEPLOY_PAIR")
+        self.assertEqual([s["index"] for s in animation_tools.slots(model)], [0, 1])
+        animation_tools.duplicate_slot(model, 0)
+        self.assertEqual([s["index"] for s in animation_tools.slots(model)], [0, 0, 1])
+        self.assertEqual(animation_tools.move_slot(model, 0, "DOWN"), 1)
+        animation_tools.update_slot(model, 1, length=12, speed=20.0)
+        self.assertEqual(animation_tools.slots(model)[1]["length"], 12)
+        animation_tools.remove_slot(model, 0)
+        self.assertEqual(len(animation_tools.slots(model)), 2)
+
+    def test_mirror_keys_copies_motion_onto_the_counterpart(self):
+        self._import_anim_vdf()
+        source = cmds.ls("abc11ty1", long=True)[0]
+        target = cmds.polyCube(name="abc11ty2")[0]
+        cmds.parent(target, cmds.listRelatives(source, parent=True, fullPath=True)[0])
+        cmds.setAttr(target + ".translate", 0, 1.5, 0)
+        attributes.ensure_part(target)
+        written = animation_tools.mirror_keys("ty1", "ty2", "X", ("pos", "rot"), use_selection=False)
+        self.assertEqual(written, 1)
+        mirrored = legacy_anim.collect_keys(target)
+        self.assertEqual([f for f, _p in mirrored["pos"]], [0, 10, 20])
+        self.assertAlmostEqual(mirrored["pos"][1][1][1], 1.5, places=3)
+
+    def test_animation_validation_runs_on_the_maya_scene(self):
+        self._import_anim_vdf()
+        cmds.select(clear=True)
+        issues = maya_io.validate_scene("VDF")
+        self.assertFalse(any(i["scope"] == "Animation" and i["severity"] == "ERROR" for i in issues))
+        animation_tools.set_slots(panel.model_node(None), [])
+        issues = maya_io.validate_scene("VDF")
+        self.assertTrue(any("no ANIM sequence entries" in i["message"] for i in issues), issues)
+
+    def test_stock_clip_table_and_auto_map(self):
+        from bz98maya.core import anim, skeleton_io
+
+        path = os.path.join(self.tmp, "t.skeleton")
+        skeleton_io.write_skeleton(_two_bone_skeleton(), path)
+        table = anim.stock_clip_table(path)
+        self.assertEqual([(n, c) for n, _d, c in table], [("walk", 1)])
+        mapped = anim.auto_map(["walk", "idleEject"], ["Walk.001", "idleElect"])
+        self.assertEqual(mapped, {"walk": "Walk.001", "idleEject": "idleElect"})
 
 
 def main():

@@ -26,6 +26,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
+from . import anim as anim_io
 from . import axes
 from .model import (
     KIND_EMPTY,
@@ -486,6 +487,7 @@ class Layout:
         self.placed: List[Tuple[str, str]] = []
         self.helpers: Dict[str, Node] = {}  # "inner" / "outer" collision helper nodes
         self.helper_worlds: Dict[str, list] = {}
+        self.matrices: Dict[str, list] = {}  # record matrix (12 floats) written per part
 
     def lod(self, name: str) -> int:
         return self.lods[name]
@@ -697,6 +699,7 @@ def fill_records(layout: Layout, folder: str, warnings: List[str], new_record, s
                     speed = float(props.get("spinner_speed", 1.0))
                     matrix12[0:3] = [float(axis[0]) * speed, float(axis[1]) * speed, float(axis[2]) * speed]
             record.matrix = matrix12
+            layout.matrices[name] = matrix12
 
             has_mesh = node.mesh is not None and bool(node.mesh.faces)
             mode = props.get("bounds_mode", "AUTO")
@@ -802,6 +805,9 @@ def read_vdf(path: str, import_options: Optional[Dict[str, object]] = None) -> S
 
     build_nodes(records, os.path.dirname(os.path.abspath(path)), scene)
     nodes = {n.name.lower(): n for n in scene.nodes}
+    if parsed.anim_present:
+        anim_io.read_anim(scene, parsed.anim_header, parsed.anim_elements, parsed.anim_orientations,
+                          parsed.anim_rotations, parsed.anim_translations2, parsed.anim_positions)
 
     # Damage bands: lod-slot-0 bands 1..3 are per-part mesh swaps; every other populated
     # band is kept verbatim (Blender stores them the same way).
@@ -856,7 +862,8 @@ def _clean_anim_from_plan(plan):
     return cleaned
 
 
-def write_vdf(scene: Scene, path: str, write_geos: bool = True, face_plane_mode: str = "STOCK") -> List[str]:
+def write_vdf(scene: Scene, path: str, write_geos: bool = True, face_plane_mode: str = "STOCK",
+              export_animations: bool = True) -> List[str]:
     """Write ``path`` and a ``<name>.geo`` beside it for every part with a mesh.
 
     Returns warnings (skipped parts etc.).
@@ -888,7 +895,7 @@ def write_vdf(scene: Scene, path: str, write_geos: bool = True, face_plane_mode:
                 raw_index += 1
             else:
                 plan.append((kind, None))
-        model.plan = _clean_anim_from_plan(plan)
+        model.plan = plan
     for data in preserved.get("chunks", []):
         model.raw_chunks.append(vdf_file.RawChunk(base64.b64decode(data)[:4], base64.b64decode(data)))
     for data in preserved.get("vlocs", []):
@@ -927,6 +934,21 @@ def write_vdf(scene: Scene, path: str, write_geos: bool = True, face_plane_mode:
         write_geos=write_geos, face_plane_mode=face_plane_mode,
     )
     _write_damage_bands(model.records, layout, geocount, preserved, semantics)
+
+    block = anim_io.build_anim(
+        layout.entries, layout.matrices, meta, vdf_classes, os.path.splitext(os.path.basename(path))[0]
+    ) if export_animations else None
+    plan = list(model.plan)
+    if block is not None:
+        (model.anim_header, model.anim_elements, model.anim_orientations, model.anim_rotations,
+         model.anim_translations2, model.anim_positions) = block
+        model.anim_present = True
+        if not any(kind == "anim" for kind, _ in plan):  # fresh plans: after VGEO with its EXIT, the stock order
+            at = next((i + 1 for i, (kind, _) in enumerate(plan) if kind == "vgeo"), len(plan))
+            plan[at:at] = [("anim", None), ("exit", None)]
+    else:
+        plan = _clean_anim_from_plan(plan)
+    model.plan = plan
 
     if any(kind == "colp" for kind, _ in model.plan):
         model.colp_data = _collision_floats(layout, all_points, meta)

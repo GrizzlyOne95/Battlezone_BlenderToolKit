@@ -553,6 +553,8 @@ def _non_default(fld, index=1):
         return (1.25 + index, -2.5, 3.75)
     if kind == "int3":
         return (7, -8, 9)
+    if kind == "intarray":
+        return (1, -2, 3, -4, 5)
     if kind == "floatarray":
         return tuple(float(i) * 0.5 + index for i in range(12))
     raise AssertionError(kind)
@@ -1680,6 +1682,192 @@ class ToolkitDiscoveryTests(unittest.TestCase):
                 del os.environ[toolkit.ENV_VAR]
             else:
                 os.environ[toolkit.ENV_VAR] = old
+
+
+def _vehicle_scene_with_anim():
+    cube = vdf_io.box_mesh((-1, -1, -1), (1, 1, 1))
+    cube.face_materials = ["tex_a"] * 6
+    body = Node("abc11bdy", None, axes.identity4(), KIND_PART, cube, {"type": 60})
+    turret = Node("abc11ty1", "abc11bdy", _identity_translated(0.0, 1.5, 0.0), KIND_PART, cube, {"type": 69})
+    s = math.sqrt(0.5)
+    turret.anim = {
+        "rot": [(0, (1.0, 0.0, 0.0, 0.0)), (10, (s, 0.0, s, 0.0)), (20, (1.0, 0.0, 0.0, 0.0))],
+        "pos": [(0, (0.0, 1.5, 0.0)), (10, (0.5, 1.5, 0.0)), (20, (0.0, 1.5, 0.0))],
+    }
+    elements = [{"index": 0, "start": 0, "length": 20, "loop": 1, "speed": 15.0, "mask": []}]
+    return Scene(nodes=[body, turret], meta={"animations": elements})
+
+
+class AnimationCoreTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="bzmaya_anim_")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def _check_keys(self, back):
+        node = {n.name: n for n in back.nodes}["abc11ty1"]
+        self.assertIsNotNone(node.anim)
+        self.assertEqual([f for f, _q in node.anim["rot"]], [0, 10, 20])
+        self.assertEqual([f for f, _p in node.anim["pos"]], [0, 10, 20])
+        np.testing.assert_allclose(node.anim["pos"][1][1], (0.5, 1.5, 0.0), atol=TOL)
+        s = math.sqrt(0.5)
+        np.testing.assert_allclose(np.abs(node.anim["rot"][1][1]), (s, 0.0, s, 0.0), atol=1e-4)
+        self.assertEqual(back.meta["animations"][0]["length"], 20)
+
+    def test_vdf_anim_roundtrip_and_toolkit_reads_block(self):
+        path = os.path.join(self.tmp, "av.vdf")
+        vdf_io.write_vdf(_vehicle_scene_with_anim(), path)
+        self._check_keys(vdf_io.read_vdf(path))
+        with open(path, "rb") as handle:
+            parsed = vdf_file.parse_vdf(handle.read())
+        self.assertTrue(parsed.anim_present)
+        self.assertEqual(len(parsed.anim_elements), 1)
+        self.assertEqual(len(parsed.anim_rotations), 3)
+        self.assertEqual(len(parsed.anim_positions), 3)
+
+    def test_sdf_anim_roundtrip(self):
+        path = os.path.join(self.tmp, "as.sdf")
+        sdf_io.write_sdf(_vehicle_scene_with_anim(), path)
+        self._check_keys(sdf_io.read_sdf(path))
+
+    def test_export_animations_off_writes_no_block(self):
+        path = os.path.join(self.tmp, "no.vdf")
+        vdf_io.write_vdf(_vehicle_scene_with_anim(), path, export_animations=False)
+        with open(path, "rb") as handle:
+            self.assertFalse(vdf_file.parse_vdf(handle.read()).anim_present)
+
+    def test_quaternion_storage_is_an_involution(self):
+        from bz98maya.core import anim
+
+        q = (0.5, 0.5, -0.5, 0.5)
+        self.assertTrue(anim.quats_close(anim.stored_to_maya_quat(anim.maya_to_stored_quat(q)), q))
+        np.testing.assert_allclose(anim.quat_to_matrix(anim.matrix_to_quat(anim.quat_to_matrix(q))),
+                                   anim.quat_to_matrix(q), atol=1e-9)
+
+    def test_preset_duplicate_move_and_reference(self):
+        from bz98maya.core import anim
+
+        slots = anim.apply_preset([], "DEPLOY_PAIR")
+        self.assertEqual([e["index"] for e in slots], [0, 1])
+        self.assertEqual(len(anim.apply_preset([], "PERSON_CORE")), 12)
+        self.assertEqual([e["index"] for e in anim.duplicate_element(slots, 0)], [0, 0, 1])
+        moved, at = anim.move_element(slots, 0, "DOWN")
+        self.assertEqual((at, [e["index"] for e in moved]), (1, [1, 0]))
+        self.assertEqual(anim.move_element(slots, 0, "UP")[1], 0)
+        self.assertTrue(anim.reference_text().strip())
+        with self.assertRaises(KeyError):
+            anim.apply_preset([], "NOPE")
+
+    def test_mirror_keys_matrix_flips_x_translation(self):
+        from bz98maya.core import anim
+
+        keys = {"pos": [(0, (1.0, 0.0, 0.0)), (10, (1.0, 2.0, 0.0))]}
+        rest = anim.compose((1.0, 0.0, 0.0), (1.0, 0.0, 0.0, 0.0), (1.0, 1.0, 1.0))
+        target_rest = anim.compose((-1.0, 0.0, 0.0), (1.0, 0.0, 0.0, 0.0), (1.0, 1.0, 1.0))
+        out = anim.mirror_keys_matrix(keys, [0, 10], "X", ("pos",), 0, rest, target_rest)
+        np.testing.assert_allclose(out["pos"][0][1], (-1.0, 0.0, 0.0), atol=1e-9)
+        np.testing.assert_allclose(out["pos"][1][1], (-1.0, 2.0, 0.0), atol=1e-9)
+
+    def test_replace_name_token_is_blenders(self):
+        from bz98maya.core import anim
+
+        self.assertEqual(anim.replace_name_token("arm_L", "L", "R"), "arm_R")
+
+    def test_validation_sees_animation(self):
+        scene = _vehicle_scene_with_anim()
+        issues = validate.validate_scene(scene, export_mode="VDF")
+        self.assertFalse(any(i["scope"] == "Animation" and i["severity"] != "INFO" for i in issues), issues)
+        scene.nodes[1].anim["rot"][-1] = (20, (0.0, 0.0, 1.0, 0.0))  # does not return to the first pose
+        issues = validate.validate_scene(scene, export_mode="VDF")
+        self.assertTrue(any(i["scope"] == "Animation" and "Looping ANIM slot 0" in i["message"] for i in issues), issues)
+        scene.meta["animations"] = []
+        issues = validate.validate_scene(scene, export_mode="VDF")
+        self.assertTrue(any("no ANIM sequence entries" in i["message"] for i in issues), issues)
+
+    def test_validation_flags_skinned_meshes(self):
+        scene = _vehicle_scene_with_anim()
+        scene.nodes[0].mesh.weights = [[(0, 1.0)]] * len(scene.nodes[0].mesh.positions)
+        issues = validate.validate_scene(scene, export_mode="VDF")
+        self.assertTrue(any("Skinned mesh deformation" in i["message"] for i in issues), issues)
+
+
+def _two_bone_skeleton():
+    from bz98maya.core.model import Bone, Clip, Skeleton, Track
+
+    skeleton = Skeleton(name="rig", bones=[
+        Bone("root", 0, None, (0.0, 1.0, 0.0)),
+        Bone("tip", 1, "root", (0.0, 2.0, 0.0)),
+    ])
+    skeleton.clips = [Clip("walk", 1.0, [
+        Track("tip", [0.0, 0.5, 1.0], [(0, 0, 0), (0, 0.5, 0), (0, 0, 0)],
+              [(1, 0, 0, 0), (0.7071068, 0, 0.7071068, 0), (1, 0, 0, 0)], [(1, 1, 1)] * 3),
+    ])]
+    return skeleton
+
+
+class SkeletonCoreTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="bzmaya_skel_")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def test_skeleton_roundtrip_matches_toolkit_reader(self):
+        from bz98maya.core import skeleton_io
+
+        path = os.path.join(self.tmp, "rig.skeleton")
+        skeleton_io.write_skeleton(_two_bone_skeleton(), path)
+        back = skeleton_io.read_skeleton(path)
+        self.assertEqual([(b.name, b.id, b.parent) for b in back.bones],
+                         [("root", 0, None), ("tip", 1, "root")])
+        np.testing.assert_allclose(back.bones[1].position, (0.0, 2.0, 0.0), atol=TOL)
+        self.assertEqual([c.name for c in back.clips], ["walk"])
+        track = back.clips[0].tracks[0]
+        self.assertEqual(track.bone, "tip")
+        np.testing.assert_allclose(track.times, [0.0, 0.5, 1.0], atol=TOL)
+        np.testing.assert_allclose(track.rotations[1], (0.7071068, 0, 0.7071068, 0), atol=1e-5)
+
+    def test_bone_ids_are_renumbered_contiguously(self):
+        from bz98maya.core import skeleton_io
+
+        skeleton = _two_bone_skeleton()
+        skeleton.bones[0].id, skeleton.bones[1].id = 7, 3
+        self.assertEqual(skeleton_io.renumbered(skeleton), {3: 0, 7: 1})  # by id order
+
+    def test_influence_cut_keeps_three_heaviest_and_renormalises(self):
+        from bz98maya.core import redux
+
+        weights = [[(0, 0.4), (1, 0.3), (2, 0.2), (3, 0.1)], [(0, 0.0), (1, 0.5)]]
+        ids = {0: 0, 1: 1, 2: 2, 3: 3}
+        out = redux.bone_assignments(weights, ids, True)
+        first = [(b, w) for v, b, w in out if v == 0]
+        self.assertEqual([b for b, _w in first], [0, 1, 2])
+        self.assertAlmostEqual(sum(w for _b, w in first), 1.0, places=6)
+        self.assertAlmostEqual(first[0][1], 0.4 / 0.9, places=6)
+        self.assertEqual([(b, w) for v, b, w in out if v == 1], [(1, 1.0)])
+        raw = redux.bone_assignments(weights, ids, False)
+        self.assertAlmostEqual(sum(w for v, _b, w in raw if v == 0), 0.9, places=6)
+
+    def test_skinned_mesh_export_reads_back_with_toolkit(self):
+        from bz98maya.core import redux
+
+        cube = vdf_io.box_mesh((-1, 0, -1), (1, 2, 1))
+        cube.face_materials = ["tex_a"] * 6
+        cube.weights = [[(0, 0.5), (1, 0.5)] for _ in cube.positions]
+        scene = Scene(nodes=[Node("rig", None, axes.identity4(), KIND_PART, cube, {})])
+        scene.skeleton = _two_bone_skeleton()
+        path = os.path.join(self.tmp, "rig.mesh")
+        redux.write_bzr_mesh(scene, path, {"export_skeleton": True, "export_animation": True,
+                                           "export_materials": False})
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, "rig.skeleton")))
+        back = ogre_io.read_ogre_mesh(path, import_materials=False)
+        self.assertIsNotNone(back.skeleton)
+        self.assertEqual([c.name for c in back.skeleton.clips], ["walk"])
+        mesh = back.nodes[0].mesh
+        self.assertEqual(len(mesh.weights), len(mesh.positions))
+        self.assertAlmostEqual(sum(w for _b, w in mesh.weights[0]), 1.0, places=5)
+        path2 = os.path.join(self.tmp, "noanim.mesh")
+        redux.write_bzr_mesh(scene, path2, {"export_skeleton": True, "export_animation": False,
+                                            "export_materials": False})
+        self.assertEqual(ogre_io.read_ogre_mesh(path2, import_materials=False).skeleton.clips, [])
+
 
 
 if __name__ == "__main__":

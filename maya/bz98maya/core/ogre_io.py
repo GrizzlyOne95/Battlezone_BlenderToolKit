@@ -37,14 +37,21 @@ def _modules():
 
 # --- read ------------------------------------------------------------------
 
-def read_ogre_mesh(path: str, import_materials: bool = True) -> Scene:
+def read_ogre_mesh(path: str, import_materials: bool = True, import_skeleton: bool = True) -> Scene:
+    """Static or skinned mesh. A linked ``.skeleton`` beside the mesh becomes ``scene.skeleton``."""
     import_compat, _, _ = _modules()
-    serializer = import_compat.KenshiObjectSerializer()
+    from bz98tools.ogrefast.pure import rigged_import_compat
+    from bz98tools.ogrefast.pure.pose_import_compat import PoseDetectingMeshSerializer
+
     folder, filename = os.path.split(os.path.abspath(path))
-    serializer.add_resource_location(folder)
-    mesh_data = serializer.load_mesh(filename)  # raises UnsupportedPureImport for rigged meshes
+    with open(os.path.join(folder, filename), "rb") as stream:
+        source = PoseDetectingMeshSerializer(stream).read()
+    # Raises UnsupportedPureImport for mesh animations and pose normal offsets (kept out, as in Blender).
+    mesh_data = rigged_import_compat._convert_mesh(source, filename)
 
     scene = Scene()
+    if getattr(source, "_pure_import_poses", None):
+        scene.warnings.append("pose / shape-key data in the mesh is not imported")
     used: Dict[str, int] = {}
     for submesh in mesh_data.get_submeshes():
         geometry = submesh._wire_geometry
@@ -61,6 +68,11 @@ def read_ogre_mesh(path: str, import_materials: bool = True) -> Scene:
         indices = [int(i) for i in submesh.faces]
         mesh = Mesh()
         mesh.positions = [axes.ogre_point_to_maya(p) for p in positions[:, :3]]
+        if submesh.boneassignments:
+            mesh.weights = [[] for _ in mesh.positions]
+            for item in submesh.boneassignments:
+                if 0 <= item.vertex_index < len(mesh.weights):
+                    mesh.weights[item.vertex_index].append((int(item.bone_index), float(item.weight)))
         mesh.faces = [tuple(indices[i : i + 3]) for i in range(0, len(indices) - 2, 3)]
         mesh.face_materials = [submesh.material] * len(mesh.faces)
         if normals is not None:
@@ -76,6 +88,19 @@ def read_ogre_mesh(path: str, import_materials: bool = True) -> Scene:
         used[base] = count + 1
         name = base if count == 0 else f"{base}_{count}"
         scene.nodes.append(Node(name=name, parent=None, kind=KIND_PART, mesh=mesh))
+    skeleton_name = mesh_data.get_linked_skeleton_name()
+    if skeleton_name and import_skeleton:
+        from . import skeleton_io
+
+        skeleton_path = os.path.join(folder, skeleton_name)
+        if not os.path.isfile(skeleton_path):  # case-insensitive, as the game's resource lookup
+            skeleton_path = next(
+                (os.path.join(folder, f) for f in os.listdir(folder) if f.lower() == skeleton_name.lower()), ""
+            )
+        if skeleton_path and os.path.isfile(skeleton_path):
+            scene.skeleton = skeleton_io.read_skeleton(skeleton_path)
+        else:
+            scene.warnings.append(f"linked skeleton {skeleton_name} was not found beside the mesh")
     if import_materials:
         _attach_materials(scene, os.path.join(folder, os.path.splitext(filename)[0] + ".material"), folder)
     return scene

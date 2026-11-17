@@ -19,7 +19,8 @@ from typing import Any, Callable, Dict, List, Optional
 
 import maya.cmds as cmds
 
-from . import attributes, maya_io
+from . import animation_tools, attributes, maya_io
+from .core import anim as anim_core
 from .core import authoring, schema, validate
 
 WORKSPACE_CONTROL = "BattlezoneWorkspaceControl"
@@ -38,6 +39,7 @@ MODEL_GROUPS = (
     ("VDF", "VDF Settings"),
     ("SDF", "SDF Settings"),
     ("LOD", "Level of Detail"),
+    ("Animation", "Animation Header"),
     ("Raw", "VDF Raw Data"),
 )
 INFO_BUTTONS = (
@@ -361,6 +363,46 @@ class _Form:
         cmds.setParent("..")
         cmds.setParent("..")
 
+        cmds.frameLayout(label="Animation Slots (VDF / SDF ANIM)", collapsable=True, collapse=True, marginWidth=6)
+        cmds.columnLayout(adjustableColumn=True, rowSpacing=2)
+        self.slot_list = cmds.textScrollList(height=110, allowMultiSelection=False,
+                                             selectCommand=lambda *_a: self.on_slot_select())
+        self.slot_fields = {}
+        for key, kind in (("index", "int"), ("start", "int"), ("length", "int"), ("loop", "int"), ("speed", "float")):
+            maker = cmds.intFieldGrp if kind == "int" else cmds.floatFieldGrp
+            self.slot_fields[key] = maker(label=key.capitalize(), numberOfFields=1, columnWidth2=(70, 70),
+                                          changeCommand=lambda *_a, k=key: self.on_slot_edit(k))
+        cmds.rowLayout(numberOfColumns=5, adjustableColumn=1)
+        cmds.button(label="Add", command=lambda *_a: self.slot_action("add"))
+        cmds.button(label="Duplicate", command=lambda *_a: self.slot_action("duplicate"))
+        cmds.button(label="Remove", command=lambda *_a: self.slot_action("remove"))
+        cmds.button(label="Up", command=lambda *_a: self.slot_action("up"))
+        cmds.button(label="Down", command=lambda *_a: self.slot_action("down"))
+        cmds.setParent("..")
+        cmds.rowLayout(numberOfColumns=2, adjustableColumn=1)
+        self.preset_option = cmds.optionMenu()
+        for item in anim_core.preset_items():
+            cmds.menuItem(label=item[1], annotation=item[2])
+        cmds.button(label="Add Animation Preset", command=lambda *_a: self.slot_action("preset"))
+        cmds.setParent("..")
+        cmds.button(label="Animation Index Reference", command=lambda *_a: cmds.confirmDialog(
+            title="Animation Index Reference", message=anim_core.reference_text(), button=["OK"]))
+        cmds.separator(style="in")
+        cmds.text(label="Mirror Legacy Animation Keys", align="left", font="boldLabelFont")
+        cmds.rowLayout(numberOfColumns=3, adjustableColumn=2)
+        cmds.text(label="Source / Target token")
+        self.mirror_tokens = cmds.textField(text=".L")
+        self.mirror_target = cmds.textField(text=".R")
+        cmds.setParent("..")
+        self.mirror_axis = cmds.optionMenu(label="Axis")
+        for axis_name in ("X", "Y", "Z"):
+            cmds.menuItem(label=axis_name)
+        cmds.button(label="Mirror Keys (selection, or whole scene)",
+                    command=lambda *_a: self.slot_action("mirror"),
+                    annotation="Copy each animated part's keys onto its counterpart named with the target token")
+        cmds.setParent("..")
+        cmds.setParent("..")
+
         cmds.frameLayout(label="Validation", collapsable=True, collapse=False, marginWidth=6)
         cmds.columnLayout(adjustableColumn=True, rowSpacing=2)
         cmds.rowLayout(numberOfColumns=2, adjustableColumn=2)
@@ -402,6 +444,75 @@ class _Form:
         cmds.setParent("..")
         self.job = cmds.scriptJob(event=["SelectionChanged", self.refresh], parent=self.labels["name"])
         self.refresh()
+
+    # --- animation slots
+    def _slot_model(self) -> Optional[str]:
+        return model_node(None)
+
+    def refresh_slots(self, select: Optional[int] = None) -> None:
+        model = self._slot_model()
+        items = animation_tools.slots(model) if model else []
+        cmds.textScrollList(self.slot_list, edit=True, removeAll=True)
+        for item in items:
+            cmds.textScrollList(self.slot_list, edit=True, append="slot %d: start %d, length %d, loop %d, speed %g" % (
+                item["index"], item.get("start", 0), item.get("length", 0), item.get("loop", 0), item.get("speed", 15.0)))
+        if select is not None and items:
+            cmds.textScrollList(self.slot_list, edit=True, selectIndexedItem=min(select, len(items)) + 1)
+        self.on_slot_select()
+
+    def _slot_position(self) -> Optional[int]:
+        picked = cmds.textScrollList(self.slot_list, query=True, selectIndexedItem=True)
+        return picked[0] - 1 if picked else None
+
+    def on_slot_select(self) -> None:
+        model, position = self._slot_model(), self._slot_position()
+        items = animation_tools.slots(model) if model else []
+        item = items[position] if position is not None and position < len(items) else None
+        for key, control in self.slot_fields.items():
+            value = item.get(key, 0) if item else 0
+            if key == "speed":
+                cmds.floatFieldGrp(control, edit=True, value1=float(value))
+            else:
+                cmds.intFieldGrp(control, edit=True, value1=int(value))
+
+    def on_slot_edit(self, key: str) -> None:
+        model, position = self._slot_model(), self._slot_position()
+        if not model or position is None:
+            return
+        control = self.slot_fields[key]
+        value = cmds.floatFieldGrp(control, query=True, value1=True) if key == "speed" else cmds.intFieldGrp(
+            control, query=True, value1=True)
+        animation_tools.update_slot(model, position, **{key: value})
+        self.refresh_slots(position)
+
+    def slot_action(self, action: str) -> None:
+        try:
+            model = self._slot_model() or create_model_node()
+            position = self._slot_position()
+            select = position
+            if action == "add":
+                select = len(animation_tools.add_slot(model)) - 1
+            elif action == "duplicate" and position is not None:
+                animation_tools.duplicate_slot(model, position)
+                select = position + 1
+            elif action == "remove" and position is not None:
+                animation_tools.remove_slot(model, position)
+                select = max(0, position - 1)
+            elif action in ("up", "down") and position is not None:
+                select = animation_tools.move_slot(model, position, action.upper())
+            elif action == "preset":
+                label = cmds.optionMenu(self.preset_option, query=True, value=True)
+                key = next(i[0] for i in anim_core.preset_items() if i[1] == label)
+                animation_tools.add_preset(model, key)
+            elif action == "mirror":
+                count = animation_tools.mirror_keys(
+                    cmds.textField(self.mirror_tokens, query=True, text=True),
+                    cmds.textField(self.mirror_target, query=True, text=True),
+                    cmds.optionMenu(self.mirror_axis, query=True, value=True))
+                cmds.inViewMessage(amg="Battlezone: mirrored keys on %d part(s)." % count, pos="midCenter", fade=True)
+            self.refresh_slots(select)
+        except Exception as exc:
+            cmds.confirmDialog(title="Battlezone", message=str(exc), button=["OK"], icon="critical")
 
     # --- helpers
     @staticmethod
@@ -464,6 +575,7 @@ class _Form:
     def refresh(self, *_args):
         self.node = selected_part()
         self.model = model_node(self.node)
+        self.refresh_slots(self._slot_position() or 0)
         values = part_state(self.node)
         tagged = bool(self.node and attributes.is_part(self.node))
         for attr, (ctrl, fld) in self.part_controls.items():

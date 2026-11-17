@@ -26,7 +26,7 @@ from typing import Dict, List, Optional
 import maya.api.OpenMaya as om
 import maya.cmds as cmds
 
-from . import attributes
+from . import attributes, legacy_anim, rig
 from .core import axes
 from .core.model import (
     KIND_EMPTY,
@@ -217,7 +217,42 @@ def _material_name_of(shading_group: str) -> str:
 
 # --- neutral -> Maya -------------------------------------------------------
 
+def drop_degenerate_faces(mesh: Mesh) -> Mesh:
+    """A copy Maya can hold: faces may not repeat a vertex.
+
+    A corner that repeats its neighbour (a quad ``a b c c`` is really a triangle) is collapsed;
+    a face that still repeats a vertex, or has fewer than 3 corners left, is dropped. Loop data
+    (normals, UVs) follows.
+    """
+    starts, loop = [], 0
+    for face in mesh.faces:
+        starts.append(loop)
+        loop += len(face)
+    faces, keep_loops, kept_faces = [], [], []
+    for index, face in enumerate(mesh.faces):
+        corners = [c for c, vertex in enumerate(face) if vertex != face[c - 1]]  # drops repeats of the previous corner
+        reduced = [face[c] for c in corners]
+        if len(reduced) < 3 or len(set(reduced)) != len(reduced):
+            continue
+        faces.append(reduced)
+        kept_faces.append(index)
+        keep_loops += [starts[index] + c for c in corners]
+    if len(keep_loops) == loop:
+        return mesh
+    out = Mesh(positions=mesh.positions, faces=faces,
+               face_materials=[mesh.face_materials[i] for i in kept_faces] if mesh.face_materials else [],
+               weights=mesh.weights)
+    if mesh.normals is not None:
+        out.normals = [mesh.normals[i] for i in keep_loops]
+    out.uv_sets = [[uvs[i] for i in keep_loops] for uvs in mesh.uv_sets]
+    repeated = sum(1 for face in mesh.faces if len(set(face)) != len(face))
+    om.MGlobal.displayWarning("Battlezone: repaired %d face(s) that repeat a vertex (collapsed or dropped; Maya cannot hold them)"
+                              % repeated)
+    return out
+
+
 def _create_mesh(transform: str, mesh: Mesh, texture_folder: Optional[str], cache: Dict[str, str]) -> None:
+    mesh = drop_degenerate_faces(mesh)
     points = om.MPointArray([om.MPoint(p[0], p[1], p[2]) for p in mesh.positions])
     counts = om.MIntArray([len(face) for face in mesh.faces])
     connects = om.MIntArray([index for face in mesh.faces for index in face])
@@ -310,6 +345,19 @@ def build_scene(scene: Scene, group_name: str, texture_folder: Optional[str] = N
             cmds.parent(_long_name(uuids[node.name]), _long_name(uuids[node.parent]), relative=True)
     for node in scene.nodes:
         _set_local_matrix(_long_name(uuids[node.name]), node.matrix)
+    if scene.skeleton is not None:
+        joints = rig.build_skeleton(scene.skeleton, root)  # bind pose first: skin before keying
+        by_id = {b.id: joints[b.name] for b in scene.skeleton.bones}
+        for node in scene.nodes:
+            if node.mesh is not None and node.mesh.weights is not None:
+                rig.skin(_long_name(uuids[node.name]), node.mesh.weights, by_id)
+        rig.build_clips(scene.skeleton, joints)
+    keyed = [f for n in scene.nodes if n.anim for group in n.anim.values() for f, _v in group]
+    for node in scene.nodes:
+        if node.anim:  # legacy ANIM keys on the part's own channels
+            legacy_anim.apply_keys(_long_name(uuids[node.name]), node.anim)
+    if keyed:
+        legacy_anim.set_playback_range(list(scene.meta.get("animations", []) or []), keyed)
     return root
 
 
@@ -414,8 +462,28 @@ def _extract_triangulated(transform: str, shape: str, warnings: List[str], label
         cmds.delete(duplicate)
 
 
+def _triangulate_neutral(mesh: Mesh, label: str) -> Mesh:
+    """Triangulate a neutral mesh through a temporary Maya mesh (vertex ids and weights are kept)."""
+    if all(len(face) == 3 for face in mesh.faces):
+        return mesh
+    temp = cmds.createNode("transform", name="bzTriangulateTemp")
+    try:
+        temp = cmds.ls(temp, long=True)[0]
+        _create_mesh(temp, mesh, None, {})
+        shape = cmds.listRelatives(temp, shapes=True, fullPath=True)[0]
+        cmds.polyTriangulate(shape, constructionHistory=False)
+        result = _extract_mesh(shape, [], label)
+        result.weights = mesh.weights
+        return result
+    finally:
+        cmds.delete(temp)
+
+
 def collect_scene(triangulate: bool = False) -> Scene:
     """Selection (with descendants), or the whole scene when nothing is selected.
+
+    Animated scenes are read at the start of the playback range (the rest pose: part records
+    and an untagged rig's bind pose), then the time is put back.
 
     ``triangulate`` reads every mesh from a temporary triangulated duplicate (the
     Ogre exporter needs triangles; a fan over a concave n-gon would be wrong).
@@ -424,7 +492,19 @@ def collect_scene(triangulate: bool = False) -> Scene:
     if not roots:
         raise RuntimeError("nothing to export: the scene is empty")
     transforms = cmds.ls(roots, dag=True, long=True, type="transform") or []
+    start = cmds.playbackOptions(query=True, minTime=True)
+    current = cmds.currentTime(query=True)
+    animated = any(cmds.keyframe(t, query=True, keyframeCount=True) for t in transforms)
+    if animated and current != start:
+        cmds.currentTime(start, edit=True, update=True)
+    try:
+        return _collect(transforms, triangulate)
+    finally:
+        if animated and current != start:
+            cmds.currentTime(current, edit=True, update=True)
 
+
+def _collect(transforms: List[str], triangulate: bool) -> Scene:
     scene = Scene()
     exported: Dict[str, Node] = {}
     shapes: Dict[str, str] = {}
@@ -459,14 +539,27 @@ def collect_scene(triangulate: bool = False) -> Scene:
         if transform in shapes:
             # Collision helper boxes have no UVs by design; do not warn about them.
             sink = [] if vdf_io.collision_helper_kind(node.name) else scene.warnings
-            if triangulate:
+            cluster = rig.find_skin_cluster(shapes[transform])
+            if cluster:  # skinned: the bind-pose shape and its weights
+                bind_shape = rig.original_shape(cluster) or shapes[transform]
+                node.mesh = _extract_mesh(bind_shape, sink, node.name)
+                # the shader assignment lives on the deformed (visible) shape, same face order
+                node.mesh.face_materials = _extract_mesh(shapes[transform], [], node.name).face_materials
+                node.mesh.weights = rig.collect_weights(cluster, shapes[transform])
+                if triangulate:
+                    node.mesh = _triangulate_neutral(node.mesh, node.name)
+            elif triangulate:
                 node.mesh = _extract_triangulated(transform, shapes[transform], sink, node.name)
             else:
                 node.mesh = _extract_mesh(shapes[transform], sink, node.name)
+        node.anim = legacy_anim.collect_keys(transform)
         scene.nodes.append(node)
-    if not scene.nodes:
-        raise RuntimeError("nothing to export: no meshes, locators or tagged transforms found")
+    scene.skeleton = rig.collect_skeleton([t for t in transforms if rig.is_bone(t)])
+    if not scene.nodes and scene.skeleton is None:
+        raise RuntimeError("nothing to export: no meshes, locators, joints or tagged transforms found")
     scene.materials = collect_materials(scene)
+    if scene.skeleton is not None:
+        scene.skeleton.name = scene.nodes[0].name if scene.nodes else "skeleton"
     return scene
 
 
@@ -547,6 +640,27 @@ def import_geo(path: str, import_options: Optional[dict] = None) -> str:
     return _import(vdf_io.read_geo(path, import_options), path)
 
 
+def import_skeleton(path: str) -> str:
+    """A ``.skeleton`` on its own: joints and (with their clips) the animation."""
+    from .core import skeleton_io
+
+    scene = Scene(skeleton=skeleton_io.read_skeleton(path))
+    return _import(scene, path)
+
+
+def export_skeleton(path: str, options: Optional[dict] = None) -> None:
+    """The joints (selection or scene) as a ``.skeleton``; clips are written when ``export_animation``."""
+    from .core import skeleton_io
+
+    with_clips = bool((options or {}).get("export_animation", True))  # a skeleton export is about the clips
+    scene = collect_scene()
+    if scene.skeleton is None:
+        raise RuntimeError("no tagged joints to export (import a skeleton or tag joints first)")
+    id_map = skeleton_io.renumbered(scene.skeleton)
+    redux.write_skeleton_file(scene.skeleton, path, id_map, with_clips)
+    om.MGlobal.displayInfo("Battlezone: wrote %s" % path)
+
+
 def import_ogre_mesh(path: str) -> str:
     """The mesh, with the sibling .material's colours and textures."""
     return _import(ogre_io.read_ogre_mesh(path), path)
@@ -606,7 +720,7 @@ def export_legacy(kind: str, path: str, options: Optional[dict] = None) -> dict:
         _check_before_export(scene, kind)
         write_geos = not options.get("ExportVDFOnly" if kind == "VDF" else "ExportSDFOnly", False)
         writer = vdf_io.write_vdf if kind == "VDF" else sdf_io.write_sdf
-        warnings = writer(scene, path, write_geos, plane)
+        warnings = writer(scene, path, write_geos, plane, bool(options.get("ExportAnimations", True)))
     _report(warnings)
     om.MGlobal.displayInfo("Battlezone: wrote %s" % path)
     result = None

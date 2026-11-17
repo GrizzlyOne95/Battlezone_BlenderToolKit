@@ -36,12 +36,10 @@ MODE_TEXT = {
     MODE_REDUX: "Writes Redux mesh-side files without creating GEO, VDF, or SDF files.",
 }
 
-# Not offered in Maya: the OgreXMLConverter path (the pure serializer needs no converter) and
-# the skeleton / animation options (static export only, animation is a later tier).
+# Not offered in Maya: the OgreXMLConverter path (the pure serializer needs no converter), shape keys
+# as poses, and vertex colours.
 _HIDDEN = {
-    "filter_glob", "xml_converter", "keep_xml", "export_skeleton", "export_poses", "export_animation",
-    "renormalize_weights", "export_colour", "ExportAnimations", "ogre_skeletalanims_mode", "ogre_no_pov_rots",
-    "ogre_stabilize_walker_cockpit",
+    "filter_glob", "xml_converter", "keep_xml", "export_poses", "export_colour",
 }
 GROUPS = {
     "mesh": ("apply_transform", "apply_modifiers", "batch_export"),

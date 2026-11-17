@@ -9,8 +9,11 @@ axes (Z up, nose +Y), which is what the checks assume.
 
 Deliberate differences from running inside Blender:
 
-* Animation checks are left out (scope ``Animation`` / ``Armature``): animation
-  is a later tier.
+* Animation checks run on the legacy ANIM data: ``Node.anim`` keys become Blender-like
+  F-curves (``location`` / ``rotation_quaternion`` / ``scale``), the slot table
+  ``meta["animations"]`` becomes ``Scene.AnimationCollection`` and a skinned mesh gets an
+  armature modifier. The ``Armature`` scope (a Blender armature *object* in the scene) has no
+  Maya counterpart, so it is left out.
 * A node without a mesh whose GEO type is one of the invisible classes
   (38, 40, 70-77: hardpoints, eyepoint, emitters) is presented as an eyepoint-style
   helper empty. Blender authors hardpoints as meshes; in Maya they are locators,
@@ -31,7 +34,7 @@ from . import authoring, axes, schema
 from .model import Node, Scene
 from .toolkit import ensure_toolkit
 
-SKIPPED_SCOPES = {"Animation", "Armature"}
+SKIPPED_SCOPES = {"Armature"}
 ORIENTATION_MESSAGE = (
     "Legacy VDF/SDF/GEO vehicle export expects the nose/front toward Maya -Z (Battlezone +Z). "
     "Direct Redux .mesh export uses the same Maya axes: nose toward -Z, Y up."
@@ -190,6 +193,46 @@ def _mesh_data(node: Node):
     return SimpleNamespace(vertices=vertices, polygons=polygons, materials=materials, shape_keys=None)
 
 
+class _Key:
+    def __init__(self, frame, value):
+        self.co = (float(frame), float(value))
+
+
+class _FCurve:
+    """data_path / keyframe_points / evaluate: all the validation reads of an F-curve."""
+
+    def __init__(self, data_path, series):
+        self.data_path = data_path
+        self.series = sorted((float(f), float(v)) for f, v in series)
+        self.keyframe_points = [_Key(f, v) for f, v in self.series]
+
+    def evaluate(self, frame):
+        series = self.series
+        if frame <= series[0][0]:
+            return series[0][1]
+        if frame >= series[-1][0]:
+            return series[-1][1]
+        for (f0, v0), (f1, v1) in zip(series, series[1:]):
+            if f0 <= frame <= f1:
+                return v0 if f1 == f0 else v0 + (frame - f0) / (f1 - f0) * (v1 - v0)
+        return series[-1][1]
+
+
+_ANIM_PATHS = {"pos": "location", "rot": "rotation_quaternion", "scale": "scale"}
+
+
+def _animation_data(anim: Optional[Dict[str, list]]):
+    if not anim:
+        return None
+    curves = []
+    for group, path in _ANIM_PATHS.items():
+        keys = anim.get(group) or []
+        width = len(keys[0][1]) if keys else 0
+        for i in range(width):
+            curves.append(_FCurve(path, [(frame, value[i]) for frame, value in keys]))
+    return SimpleNamespace(action=SimpleNamespace(fcurves=curves)) if curves else None
+
+
 class BlenderLikeObject:
     def __init__(self, node: Node, world: np.ndarray):
         self.name = node.name
@@ -203,8 +246,9 @@ class BlenderLikeObject:
         self.scale = tuple(float(v) for v in np.linalg.norm(local[:3, :3], axis=0))
         self.rotation_mode = "XYZ"
         self.rotation_euler = tuple(_euler_xyz(local[:3, :3]))
-        self.animation_data = None
-        self.modifiers: list = []
+        self.animation_data = _animation_data(node.anim)
+        skinned = node.mesh is not None and node.mesh.weights is not None
+        self.modifiers: list = [SimpleNamespace(type="ARMATURE")] if skinned else []
         self.constraints: list = []
         self.vertex_groups: list = []
 
@@ -251,7 +295,11 @@ def validate_scene(
     context = SimpleNamespace(
         scene=SimpleNamespace(
             objects=list(objects.values()),
-            AnimationCollection=[],
+            AnimationCollection=[
+                SimpleNamespace(Index=e.get("index", 0), Start=e.get("start", 0), Length=e.get("length", 0),
+                                Loop=e.get("loop", 0), Speed=e.get("speed", 1.0))
+                for e in (scene.meta.get("animations") or [])
+            ],
             bz_vloc_chunks=[],
             bz_damage_band_records=[],
         ),

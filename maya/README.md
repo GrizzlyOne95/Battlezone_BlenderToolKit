@@ -109,6 +109,36 @@ Texture import: `.mesh` import reads the sibling `.material` (diffuse colour, Di
 follows Blender's "Auto-load .map textures" (`ImportMapTextures`, `MapTextureDirectory`, `MapTextureZFS`: import folder, your folder,
 then the stock ZFS archive) with the toolkit's own palette and decoder code, and loads the converted `.png` into the shader.
 
+### Rigs and animation
+
+- **Redux skeletons.** Importing a `.mesh` that links a `.skeleton` builds the joints (bind pose = the bone's local TRS, in Ogre
+  space = Maya space), a `skinCluster` with the file's weights and the clips as keys on the joints. A `.skeleton` can also be
+  imported / exported on its own (menu: Import / Export Ogre Skeleton).
+- **Clips.** Each clip is keyed on its own stretch of the timeline in real seconds (the scene's frame rate decides the frame
+  numbers), the next clip starting one second after the previous one ends; the clip table (name, start, length) is kept in
+  `bzClips` on the root joint, so clip names and lengths survive a round trip. Ogre keys are offsets from the bind pose; Maya's
+  `jointOrient * rotate` composition is the same thing, so keys are exact (stock sweep tolerance 1e-4).
+- **Your own rig.** Every joint in the exported selection (or scene) is a bone; joints that did not come from an import get the
+  next free id, the bind pose is the pose at the start of the playback range, and keys without a clip table export as one clip
+  (`Take_001`). Imported joints keep their Ogre ids and names (`bzBoneId`, `bzBoneName`).
+- **Export** follows Blender's influence rules: bone ids are renumbered 0..n-1, each vertex keeps its 3 heaviest influences and
+  (with `renormalize_weights`, the default) they are scaled to sum to 1. `export_skeleton` / `export_animation` /
+  `ExportAnimations` are in the export dialog; as in Blender, animation export is off by default for the Redux path.
+  Meshes keep one submesh per material.
+- **Legacy ANIM (VDF / SDF).** The slot table (index, start, length, loop, speed, geo mask) sits on the model group; the keys sit
+  on the part transforms (`translate`, `rotate` as unrolled Euler with linear tangents, `scale` for the optional second
+  translation track) at the file's integer frames. Import sets the playback range; export reads the key frames back. Animated scenes are exported at the start of the playback
+  range: a keyed part's record matrix is its first key's pose (Maya shows that pose, so the stored record matrix of a stock file
+  can differ slightly from the re-exported one). Animated
+  parts should be direct children of exported parts (keys are the part's own local values).
+- **Panel.** The *Animation Slots* section edits the slot table (add / duplicate / remove / up / down / presets), shows
+  Blender's Animation Index Reference and runs Mirror Legacy Animation Keys (token matching such as `.L` -> `.R`, mirror axis,
+  keys relative to the rest poses, as Blender's formula). The Animation validation checks now run (loop pose mismatch, slot
+  length hints, animated parts with no slots, skinned meshes in legacy exports).
+- **Load Stock Clips / Auto-map** exist as `core.anim.stock_clip_table` / `auto_map` (Blender's own alias matching, e.g. the stock
+  idleEject / idleElect spelling). The rest of Blender's pilot-animation *patch* workflow (writing a patched stock skeleton from
+  Actions) is not ported: it is Blender-Action centric and Maya clips are exported with the normal skeleton export.
+
 ### Authoring rules for VDF export
 
 - Part names are at most 8 characters with the LOD digit (1-3) as the 4th character, for example
@@ -131,7 +161,11 @@ Maya space is Ogre space (Y up, right handed). Battlezone's own axes differ by a
 
 ## Limitations
 
-- Static only: no skeletons, skin weights or animation; the ANIM block and the animation checks are a later tier.
+- Redux poses / shape keys are not imported or exported (a warning is shown); at most 3 influences per vertex are written (the
+  engine's limit, as in Blender). Legacy ANIM keys are linear (no tangent data exists in the format). Stock clips whose keys run
+  more than 0.25 s past their declared length cannot be placed on the timeline and are not round-tripped exactly. Faces that
+  repeat a vertex cannot exist in Maya: a repeated neighbouring corner is collapsed (a quad `a b c c` becomes a triangle), other
+  faces are dropped on import. Attribute values outside Blender's hard min / max are clamped, as Blender does. The `Armature` validation scope has no Maya counterpart.
 - Not covered from Blender's panels: VLOC editing (entries are preserved verbatim), per-face GEO attributes (one default per part
   is kept instead), "Create Spinner Helper" / "Capture Raw VDF Matrix" / "Generate COL Boxes" operators.
 - Part LOD comes from the file's band (stored as `lod` / `slot` in `bzProps`); names that disagree with it (some stock parts do) are
@@ -148,7 +182,7 @@ Maya space is Ogre space (Y up, right handed). Battlezone's own axes differ by a
   drives their handlers (standalone controls hold no state, so values are fed to the handlers).
 - A stock GEO has several vertices per position (one per UV / normal index); the exported GEO welds equal (position, normal, UV)
   vertices, so the porter may produce somewhat fewer Redux vertices for the same triangles.
-- Not ported: the skeleton, pose and animation parts of the Redux export, the OgreXMLConverter fallback, Blender's `--onlyonce`-style
+- Not ported: pose data of the Redux export, the pilot-animation patch workflow, the OgreXMLConverter fallback, Blender's `--onlyonce`-style
   state outside the porter options.
 
 ## Tests
@@ -170,5 +204,8 @@ maya/
     attributes.py               authoring attributes <-> neutral props / model header
     panel.py                    dockable panel (controller + UI)
     menu.py                     menu items and their handlers
+    rig.py                      joints, skinCluster, clips (Redux skeleton <-> Maya)
+    legacy_anim.py              VDF / SDF ANIM keys on part transforms, key mirroring
+    animation_tools.py          slot table operations, mirror tokens
     core/                       Maya-free: model, axes, toolkit lookup, schema, authoring, validate, vdf_io, sdf_io, ogre_io
 ```
