@@ -604,6 +604,9 @@ def collect_materials(scene: Scene) -> Dict[str, dict]:
         info = {"ambient": [1.0] * 3, "diffuse": [1.0] * 3, "specular": [0.0] * 3, "emissive": [0.0] * 3}
         if shaders:
             shader = shaders[0]
+            explicit = _get_attr(shader, "bzMaterial")  # the Battlezone texture name typed on the material
+            if explicit:
+                info["map_texture"] = explicit
             colour = _colour_plug(shader)
             if colour:
                 diffuse = _plug_colour(colour, [1.0] * 3)
@@ -731,7 +734,7 @@ def export_legacy(kind: str, path: str, options: Optional[dict] = None) -> dict:
         if node is None or node.mesh is None:
             raise RuntimeError("select a mesh to export as GEO")
         _check_before_export(Scene(nodes=[node]), "GEO")
-        warnings = vdf_io.write_geo(node, path, plane)
+        warnings = vdf_io.write_geo(node, path, plane, scene.materials)
     else:
         _check_before_export(scene, kind)
         write_geos = not options.get("ExportVDFOnly" if kind == "VDF" else "ExportSDFOnly", False)

@@ -322,7 +322,7 @@ class VdfRoundTripTests(unittest.TestCase):
             records[rec.name] = rec
         body, dummy = records["tst11bdy"], records["tst11dmy"]
         np.testing.assert_allclose(body.boxhalfheight, (1.0, 1.0, 1.0), atol=TOL)
-        self.assertAlmostEqual(body.sphereradius, math.sqrt(3.0), places=5)
+        self.assertAlmostEqual(body.sphereradius, 2.0, places=5)  # export_vdf.py:62-79: largest absolute coordinate of the 0..2 cube
         self.assertEqual(dummy.sphereradius, 999.0)
         np.testing.assert_allclose(dummy.geocenter, (50.0, 50.0, 50.0))
 
@@ -769,7 +769,7 @@ class AuthoringFileTests(unittest.TestCase):
         self.assertAlmostEqual(radius({"bounds_mode": "PRESERVE", "authored_bounds": True}), 99.0, places=4)
         self.assertAlmostEqual(radius({"bounds_mode": "AUTO", "generate_collision": False}), 99.0, places=4)
         derived = radius({"bounds_mode": "RECALC"})
-        self.assertAlmostEqual(derived, 3 ** 0.5, places=4)
+        self.assertAlmostEqual(derived, 2.0, places=4)  # GenerateGEOCollisions: the largest absolute coordinate
         self.assertAlmostEqual(radius({"bounds_mode": "AUTO", "generate_collision": True}), derived, places=4)
         self.assertAlmostEqual(radius({"bounds_mode": "PRESERVE", "authored_bounds": False}), derived, places=4)
 
@@ -1619,11 +1619,11 @@ class MapTextureTests(unittest.TestCase):
         self._indexed_map(folder, "tex_a")
         path = os.path.join(folder, "eyepoint.vdf")
         scene = vdf_io.read_vdf(path)
-        self.assertEqual(set(scene.materials), {"tex_a"})
+        self.assertEqual({k for k, v in scene.materials.items() if v.get("texture_path")}, {"tex_a"})
         self.assertTrue(scene.materials["tex_a"]["texture_path"].endswith("tex_a.png"))
         self.assertEqual(scene.materials["tex_a"]["texture"], "tex_a.map")
         off = vdf_io.read_vdf(path, {"ImportMapTextures": False})
-        self.assertEqual(off.materials, {})
+        self.assertFalse(any(v.get("texture_path") for v in off.materials.values()))
         other = os.path.join(tmp, "textures")
         os.makedirs(other)
         self._indexed_map(other, "tex_b")
@@ -1891,7 +1891,8 @@ class StockSweepRegressionTests(unittest.TestCase):
         path = os.path.join(self.tmp, "pf.vdf")
         vdf_io.write_vdf(scene, path)
         back = {n.name: n for n in vdf_io.read_vdf(path).nodes}["abc11bdy"].mesh.face_data
-        self.assertEqual(back, scene.nodes[0].mesh.face_data)
+        for key, values in scene.nodes[0].mesh.face_data.items():
+            self.assertEqual(back[key], values, key)
 
     def test_header_name_is_written_as_authored_even_when_empty(self):
         scene = self._scene()
@@ -1923,6 +1924,138 @@ class StockSweepRegressionTests(unittest.TestCase):
         scene.nodes.append(Node("abc21zzz", "abc11bdy", axes.identity4(), KIND_PART, cube, {"type": 60}))
         warnings = vdf_io.write_vdf(scene, os.path.join(self.tmp, "lod.vdf"))
         self.assertTrue(any("no LOD1 part with the same name" in w for w in warnings))
+
+
+
+
+def _read_geo_file(path):
+    with open(path, "rb") as handle:
+        return GeoSerializer(handle).read()
+
+
+class ReviewFixTests(unittest.TestCase):
+    """Blender-parity fixes from the fresh-eyes review; each would have failed before."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="bzmaya_review_")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def _cube_scene(self, material="tex_a", materials=None):
+        cube = vdf_io.box_mesh((-1, -1, -1), (1, 1, 1))
+        cube.face_materials = [material] * 6
+        body = Node("abc11bdy", None, axes.identity4(), KIND_PART, cube, {"type": 60})
+        return Scene(nodes=[body], meta={"name": "x"}, materials=materials or {})
+
+    def _geo_faces(self, scene, **kwargs):
+        path = os.path.join(self.tmp, "t.vdf")
+        vdf_io.write_vdf(scene, path, **kwargs)
+        return _read_geo_file(os.path.join(self.tmp, "abc11bdy.geo")).face_list
+
+    # 1. batch Redux export keeps the skeleton and the parent transform
+    def test_batch_redux_export_bakes_parents_and_writes_the_skeleton(self):
+        from bz98maya.core import redux
+
+        parent = Node("grp", None, _identity_translated(10.0, 0.0, 0.0), KIND_EMPTY, None, {})
+        cube = vdf_io.box_mesh((-1, 0, -1), (1, 2, 1))
+        cube.face_materials = ["tex_a"] * 6
+        cube.weights = [[(0, 0.5), (1, 0.5)] for _ in cube.positions]
+        child = Node("rig", "grp", axes.identity4(), KIND_PART, cube, {})
+        scene = Scene(nodes=[parent, child])
+        scene.skeleton = _two_bone_skeleton()
+        redux.write_bzr_mesh(scene, os.path.join(self.tmp, "batch.mesh"),
+                             {"batch_export": True, "export_skeleton": True, "export_materials": False})
+        out = os.path.join(self.tmp, "rig.mesh")
+        self.assertTrue(os.path.exists(out))
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, "rig.skeleton")))
+        back = ogre_io.read_ogre_mesh(out, import_materials=False)
+        xs = [p[0] for p in back.nodes[0].mesh.positions]
+        self.assertAlmostEqual(min(xs), 9.0, places=4)  # the parent's +10 is baked in
+        self.assertTrue(back.nodes[0].mesh.weights and back.nodes[0].mesh.weights[0])
+
+    # 2. a preserved damage band whose part is gone is skipped, not moved to another part
+    def test_damage_band_of_a_missing_part_is_dropped_with_a_warning(self):
+        import base64
+
+        scene = self._cube_scene()
+        data = base64.b64encode(bytes(100)).decode("ascii")
+        scene.meta["preserved"] = {"plan": [], "chunks": [], "vlocs": [],
+                                   "bands": [{"part": "zzz11gone", "slot": 0, "band": 4, "data": data}]}
+        warnings = vdf_io.write_vdf(scene, os.path.join(self.tmp, "d.vdf"))
+        self.assertTrue(any("damage band" in w and "zzz11gone" in w for w in warnings), warnings)
+
+    # 3. face colour = material diffuse * 255; imported colours are kept per face
+    def test_face_colour_follows_blenders_material_rule(self):
+        faces = self._geo_faces(self._cube_scene(materials={"tex_a": {"diffuse": [0.5, 0.25, 1.0]}}))
+        self.assertEqual({(f.color.r, f.color.g, f.color.b) for f in faces}, {(127, 63, 255)})
+        faces = self._geo_faces(self._cube_scene(material=""))
+        self.assertEqual({(f.color.r, f.color.g, f.color.b) for f in faces}, {(255, 255, 255)})  # no material: white
+
+    def test_imported_face_colours_are_preserved_per_face_by_default(self):
+        scene = self._cube_scene()
+        scene.nodes[0].mesh.face_data = {"color": [[10, 20, 30]] * 3 + [[40, 50, 60]] * 3}
+        faces = self._geo_faces(scene)
+        self.assertEqual([(f.color.r, f.color.g, f.color.b) for f in faces][::3], [(10, 20, 30), (40, 50, 60)])
+        path = os.path.join(self.tmp, "t.vdf")
+        kept = vdf_io.read_vdf(path).nodes[0].mesh
+        self.assertEqual(kept.face_data["color"][0], [10, 20, 30])
+        loose = vdf_io.read_vdf(path, {"PreserveFaceColors": False})
+        self.assertNotIn("color", loose.nodes[0].mesh.face_data)
+        self.assertEqual(loose.materials["tex_a"]["diffuse"], [10 / 255.0, 20 / 255.0, 30 / 255.0])
+
+    # 4. face plane modes (export_geo.py:271-286)
+    def test_face_plane_modes_current_and_preserve(self):
+        scene = self._cube_scene()
+        scene.nodes[0].mesh.face_data = {"plane": [[0.1, 0.2, 0.3, 4.5]] * 6}
+        current = self._geo_faces(scene, face_plane_mode="CURRENT")
+        self.assertEqual({f.plane.distance for f in current}, {1.0})  # face centre, d = 1.0
+        kept = self._geo_faces(scene, face_plane_mode="PRESERVE")
+        self.assertEqual({round(f.plane.distance, 4) for f in kept}, {4.5})
+        self.assertAlmostEqual(kept[0].plane.surface_normal.y, 0.2, places=5)
+        bare = self._geo_faces(self._cube_scene(), face_plane_mode="PRESERVE")  # nothing imported: falls back
+        self.assertEqual({f.plane.distance for f in bare}, {1.0})
+
+    # 5. texture names (export_geo.py:35-38, 205-222)
+    def test_explicit_texture_names_are_written_as_typed_derived_ones_are_derived(self):
+        scene = self._cube_scene(material="AVDEF4.MAP", materials={"AVDEF4.MAP": {"map_texture": "AVDEF4.MAP"}})
+        self.assertEqual({f.texture_name for f in self._geo_faces(scene)}, {"AVDEF4.MAP"})
+        scene = self._cube_scene(material="My Tex.png")
+        self.assertEqual({f.texture_name for f in self._geo_faces(scene)}, {"my_tex"})
+
+    # 6. automatic sphere radius = largest absolute coordinate (export_vdf.py:62-79)
+    def test_auto_sphere_radius_is_the_largest_absolute_coordinate(self):
+        cube = vdf_io.box_mesh((0, 0, 0), (2, 2, 2))
+        self.assertAlmostEqual(vdf_io._bounds_from_mesh(cube)[1], 2.0, places=6)
+
+    # 7. silent discards now warn
+    def test_skinned_mesh_without_skeleton_and_dropped_influences_warn(self):
+        from bz98maya.core import redux
+
+        cube = vdf_io.box_mesh((-1, 0, -1), (1, 2, 1))
+        cube.face_materials = ["tex_a"] * 6
+        cube.weights = [[(0, 0.5), (99, 0.5)] for _ in cube.positions]
+        scene = Scene(nodes=[Node("rig", None, axes.identity4(), KIND_PART, cube, {})])
+        warnings = redux.write_bzr_mesh(scene, os.path.join(self.tmp, "a.mesh"), {"export_materials": False})
+        self.assertTrue(any("without its skin weights" in w for w in warnings), warnings)
+        scene.skeleton = _two_bone_skeleton()
+        warnings = redux.write_bzr_mesh(scene, os.path.join(self.tmp, "b.mesh"),
+                                        {"export_skeleton": True, "export_materials": False})
+        self.assertTrue(any("outside the exported skeleton" in w for w in warnings), warnings)
+
+    def test_trailing_bytes_on_import_and_dropped_scale_keys_warn(self):
+        path = os.path.join(self.tmp, "t.vdf")
+        vdf_io.write_vdf(self._cube_scene(), path)
+        with open(path, "ab") as handle:
+            handle.write(b"abc")
+        self.assertTrue(any("trailing byte" in w for w in vdf_io.read_vdf(path).warnings))
+        scene = _vehicle_scene_with_anim()
+        scene.nodes[1].anim["scale"] = [(0, (1.0, 1.0, 1.0)), (20, (2.0, 2.0, 2.0))]
+        warnings = vdf_io.write_vdf(scene, os.path.join(self.tmp, "s.vdf"))
+        self.assertTrue(any("scale keys are not written" in w for w in warnings), warnings)
+        sdf = os.path.join(self.tmp, "t.sdf")
+        sdf_io.write_sdf(_vehicle_scene_with_anim(), sdf)
+        with open(sdf, "ab") as handle:
+            handle.write(b"ZZZZ" + struct.pack("<i", 12) + b"abcd")
+        self.assertTrue(any("unrecognised chunk" in w for w in sdf_io.read_sdf(sdf).warnings))
 
 
 

@@ -98,6 +98,7 @@ def _find_case_insensitive(folder: str, filename: str) -> Optional[str]:
 # --- GEO <-> Mesh ----------------------------------------------------------
 
 FACE_DATA_KEYS = ("unknown", "shade", "texture", "xlu", "parent", "node")  # Blender's bz_face_* attributes
+FACE_EXTRA_KEYS = ("color", "plane")  # the face colour (Blender: its material) and the imported plane (bz_face_plane_*)
 
 def geo_to_mesh(geo) -> Mesh:
     mesh = Mesh()
@@ -106,7 +107,7 @@ def geo_to_mesh(geo) -> Mesh:
     mesh.positions = [axes.bz_point_to_maya(p) for p in positions]
     loop_normals = []
     loop_uvs = []
-    data: Dict[str, List[int]] = {key: [] for key in FACE_DATA_KEYS}
+    data: Dict[str, list] = {key: [] for key in FACE_DATA_KEYS + FACE_EXTRA_KEYS}
     for face in geo.face_list:
         nodes = face.wireframe
         if len(nodes) < 3:
@@ -127,6 +128,9 @@ def geo_to_mesh(geo) -> Mesh:
         data["xlu"].append(int(face.xluscent_type))
         data["parent"].append(int(face.parent_face_index))
         data["node"].append(int(face.tree_branch))
+        data["color"].append([int(face.color.r), int(face.color.g), int(face.color.b)])
+        data["plane"].append([float(face.plane.surface_normal.x), float(face.plane.surface_normal.y),
+                              float(face.plane.surface_normal.z), float(face.plane.distance)])
         for n in nodes:
             loop_normals.append(axes.bz_normal_to_maya(normals[n.vertex_normal_index]))
             loop_uvs.append(axes.bz_uv_to_maya((n.uv.u, n.uv.v)))
@@ -169,7 +173,16 @@ def with_normals(mesh: Mesh) -> List[Tuple[float, float, float]]:
     return out
 
 
-def texture_name(material: str) -> str:
+def texture_name(material: str, materials: Optional[Dict[str, dict]] = None) -> str:
+    """The face's texture name as export_geo.py:205-222 writes it.
+
+    An explicit Battlezone texture name (``map_texture``: the shader's ``bzMaterial``) is written as typed, only
+    stripped of surrounding spaces; the name derived from the material or image (``_derive_legacy_texture_name``,
+    export_geo.py:35-38) loses its extension, spaces and case and is cut to 8 characters.
+    """
+    explicit = str(((materials or {}).get(material) or {}).get("map_texture") or "").strip()
+    if explicit:
+        return explicit
     base = os.path.splitext((material or "").strip())[0]
     return base.replace(" ", "_").lower()[:MAX_TEXTURE_CHARS]
 
@@ -182,8 +195,8 @@ FACE_PLANE_MODES = ("STOCK", "CURRENT", "PRESERVE", "RECOMPUTE", "DX_FIX")
 def face_plane(mode: str, maya_points, bz_points) -> Tuple[Tuple[float, float, float], float]:
     """The four per-face GEO plane floats, by Blender's ``face_plane_mode`` (export_geo.py).
 
-    CURRENT / PRESERVE (no imported plane data exists in Maya): the face centre in Blender
-    axes and ``d = 1.0``. RECOMPUTE / DX_FIX: the normalised first-three-vertex normal in GEO
+    CURRENT (and PRESERVE for a face with no imported plane): the face centre in Blender
+    axes and ``d = 1.0`` (export_geo.py:282-286). RECOMPUTE / DX_FIX: the normalised first-three-vertex normal in GEO
     coordinates and ``d = +n . p0`` (Blender's ``_compute_face_plane``). STOCK (the default
     here, and not a Blender option): stock files' own convention ``d = -n . p0`` with the
     winding-based normal.
@@ -201,7 +214,24 @@ def face_plane(mode: str, maya_points, bz_points) -> Tuple[Tuple[float, float, f
     return (float(n[0]), float(n[1]), float(n[2])), -float(np.dot(n, np.array(bz_points[0])))
 
 
-def mesh_to_geo(name: str, mesh: Mesh, props: Optional[Dict[str, object]] = None, face_plane_mode: str = "STOCK"):
+def face_colour(per_face, face_index: int, material: str, materials: Optional[Dict[str, dict]]) -> Tuple[int, int, int]:
+    """export_geo.py:195-229: the face's material diffuse * 255 (white without a material).
+
+    A colour kept per face from import (Blender's ``<map>-Color(r,g,b)`` materials) is that colour.
+    """
+    if per_face and "color" in per_face:
+        return tuple(int(v) for v in per_face["color"][face_index])
+    info = (materials or {}).get(material) if material else None
+    if info is None:
+        return (255, 255, 255)
+    diffuse = info.get("diffuse")
+    if not diffuse:
+        return DEFAULT_FACE_COLOR  # Blender's default material colour, 0.8 * 255
+    return tuple(int(float(c) * 255) for c in diffuse[:3])
+
+
+def mesh_to_geo(name: str, mesh: Mesh, props: Optional[Dict[str, object]] = None, face_plane_mode: str = "STOCK",
+                materials: Optional[Dict[str, dict]] = None):
     """Build a bzgeo.Geo. Vertices are welded on (position, normal, UV): a GEO vertex carries one UV.
 
     ``props`` supplies the header words and the per-face defaults
@@ -226,28 +256,35 @@ def mesh_to_geo(name: str, mesh: Mesh, props: Optional[Dict[str, object]] = None
         "texture": int(props.get("face_texture", 0)), "xlu": int(props.get("face_xlu", 0)),
         "parent": int(props.get("face_parent", 0)), "node": int(props.get("face_node", 0)),
     }
-    per_face = mesh.face_data if mesh.face_data and all(
-        len(mesh.face_data.get(k, ())) == len(mesh.faces) for k in FACE_DATA_KEYS) else None
+    per_face = None
+    if mesh.face_data:
+        per_face = {k: v for k, v in mesh.face_data.items() if len(v) == len(mesh.faces)}
+        if not all(k in per_face for k in FACE_DATA_KEYS):  # the integer words need all six lists
+            per_face = {k: v for k, v in per_face.items() if k in FACE_EXTRA_KEYS} or None
 
     def word(key: str, face_index: int) -> int:  # per-face value kept from import, else the part default
-        return int(per_face[key][face_index]) if per_face else defaults[key]
+        return int(per_face[key][face_index]) if per_face and key in per_face else defaults[key]
 
     loop = 0
     for face_index, face in enumerate(mesh.faces):
         bz_points = [axes.maya_point_to_bz(mesh.positions[i]) for i in face]
         # Stock GEOs store plane normal = normalize(cross(b - a, c - a)) and d = -n . a
         # (checked on shipped files); Blender's own modes are in face_plane().
-        plane_normal, plane_d = face_plane(face_plane_mode, [mesh.positions[i] for i in face], bz_points)
+        if face_plane_mode == "PRESERVE" and per_face and "plane" in per_face:  # export_geo.py:271-281
+            plane_normal, plane_d = tuple(per_face["plane"][face_index][:3]), float(per_face["plane"][face_index][3])
+        else:
+            plane_normal, plane_d = face_plane(face_plane_mode, [mesh.positions[i] for i in face], bz_points)
+        material = mesh.face_materials[face_index] if mesh.face_materials else ""
 
         gface = geo.create_face(face_index)
-        gface.color = spacial.Color3(*DEFAULT_FACE_COLOR)
+        gface.color = spacial.Color3(*face_colour(per_face, face_index, material, materials))
         gface.plane = bzgeo.SurfacePlane(spacial.Vector3(*plane_normal), plane_d)
         unknown = word("unknown", face_index)
         gface.poly_area = 0.0 if unknown == 0 else struct.unpack("<f", struct.pack("<i", unknown))[0]
         gface.shade_type = word("shade", face_index) & 0xFF
         gface.texture_type = word("texture", face_index) & 0xFF
         gface.xluscent_type = word("xlu", face_index) & 0xFF
-        gface.texture_name = texture_name(mesh.face_materials[face_index])
+        gface.texture_name = texture_name(material, materials)
         gface.parent_face_index = word("parent", face_index)
         gface.tree_branch = word("node", face_index)
         for vi in face:
@@ -278,7 +315,7 @@ def _bounds_from_mesh(mesh: Optional[Mesh]):
     lo, hi = pts.min(axis=0), pts.max(axis=0)
     center = (lo + hi) / 2.0
     half = np.maximum(np.abs(lo - center), np.abs(hi - center))
-    radius = float(np.linalg.norm(pts - center, axis=1).max())
+    radius = float(np.abs(pts).max())  # export_vdf.py:62-79: the largest absolute coordinate
     return [float(v) for v in center], radius, [float(v) for v in half]
 
 
@@ -296,7 +333,7 @@ def read_geo(path: str, import_options: Optional[Dict[str, object]] = None) -> S
     return scene
 
 
-def write_geo(node: Node, path: str, face_plane_mode: str = "STOCK") -> List[str]:
+def write_geo(node: Node, path: str, face_plane_mode: str = "STOCK", materials: Optional[Dict[str, dict]] = None) -> List[str]:
     """Write one node's mesh as a .geo (local space, no hierarchy)."""
     _, _, _, _, GeoSerializer = _modules()
     if node.mesh is None or not node.mesh.faces:
@@ -304,7 +341,7 @@ def write_geo(node: Node, path: str, face_plane_mode: str = "STOCK") -> List[str
     warnings = _geo_warnings(node.name, node.mesh)
     name = os.path.splitext(os.path.basename(path))[0]
     with open(path, "wb") as handle:
-        GeoSerializer(handle).write(mesh_to_geo(name, node.mesh, node.props, face_plane_mode))
+        GeoSerializer(handle).write(mesh_to_geo(name, node.mesh, node.props, face_plane_mode, materials))
     return warnings
 
 
@@ -507,6 +544,7 @@ class Layout:
         self.helpers: Dict[str, Node] = {}  # "inner" / "outer" collision helper nodes
         self.helper_worlds: Dict[str, list] = {}
         self.matrices: Dict[str, list] = {}  # record matrix (12 floats) written per part
+        self.materials: Dict[str, dict] = {}  # the scene's material info (diffuse, explicit texture name)
 
     def lod(self, name: str) -> int:
         return self.lods[name]
@@ -551,6 +589,7 @@ def make_layout(scene: Scene, warnings: List[str]) -> Layout:
     the VDF collision helpers, not parts.
     """
     layout = Layout()
+    layout.materials = scene.materials
     entries: Dict[str, Node] = {}
     lods: Dict[str, int] = {}
     for node in scene.nodes:
@@ -743,7 +782,7 @@ def fill_records(layout: Layout, folder: str, warnings: List[str], new_record, s
             if has_mesh:
                 warnings.extend(_geo_warnings(name, node.mesh))
                 if write_geos:
-                    geo = mesh_to_geo(name, node.mesh, props, face_plane_mode)
+                    geo = mesh_to_geo(name, node.mesh, props, face_plane_mode, layout.materials)
                     with open(os.path.join(folder, name + ".geo"), "wb") as handle:
                         GeoSerializer(handle).write(geo)
                 if lod == 1:
@@ -761,7 +800,26 @@ def _b64(data: bytes) -> str:
     return base64.b64encode(bytes(data)).decode("ascii")
 
 
-DEFAULT_IMPORT_OPTIONS = {"ImportMapTextures": True, "MapTextureDirectory": "", "MapTextureZFS": ""}
+DEFAULT_IMPORT_OPTIONS = {"ImportMapTextures": True, "MapTextureDirectory": "", "MapTextureZFS": "", "PreserveFaceColors": True}
+
+
+def _face_materials(scene: Scene, preserve_colours: bool) -> None:
+    """Texture names read from a GEO are explicit Battlezone texture names; face colours follow Blender's import.
+
+    import_geo.py:1139-1175: with PreserveFaceColors every colour is its own material (kept here per face);
+    without it a texture name's material takes the colour of the first face that uses it.
+    """
+    for node in scene.nodes:
+        mesh = node.mesh
+        if mesh is None:
+            continue
+        for name in {m for m in mesh.face_materials if m}:
+            scene.materials.setdefault(name, {})["map_texture"] = name
+        if not preserve_colours and mesh.face_data and "color" in mesh.face_data:
+            for name, colour in zip(mesh.face_materials, mesh.face_data["color"]):
+                if name and "diffuse" not in scene.materials[name]:
+                    scene.materials[name]["diffuse"] = [c / 255.0 for c in colour]
+            del mesh.face_data["color"]
 
 
 def attach_map_textures(scene: Scene, folder: str, options: Optional[Dict[str, object]]) -> None:
@@ -771,6 +829,7 @@ def attach_map_textures(scene: Scene, folder: str, options: Optional[Dict[str, o
     the result is ``scene.materials[name]["texture_path"]``.
     """
     options = dict(DEFAULT_IMPORT_OPTIONS, **(options or {}))
+    _face_materials(scene, bool(options["PreserveFaceColors"]))
     if not options["ImportMapTextures"]:
         return
     from . import mapload
@@ -796,6 +855,8 @@ def read_vdf(path: str, import_options: Optional[Dict[str, object]] = None) -> S
         parsed = vdf_file.parse_vdf(handle.read())
 
     scene = Scene()
+    if parsed.trailing_garbage.strip(b"\0"):  # import_vdf.py:219; Blender's exporter does not write it back either
+        scene.warnings.append("%d unparsed trailing byte(s) after the VDF sections are not kept" % len(parsed.trailing_garbage))
     scene.meta = {
         "format": "vdf",
         "name": parsed.vdfc_name,
@@ -955,10 +1016,10 @@ def write_vdf(scene: Scene, path: str, write_geos: bool = True, face_plane_mode:
         vdf_classes.serialize_section(null_geo), LOD_BANDS, BAND_COUNT, empty_record=bytes(100),
         write_geos=write_geos, face_plane_mode=face_plane_mode,
     )
-    _write_damage_bands(model.records, layout, geocount, preserved, semantics)
+    _write_damage_bands(model.records, layout, geocount, preserved, semantics, warnings)
 
     block = anim_io.build_anim(
-        layout.entries, layout.matrices, meta, vdf_classes, os.path.splitext(os.path.basename(path))[0]
+        layout.entries, layout.matrices, meta, vdf_classes, os.path.splitext(os.path.basename(path))[0], warnings
     ) if export_animations else None
     plan = list(model.plan)
     if block is not None:
@@ -985,7 +1046,7 @@ def write_vdf(scene: Scene, path: str, write_geos: bool = True, face_plane_mode:
     return warnings
 
 
-def _write_damage_bands(records, layout: Layout, geocount: int, preserved, semantics) -> None:
+def _write_damage_bands(records, layout: Layout, geocount: int, preserved, semantics, warnings) -> None:
     for slot, (_key, lod1_name) in enumerate(layout.placed):
         names = (layout.entries[lod1_name].props or {}).get("damage") or []
         for state in semantics.AUTHORED_DAMAGE_STATES:
@@ -995,7 +1056,11 @@ def _write_damage_bands(records, layout: Layout, geocount: int, preserved, seman
                     records[slot], variant[:8]
                 )
     for entry in preserved.get("bands", []):
-        slot = layout.slot_of(entry.get("part") or "")
+        owner = entry.get("part") or ""
+        slot = layout.slot_of(owner)
+        if slot is None and owner:  # its part is gone: the stored slot number would hit another part
+            warnings.append("damage band %s of %s dropped: that part is not exported" % (entry.get("band"), owner))
+            continue
         if slot is None:
             slot = int(entry.get("slot", -1))
         band = int(entry.get("band", -1))

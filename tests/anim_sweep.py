@@ -12,7 +12,7 @@
 Every ``.vdf`` / ``.sdf`` under the folders that carries an ANIM block is read with the core,
 imported into Maya, exported again and re-read; the slot table and every part's keys must come
 back (frames equal, values within 1e-3). Parts the writer skips by its own naming rules
-(LOD2/3 parts without a LOD1 twin) are a known drop. One JSON line per file. Stock files are
+(LOD2/3 parts without a same-name LOD1 twin, keyed or not) are a known drop. One JSON line per file. Stock files are
 never committed.
 """
 
@@ -48,16 +48,23 @@ maya_io.BLOCK_ON_ERRORS = False
 
 
 def compare(source, back):
+    """(problems, known): known = keyed or unkeyed LOD2/3 parts with no same-name LOD1 twin (Blender drops those too)."""
     problems = []
     known = []
     if source.meta.get("animations") != back.meta.get("animations"):
         problems.append("slot table differs")
     theirs = {n.name.lower(): n for n in back.nodes}
+    ours = {n.name.lower() for n in source.nodes}
     for node in source.nodes:
         other = theirs.get(node.name.lower())
         if other is None:
-            if node.anim:
+            name = node.name.lower()
+            lod = int((node.props or {}).get("lod") or 1)
+            twin = name[:3] + "1" + name[4:]
+            if lod > 1 and twin not in ours:
                 known.append(node.name)
+            else:
+                problems.append("%s: part missing after the round trip" % node.name)
             continue
         if bool(node.anim) != bool(other.anim):
             problems.append("%s: keys %s -> %s" % (node.name, bool(node.anim), bool(other.anim)))
@@ -92,7 +99,7 @@ def run_file(path):
     if problems:
         return "fail", problems[:6]
     if known:
-        return "known-drop", "keyed part(s) the writer skips by its naming rules: %s" % ", ".join(known[:4])
+        return "known-drop", "LOD2/3 part(s) with no same-name LOD1 twin, which Blender does not export either: %s" % ", ".join(known[:4])
     return "pass", ""
 
 

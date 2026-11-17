@@ -149,8 +149,8 @@ then the stock ZFS archive) with the toolkit's own palette and decoder code, and
   75 flame, 76 smoke, 77 dust, 40 eyepoint, 38 headlight).
 - `inner_col` / `outer_col` meshes are the VDF collision helpers: an import creates them from the COLP box, an export writes
   COLP from them (the parts' bounding box when they are missing).
-- Texture names come from the shading group: the `bzMaterial` attribute, else the connected file texture's name,
-  else the material name; truncated to 8 characters on VDF export.
+- Texture names come from the shading group: the `bzMaterial` attribute (written as typed), else the connected file texture's
+  name, else the material name (these two derived names lose extension and case and are cut to 8 characters, as in Blender).
 - Intermediate organising groups are fine: each part's transform is written relative to its nearest exported ancestor.
 
 ### Conventions
@@ -166,30 +166,56 @@ Maya space is Ogre space (Y up, right handed). Battlezone's own axes differ by a
   more than 0.25 s past their declared length cannot be placed on the timeline and are not round-tripped exactly. Faces that
   repeat a vertex cannot exist in Maya: a repeated neighbouring corner is collapsed (a quad `a b c c` becomes a triangle), other
   faces are dropped on import. Attribute values outside Blender's hard min / max are clamped, as Blender does. The `Armature` validation scope has no Maya counterpart.
-- Not covered from Blender's panels: VLOC editing (entries are preserved verbatim), per-face GEO attributes (one default per part
-  is kept instead), "Create Spinner Helper" / "Capture Raw VDF Matrix" / "Generate COL Boxes" operators.
+- Not covered from Blender's panels: VLOC editing (entries are preserved verbatim), "Create Spinner Helper" / "Capture Raw VDF Matrix" / "Generate COL Boxes" operators.
 - Part LOD comes from the file's band (stored as `lod` / `slot` in `bzProps`); names that disagree with it (some stock parts do) are
   kept as they are. SDF files that repeat the LOD1 records in the LOD2/3 bands are folded into one set of parts and written back
   with those bands empty.
-- Same as Blender (found by a sweep of every stock VDF / SDF / `.mesh`; the sweep compares the re-exported file with the source):
-  - `.mesh` bounds and radius are recomputed from the vertices (stock files carry padded bounds); triangles that repeat a vertex are
-    dropped; a mesh without normals gains them (Maya meshes always have normals).
-  - Per-face legacy GEO words (unknown, shade, texture type, translucency, BSP parent / branch) are kept as `bzFaceData` on the part
-    while its face count is unchanged (they win over the part's default fields until you delete that attribute); face colour is rewritten as 204,204,204 and the face plane is recomputed.
-  - A LOD2/3 part is paired with the LOD1 part of the same name (4th character swapped); one with no twin is not exported, whatever
-    slot the source file had it in. Slots are written parents first (spinner helpers right after their target), LOD parts' parents are
-    renamed to their own LOD, and record names are lower-cased.
-  - A face texture name loses its extension (`avdef4.MAP` -> `avdef4`), is lower-cased and cut to 8 characters.
-  - COLP is kept as the inner / outer boxes (min / max per axis), not as the raw 12 floats.
-  - Only the fixed EXIT sections follow the data (two, three with an ANIM block); other trailing bytes of a source file are not kept.
-  - `SDFTime` is limited to +-500000 and string fields end at their first NUL (stock files carry garbage after it).
-  - A spinner part keeps its axis and speed, not the rotation rows of its record.
+- Same as Blender (a sweep of every stock VDF / SDF / `.mesh` compares the re-exported file with the source; each claim cites the
+  `bz98tools` code it follows):
+  - `.mesh` bounds and radius are recomputed from the vertices (`ogrefast/pure/kenshi_compat.py:403-410`), so padded stock bounds
+    shrink. The automatic GEO sphere radius is the largest absolute coordinate, not the distance from the centre
+    (`export_vdf.py:62-79`).
+  - Per-face legacy GEO words (unknown, shade, texture type, translucency, BSP parent / branch) and the imported face plane are kept
+    as `bzFaceData` on the part while its face count is unchanged, like Blender's `bz_face_*` mesh attributes
+    (`import_geo.py:1091-1117`, `export_geo.py:121-131`, `255-275`). They win over the part's default fields until you delete that
+    attribute.
+  - Face colour is the face material's diffuse colour * 255, white without a material (`export_geo.py:224-229`). An imported GEO
+    keeps each face's colour (Blender makes a `<map>-Color(r,g,b)` material per colour, `import_geo.py:1139-1160`; the import option
+    `PreserveFaceColors`, default on, turns this off and gives each texture the colour of its first face).
+  - Face plane, option `face_plane_mode` (`export_geo.py:271-286`): `CURRENT` (the default) writes the face centre in Blender axes
+    with `d = 1.0`; `PRESERVE` re-emits the imported plane, and falls back to `CURRENT` for a face without one; `RECOMPUTE` /
+    `DX_FIX` compute the first-three-vertex normal and `d = +n.p0`. `STOCK` is a plug-in extra (stock files' `d = -n.p0` from the
+    winding), not a Blender mode.
+  - A texture name typed on the material (the shader's `bzMaterial`, which an import fills) is written as typed; only a name derived
+    from the material or its image loses its extension, spaces and case and is cut to 8 characters (`export_geo.py:35-38`,
+    `205-222`).
+  - A LOD2/3 part is paired with the LOD1 part of the same name (4th character swapped) and has no slot of its own, so one without a
+    twin is not exported, whatever slot the source file gave it (`export_vdf.py:341-352`, `616-642`). Slots are written parents first,
+    spinner helpers right after their target (`export_vdf.py:118-190`, `603-640`), record names are lower-cased
+    (`export_vdf.py:345`) and a LOD part's parent is renamed to its own LOD (`export_transforms.py:54`).
+  - COLP is written from the `inner_col` / `outer_col` boxes (min / max per axis), not from the raw 12 floats
+    (`export_vdf.py:309-328`).
+  - Only the fixed EXIT sections follow the data, two (three with an ANIM block; `export_sdf.py:578-580`). Blender's importer
+    captures other trailing chunks (`import_sdf.py:71-102`, `import_vdf.py:219`) but its SDF exporter reads a collection attribute
+    that does not exist (`export_sdf.py:585-592`) and the VDF exporter never writes `trailing_garbage`, so they are lost there too;
+    the plug-in warns on import.
+  - `SDFTime` is limited to +-500000 (`_addon_core.py:1803-1808`).
+  - A spinner part is read as axis and speed from the first three floats of its record (`import_vdf.py:441-457`); its rotation rows
+    are not kept (use the raw matrix for exact records).
+  - Scale keys are only written with the Translation2 track on (`export_vdf.py:578`); the plug-in warns when it drops them.
+- Maya-specific drops (Blender may behave differently):
+  - Maya cannot hold a face that repeats a vertex: a repeated neighbouring corner is collapsed (a quad `a b c c` becomes a triangle),
+    other such faces are dropped on import; the same triangles are dropped from `.mesh` files. A mesh without normals gains them
+    (Maya meshes always have normals).
+  - Attribute strings end at their first NUL (stock SDFs carry garbage after `null`); attribute numbers outside their Blender min / max
+    are clamped.
   - A source whose parent chain loops is imported without the looping parent; an SDF with no parts cannot be exported.
   - A parent name that matches no part (or the part itself) is written as `WORLD`; NaN normals / UVs in a source GEO come out as
-    whatever Maya holds; a part with an empty GEO is written without a `.geo` file; damage bands and unused bands are not kept.
+    whatever Maya holds; a part with an empty GEO is written without a `.geo` file; records in the unused SGEO bands 1 / 3 / 5 are
+    ignored.
+  - A damage band stored with its part is dropped, with a warning, when that part is not exported.
+  - A keyed part's record matrix is its first-key pose (the scene is read at the start of the playback range).
 - A few stock `.mesh` files use `MeshSerializer_v1.40`, which the toolkit's reader does not support (so neither does the plug-in).
-- Spinner (type 15) parts keep their spin axis and speed but not an editable rotation; use the raw matrix for exact records.
-- Face colour is written as 204,204,204; the face plane is recomputed from the winding (stock convention `d = -n.a`).
 - Normals are applied as locked per-face-vertex normals.
 - The winding / normal conventions were validated against stock GEOs and `.mesh` files outside the committed tests (no stock
   assets are committed); the tests only check self-consistency on synthetic data.

@@ -260,8 +260,7 @@ class MayaCase(unittest.TestCase):
                 np.testing.assert_allclose(p1, p0, atol=TOL, err_msg=name)
                 if uv0 is not None:
                     np.testing.assert_allclose(uv1, uv0, atol=TOL, err_msg=name)
-                expected = m0.lower()[:8] if legacy else m0
-                self.assertEqual(m1.lower() if legacy else m1, expected, name)
+                self.assertEqual(m1, m0, name)  # an explicit texture name is written as typed (export_geo.py:210-222)
 
     # --- legacy round trip (VDF / SDF) ---------------------------------------
 
@@ -872,7 +871,7 @@ class ToolTests(MayaCase):
         np.testing.assert_allclose(cmds.getAttr(cube + ".bzGeoCenter")[0], (0, 0, 0), atol=1e-5)
         # BZ half extents: x 1, y (up) 2, z (forward) 3
         np.testing.assert_allclose(cmds.getAttr(cube + ".bzBoxHalfHeight")[0], (1, 2, 3), atol=1e-5)
-        self.assertAlmostEqual(cmds.getAttr(cube + ".bzSphereRadius"), (1 + 4 + 9) ** 0.5, places=4)
+        self.assertAlmostEqual(cmds.getAttr(cube + ".bzSphereRadius"), 3.0, places=4)  # largest absolute coordinate (export_vdf.py:62-79)
 
     def test_standalone_geo_import_and_export(self):
         folder = os.path.join(self.tmp, "geo")
@@ -1446,6 +1445,59 @@ class StockQuirkTests(MayaCase):
         maya_io.export_vdf(out, {})
         back = {n.name: n for n in vdf_io.read_vdf(out).nodes}["abc11bdy"].mesh.face_data
         self.assertEqual(back["parent"], [-1, 0, 1, 2, 3, 4])
+
+
+class ReviewFixMayaTests(MayaCase):
+    def test_batch_redux_export_of_a_parented_skinned_mesh_keeps_parent_and_skeleton(self):
+        rig = RigAndAnimationTests("test_standalone_skeleton_import_export_roundtrip")
+        rig.tmp = self.tmp
+        path, _scene = rig._skinned_mesh()
+        self.inject(menu.import_mesh, path)
+        body = [t for t in cmds.ls(type="transform", long=True) if t.endswith("|rig")][0]
+        holder = cmds.polyCube(name="holder")[0]
+        body = cmds.parent(body, holder)[0]
+        cmds.setAttr(holder + ".translateX", 5)
+        cmds.select(clear=True)
+        out_dir = os.path.join(self.tmp, "batch")
+        os.makedirs(out_dir)
+        maya_io.export_redux_mesh(os.path.join(out_dir, "all.mesh"),
+                                  {"batch_export": True, "export_skeleton": True, "export_materials": False})
+        self.assertTrue(os.path.exists(os.path.join(out_dir, "rig.skeleton")))
+        back = ogre_io.read_ogre_mesh(os.path.join(out_dir, "rig.mesh"), import_materials=False)
+        self.assertAlmostEqual(min(p[0] for p in back.nodes[0].mesh.positions), 4.0, places=3)  # parent's +5 baked in
+        self.assertTrue(any(back.nodes[0].mesh.weights))
+
+    def test_shader_colour_and_explicit_texture_name_reach_the_geo(self):
+        cube = cmds.polyCube(name="tst11bdy")[0]
+        shader = cmds.shadingNode("lambert", asShader=True, name="paint_mat")
+        sg = cmds.sets(renderable=True, noSurfaceShader=True, empty=True, name="paint_SG")
+        cmds.connectAttr(shader + ".outColor", sg + ".surfaceShader", force=True)
+        cmds.setAttr(shader + ".color", 0.5, 0.25, 1.0, type="double3")
+        cmds.addAttr(shader, longName="bzMaterial", dataType="string")
+        cmds.setAttr(shader + ".bzMaterial", "AVDEF4.MAP", type="string")
+        cmds.sets(cube, edit=True, forceElement=sg)
+        cmds.select(clear=True)
+        out = os.path.join(self.tmp, "col.vdf")
+        self.inject(menu.export_vdf, out)
+        geo = vdf_io.read_geo(os.path.join(self.tmp, "tst11bdy.geo"))
+        from bz98tools.bzrmodelporter.bzgeo_serializer import GeoSerializer
+
+        with open(os.path.join(self.tmp, "tst11bdy.geo"), "rb") as handle:
+            faces = GeoSerializer(handle).read().face_list
+        self.assertEqual({(f.color.r, f.color.g, f.color.b) for f in faces}, {(127, 63, 255)})
+        self.assertEqual({f.texture_name for f in faces}, {"AVDEF4.MAP"})
+        self.assertTrue(geo.nodes)
+
+    def test_skinned_mesh_exported_without_its_joints_warns(self):
+        rig = RigAndAnimationTests("test_standalone_skeleton_import_export_roundtrip")
+        rig.tmp = self.tmp
+        path, _scene = rig._skinned_mesh()
+        self.inject(menu.import_mesh, path)
+        body = [t for t in cmds.ls(type="transform", long=True) if t.endswith("|rig")][0]
+        cmds.select(body, replace=True)  # joints are not selected
+        warnings = maya_io.export_redux_mesh(os.path.join(self.tmp, "nojoints.mesh"),
+                                             {"export_skeleton": True, "export_materials": False})
+        self.assertTrue(any("skin" in w and "rig" in w for w in warnings), warnings)
 
 
 def main():

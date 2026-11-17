@@ -14,9 +14,9 @@ names are treated as LOD1 (see ``vdf_io.make_layout``).
 
 Kept as scene meta (model header attributes): structure name and type, LOD distances,
 the SDFC ``ddr`` value, death explosion effect and sound. Kept per part (authoring
-attributes): ddr, x, y, z, time, plus the VDF part fields. Not round-tripped: ANIM block and
-anything after it, damage-state data, and the same per-face fields listed in
-``vdf_io``.
+attributes): ddr, x, y, z, time, plus the VDF part fields. The ANIM block round-trips as in
+``vdf_io`` (slot table, per-part keys). Not round-tripped: chunks after the known sections (Blender
+does not write them back either), damage-state data, and the same per-face fields listed in ``vdf_io``.
 """
 
 from __future__ import annotations
@@ -104,15 +104,32 @@ def read_sdf(path: str, import_options=None) -> Scene:
         },
         quiet_duplicates=True,
     )
-    _read_anim(scene, data, position, sdf_classes)
+    position = _read_anim(scene, data, position, sdf_classes)
+    tail = _unknown_tail_tags(data, position)
+    if tail:  # import_sdf.py:71-102 captures these; export_sdf.py:585-592 reads a non-existent `.elements`, so they are lost
+        scene.warnings.append("%d unrecognised chunk(s) after the SDF sections (%s) are not kept" % (len(tail), ", ".join(tail[:6])))
     vdf_io.attach_map_textures(scene, os.path.dirname(os.path.abspath(path)), import_options)
     return scene
 
 
-def _read_anim(scene: Scene, data: bytes, position: int, sdf_classes) -> None:
-    """The ANIM block after the GEO table (import_sdf.py's reader), onto the nodes."""
+def _unknown_tail_tags(data: bytes, position: int) -> List[str]:
+    """Tags of the chunks after the known sections other than EXIT (import_sdf.py:71-102 walks them the same way)."""
+    import struct
+
+    tags = []
+    while position + 8 <= len(data):
+        tag = data[position:position + 4]
+        declared = struct.unpack_from("<i", data, position + 4)[0]
+        if tag != b"EXIT":
+            tags.append(tag.decode("ascii", "ignore"))
+        position += max(8, declared) if declared >= 8 and position + declared <= len(data) else len(data)
+    return tags
+
+
+def _read_anim(scene: Scene, data: bytes, position: int, sdf_classes) -> int:
+    """The ANIM block after the GEO table (import_sdf.py's reader), onto the nodes; returns the position after it."""
     if data[position:position + 4] != b"ANIM":
-        return
+        return position
     header = sdf_classes.ANIMHeader()
     position = header.Read(data, position)
 
@@ -131,6 +148,7 @@ def _read_anim(scene: Scene, data: bytes, position: int, sdf_classes) -> None:
     translations2 = many(sdf_classes.ANIMTranslation2, header.translation2count)
     positions = many(sdf_classes.ANIMPosition, header.positioncount)
     anim_io.read_anim(scene, header, elements, orientations, rotations, translations2, positions)
+    return position
 
 
 def write_sdf(scene: Scene, path: str, write_geos: bool = True, face_plane_mode: str = "STOCK",
@@ -184,7 +202,7 @@ def write_sdf(scene: Scene, path: str, write_geos: bool = True, face_plane_mode:
     sgeo.sectionlength = geocount * SDF_RECORD_SIZE * SDF_BAND_COUNT + sgeo.binlength
 
     block = anim_io.build_anim(
-        layout.entries, layout.matrices, meta, sdf_classes, os.path.splitext(os.path.basename(path))[0]
+        layout.entries, layout.matrices, meta, sdf_classes, os.path.splitext(os.path.basename(path))[0], warnings
     ) if export_animations else None
     with open(path, "wb") as handle:
         sdf_classes.SDFHeader().Write(handle, 0)

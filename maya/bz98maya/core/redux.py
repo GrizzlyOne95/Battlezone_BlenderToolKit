@@ -20,6 +20,7 @@ transform), and vertex colours are not exported.
 
 from __future__ import annotations
 
+import dataclasses
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -183,14 +184,17 @@ def _baked(node: Node, world: np.ndarray, apply_transform: bool):
 MAX_INFLUENCES = 3  # Blender's _collect_vertex_bone_assignments keeps the three heaviest
 
 
-def bone_assignments(weights, id_map: Dict[int, int], renormalize: bool = True):
+def bone_assignments(weights, id_map: Dict[int, int], renormalize: bool = True, dropped: Optional[List[int]] = None):
     """Blender's ``_collect_vertex_bone_assignments`` on neutral weights: [(vertex, bone id, weight)].
 
     Per vertex the influences are sorted by weight, cut to the three heaviest and, with
     ``renormalize``, scaled to sum to one (zero weights dropped); bone ids go through ``id_map``.
+    Influences on bones outside ``id_map`` are dropped and counted in ``dropped[0]`` when given.
     """
     out = []
     for vertex, influences in enumerate(weights):
+        if dropped is not None:
+            dropped[0] += sum(1 for b, w in influences if b not in id_map and w > 0)
         valid = [(id_map[b], float(w)) for b, w in influences if b in id_map]
         valid.sort(key=lambda item: item[1], reverse=True)
         valid = valid[:MAX_INFLUENCES]
@@ -203,8 +207,10 @@ def bone_assignments(weights, id_map: Dict[int, int], renormalize: bool = True):
     return out
 
 
-def build_submeshes(scene: Scene, options: Dict[str, Any], id_map: Optional[Dict[int, int]] = None) -> List[Tuple[Any, str]]:
+def build_submeshes(scene: Scene, options: Dict[str, Any], id_map: Optional[Dict[int, int]] = None,
+                    warnings: Optional[List[str]] = None) -> List[Tuple[Any, str]]:
     """``[(SubMeshData, material name)]`` for every mesh in the scene, as Blender's collector."""
+    warnings = warnings if warnings is not None else []
     kenshi, pose_compat = _modules()
     tangent_format = map_tangent_format(
         options.get("export_tangents", True), options.get("export_binormals", True),
@@ -213,6 +219,7 @@ def build_submeshes(scene: Scene, options: Dict[str, Any], id_map: Optional[Dict
     apply_transform = bool(options.get("apply_transform", True))
     worlds = scene_world_matrices(scene)
     out = []
+    skinned_warned: set = set()
     for node in scene.nodes:
         mesh = node.mesh
         if mesh is None or not mesh.faces:
@@ -256,10 +263,19 @@ def build_submeshes(scene: Scene, options: Dict[str, Any], id_map: Optional[Dict
             out_indices = sub.set_vertex(optimize=bool(options.get("mesh_optimize", True)), **arrays)
             assignments = []
             if id_map is not None and mesh.weights is not None:
+                dropped = [0]
                 assignments = [
                     kenshi.BoneAssignmentData(v, b, w)
-                    for v, b, w in bone_assignments(mesh.weights, id_map, options.get("renormalize_weights", True))
+                    for v, b, w in bone_assignments(mesh.weights, id_map, options.get("renormalize_weights", True),
+                                                    dropped)
                 ]
+                if dropped[0] and node.name not in skinned_warned:
+                    skinned_warned.add(node.name)
+                    warnings.append("%s: %d skin influence(s) on joints outside the exported skeleton dropped%s" % (
+                        node.name, dropped[0], " and the rest renormalised" if options.get("renormalize_weights", True) else ""))
+            elif mesh.weights is not None and node.name not in skinned_warned:
+                skinned_warned.add(node.name)
+                warnings.append("%s: skinned mesh exported without its skin weights (no skeleton is exported)" % node.name)
             sub.set_bone_assignments(assignments, out_indices)
             out.append((sub, sub.material))
     return out
@@ -303,11 +319,13 @@ def write_bzr_mesh(scene: Scene, path: str, options: Optional[Dict[str, Any]] = 
     if options.get("batch_export"):
         written = 0
         folder = os.path.dirname(path) or "."
+        worlds = scene_world_matrices(scene)
         for node in scene.nodes:
             if node.mesh is None or not node.mesh.faces:
                 continue
-            single = Scene(nodes=scene.nodes, materials=scene.materials)
-            single.nodes = [n for n in scene.nodes if n is node]
+            # Each file is one part at its world transform (as the single-file path bakes it), with the shared skeleton.
+            alone = dataclasses.replace(node, parent=None, matrix=worlds[node.name])
+            single = Scene(nodes=[alone], materials=scene.materials, skeleton=scene.skeleton)
             sub_options = dict(options, batch_export=False)
             warnings += write_bzr_mesh(single, os.path.join(folder, node.name + ".mesh"), sub_options)
             written += 1
@@ -321,7 +339,7 @@ def write_bzr_mesh(scene: Scene, path: str, options: Optional[Dict[str, Any]] = 
         from . import skeleton_io
 
         id_map = skeleton_io.renumbered(skeleton)
-    submeshes = build_submeshes(scene, options, id_map)
+    submeshes = build_submeshes(scene, options, id_map, warnings)
     if not submeshes:
         raise ValueError("nothing to export: no mesh geometry in the selection")
     serializer = kenshi_compat.KenshiObjectSerializer()

@@ -126,7 +126,7 @@ def read_anim(scene: Scene, header, elements, orientations, rotations, translati
 # --- write ---------------------------------------------------------------------------
 
 def build_anim(layout_entries: Dict[str, Node], matrices: Dict[str, list], meta: Dict[str, object],
-               classes, name: str):
+               classes, name: str, warnings: Optional[List[str]] = None):
     """Records for the ANIM block: (header, elements, orientations, rotations, translation2, positions).
 
     ``classes`` is the module (``vdf_classes`` or ``sdf_classes``) providing the ANIM* section classes.
@@ -169,6 +169,8 @@ def build_anim(layout_entries: Dict[str, Node], matrices: Dict[str, list], meta:
         rot_keys = sorted(anim.get("rot", []), key=lambda k: k[0])
         pos_keys = sorted(anim.get("pos", []), key=lambda k: k[0])
         scale_keys = sorted(anim.get("scale", [])) if use_t2 else []
+        if anim.get("scale") and not use_t2 and warnings is not None:  # export_vdf.py:578: only written with the Translation2 track on
+            warnings.append("%s: scale keys are not written (enable use_translation2)" % name_key)
         orientation.rotationindex = len(rotations) if rot_keys else 0
         orientation.rotationcount = len(rot_keys)
         orientation.positionindex = len(positions) if pos_keys else 0
