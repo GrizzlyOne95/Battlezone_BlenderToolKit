@@ -356,9 +356,13 @@ def write_bzr_mesh(scene: Scene, path: str, options: Optional[Dict[str, Any]] = 
     if options.get("export_materials", True):
         materials: Dict[str, dict] = {}
         for _sub, name in submeshes:
+            info = scene.materials.get(name) or {}
+            if info.get("not_in_source"):
+                warnings.append("material %s is not defined in the source .material; not written (the game's own is used)" % name)
+                continue
             materials.setdefault(name, default_material_info(scene, name))
         material.write_material_file(
-            path, materials, bool(options.get("overwrite_material")), bool(options.get("copy_textures"))
+            path, materials, bool(options.get("overwrite_material")), bool(options.get("copy_textures")), warnings
         )
     return warnings
 

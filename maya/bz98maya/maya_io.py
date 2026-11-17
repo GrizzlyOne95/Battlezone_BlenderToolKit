@@ -19,6 +19,7 @@ Materials carry ``bzMaterial`` with the original (possibly Maya-illegal) name.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from typing import Dict, List, Optional
@@ -180,8 +181,19 @@ def _shading_group(material: str, texture_folder: Optional[str], cache: Dict[str
             cmds.connectAttr("%s.%s" % (place, attr), "%s.%s" % (file_node, attr), force=True)
         cmds.setAttr(file_node + ".fileTextureName", texture, type="string")
         cmds.connectAttr(file_node + ".outColor", shader + ".color", force=True)
+    source = info.get("source")
+    if source:  # the parsed .material, so an export reproduces it (see core/material.py)
+        colour = _colour_plug(shader)
+        state = dict(source, colour=_plug_colour(colour, [1.0] * 3) if colour else [1.0] * 3,
+                     texture=os.path.basename(texture) if texture else "")
+        _add_attr(shader, SOURCE_MATERIAL_ATTR, json.dumps(state))
+    elif info.get("not_in_source"):
+        _add_attr(shader, "bzNotInSource", 1)
     cache[material] = sg
     return sg
+
+
+SOURCE_MATERIAL_ATTR = "bzSourceMaterial"
 
 
 def _colour_plug(shader: str, names=("color", "baseColor")) -> Optional[str]:
@@ -587,6 +599,18 @@ def _plug_colour(plug: str, fallback):
     return [float(v) for v in (value[0] if isinstance(value, list) else value)][:3] or fallback
 
 
+def _source_with_changes(state: dict, info: dict, colour_plug) -> dict:
+    """The imported .material text plus what the user changed on the shader since the import."""
+    source = {"raw": state["raw"], "preamble": state.get("preamble", "")}
+    now = info["diffuse"]
+    if colour_plug and any(abs(a - b) > 1e-3 for a, b in zip(now, state.get("colour", now))):
+        source["diffuse_override"] = list(now)
+    texture = os.path.basename(info.get("texture_path") or "")
+    if texture and texture != state.get("texture", texture):
+        source["texture_override"] = texture
+    return source
+
+
 def collect_materials(scene: Scene) -> Dict[str, dict]:
     """Blender's ``bCollectMaterialData`` for the exported meshes: colours and the image texture.
 
@@ -604,6 +628,8 @@ def collect_materials(scene: Scene) -> Dict[str, dict]:
         info = {"ambient": [1.0] * 3, "diffuse": [1.0] * 3, "specular": [0.0] * 3, "emissive": [0.0] * 3}
         if shaders:
             shader = shaders[0]
+            if _get_attr(shader, "bzNotInSource"):
+                info["not_in_source"] = True
             explicit = _get_attr(shader, "bzMaterial")  # the Battlezone texture name typed on the material
             if explicit:
                 info["map_texture"] = explicit
@@ -620,6 +646,9 @@ def collect_materials(scene: Scene) -> Dict[str, dict]:
                 if path:
                     info["texture"] = os.path.basename(path)
                     info["texture_path"] = path
+            stored = _get_attr(shaders[0], SOURCE_MATERIAL_ATTR)
+            if stored:
+                info["source"] = _source_with_changes(json.loads(stored), info, colour)
         out[name] = info
     return out
 

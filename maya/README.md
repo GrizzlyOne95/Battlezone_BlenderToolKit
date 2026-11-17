@@ -139,6 +139,19 @@ then the stock ZFS archive) with the toolkit's own palette and decoder code, and
   idleEject / idleElect spelling). The rest of Blender's pilot-animation *patch* workflow (writing a patched stock skeleton from
   Actions) is not ported: it is Blender-Action centric and Maya clips are exported with the normal skeleton export.
 
+### `.material` files
+
+- A material imported from a `.material` is written back as it was: its parent (`BZBase`, `BZBaseCockpit`, ...), every
+  `set_texture_alias` with its exact file name and case, and every `set $...` value. The parsed block is kept on the shader
+  (`bzSourceMaterial`); only what you change in Maya is rewritten (a new base colour changes `$diffuse`, a different file texture
+  changes the `DiffuseMap` alias, with a warning when that file is not next to the `.material`). Materials the stock `.material`
+  does not define (such as `svheadlight00`) are not written, so the game keeps using its own.
+- A material with no source (made in Maya, or a new name) gets Blender's text (`xSaveMaterialData`: derived `_d` / `_n` / `_S` / `_e`
+  names, `$diffuse` = `$ambient` = `$specular` = the shader colour), except that a derived texture that is not next to the export (or
+  the shader's own file texture) is left out with a warning, so BZBase's default applies instead of a missing file.
+- Blender's toolkit has the same problem in the other direction: its writer rebuilds every alias, colour and the parent from the
+  material name, so a stock `abbarr.material` does not survive a Blender round trip either (`ogretools/OgreExport.py:886`, `xSaveMaterialData`).
+
 ### Authoring rules for VDF export
 
 - Part names are at most 8 characters with the LOD digit (1-3) as the 4th character, for example

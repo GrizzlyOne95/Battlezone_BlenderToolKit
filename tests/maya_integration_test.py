@@ -1016,6 +1016,11 @@ class ReduxExportTests(MayaCase):
         out_dir = os.path.join(self.tmp, "m")
         os.makedirs(out_dir)
         mesh_path = os.path.join(out_dir, "model.mesh")
+        from bz98maya.core import material as material_core
+
+        for mat_name, tex in (("hull", None), ("skin_d", "skin_d.png")):  # the derived maps exist, so Blender's text is written
+            for derived in material_core.derive_map_names(mat_name, tex):
+                open(os.path.join(out_dir, derived), "wb").close()
         maya_io.export_redux_mesh(mesh_path, {"copy_textures": True})
         mats = maya_io.collect_materials(maya_io.collect_scene())
         np.testing.assert_allclose(mats["hull"]["diffuse"], [0.2, 0.4, 0.6], atol=1e-6)
@@ -1498,6 +1503,56 @@ class ReviewFixMayaTests(MayaCase):
         warnings = maya_io.export_redux_mesh(os.path.join(self.tmp, "nojoints.mesh"),
                                              {"export_skeleton": True, "export_materials": False})
         self.assertTrue(any("skin" in w and "rig" in w for w in warnings), warnings)
+
+
+class SourceMaterialMayaTests(MayaCase):
+    def _import_stock(self, text, face_materials):
+        from bz98maya.core import redux
+        from bz98maya.core.model import KIND_PART, Node, Scene
+
+        cube = vdf_io.box_mesh((-1, -1, -1), (1, 1, 1))
+        cube.face_materials = face_materials
+        src = os.path.join(self.tmp, "src")
+        os.makedirs(src)
+        redux.write_bzr_mesh(Scene(nodes=[Node("m", None, axes.identity4(), KIND_PART, cube, {})]),
+                             os.path.join(src, "m.mesh"), {"export_materials": False})
+        with open(os.path.join(src, "m.material"), "w", encoding="utf-8") as handle:
+            handle.write(text)
+        self.inject(menu.import_mesh, os.path.join(src, "m.mesh"))
+
+    def _export(self):
+        dst = os.path.join(self.tmp, "dst")
+        os.makedirs(dst, exist_ok=True)
+        cmds.select(clear=True)
+        warnings = maya_io.export_redux_mesh(os.path.join(dst, "m.mesh"), {"export_materials": True, "overwrite_material": True})
+        with open(os.path.join(dst, "m.material"), encoding="utf-8") as handle:
+            return handle.read(), warnings
+
+    def test_stock_materials_round_trip_through_maya(self):
+        from test_maya_core import STOCK_ABBARR_MATERIAL, STOCK_SVTANK_MATERIAL, _material_blocks
+
+        self._import_stock(STOCK_SVTANK_MATERIAL, ["svtank00"] * 2 + ["svtank01"] * 2 + ["svheadlight00"] * 2)
+        text, warnings = self._export()
+        self.assertEqual(_material_blocks(text), _material_blocks(STOCK_SVTANK_MATERIAL))  # cockpit parent, exact names
+        self.assertTrue(any("svheadlight00" in w for w in warnings), warnings)
+        cmds.file(new=True, force=True)
+        shutil.rmtree(os.path.join(self.tmp, "src"))
+        shutil.rmtree(os.path.join(self.tmp, "dst"))
+        self._import_stock(STOCK_ABBARR_MATERIAL, ["abbarr"] * 6)
+        text, _ = self._export()
+        self.assertEqual(_material_blocks(text), _material_blocks(STOCK_ABBARR_MATERIAL))
+
+    def test_a_colour_changed_in_maya_changes_only_the_diffuse(self):
+        from test_maya_core import STOCK_ABBARR_MATERIAL, _material_blocks
+
+        self._import_stock(STOCK_ABBARR_MATERIAL, ["abbarr"] * 6)
+        shader = cmds.ls("abbarr_mat")[0]
+        cmds.setAttr(shader + ".color", 0.5, 0.25, 0.125, type="double3")
+        text, _ = self._export()
+        got, want = _material_blocks(text)["abbarr"], _material_blocks(STOCK_ABBARR_MATERIAL)["abbarr"]
+        self.assertEqual(got[1], want[1])
+        self.assertEqual(dict(got[2])["diffuse"], "0.5 0.25 0.125")
+        self.assertEqual({k: v for k, v in got[2] if k != "diffuse"}, {k: v for k, v in want[2] if k != "diffuse"})
 
 
 def main():

@@ -1289,9 +1289,9 @@ class MaterialFileTests(unittest.TestCase):
         os.makedirs(maya_dir)
         blender = _load_blender_ogre_export()
         blender.xSaveMaterialData(os.path.join(blender_dir, "a.mesh"), {"materials": self.MATERIALS}, True, False)
-        written = material.write_material_file(os.path.join(maya_dir, "a.mesh"), self.MATERIALS, True, False)
-        with open(os.path.join(blender_dir, "a.material"), encoding="utf-8") as a, open(written, encoding="utf-8") as b:
-            self.assertEqual(b.read(), a.read())
+        # the pure writer is Blender's text; the file writer leaves out derived textures that are not there
+        with open(os.path.join(blender_dir, "a.material"), encoding="utf-8") as a:
+            self.assertEqual(material.material_text(self.MATERIALS), a.read())
         text = material.material_text(self.MATERIALS)
         self.assertIn("material cockpit_glass : BZBaseCockpit", text)
         self.assertIn("material wing2 : BZBaseCockpit", text)  # name ends in 2
@@ -1327,7 +1327,9 @@ class MaterialFileTests(unittest.TestCase):
 
         tmp = tempfile.mkdtemp(prefix="bzmaya_mat_")
         self.addCleanup(shutil.rmtree, tmp, True)
-        path = material.write_material_file(os.path.join(tmp, "a.mesh"), self.MATERIALS, True)
+        path = os.path.join(tmp, "a.material")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(material.material_text(self.MATERIALS))
         parsed = material.parse_material_file(path)
         self.assertEqual(set(parsed), set(self.MATERIALS))
         self.assertEqual(parsed["hull_trim"]["textures"]["DiffuseMap"], "hull_trim_d.dds")
@@ -2056,6 +2058,171 @@ class ReviewFixTests(unittest.TestCase):
         with open(sdf, "ab") as handle:
             handle.write(b"ZZZZ" + struct.pack("<i", 12) + b"abcd")
         self.assertTrue(any("unrecognised chunk" in w for w in sdf_io.read_sdf(sdf).warnings))
+
+
+
+
+STOCK_ABBARR_MATERIAL = """import * from "BZBase.material"
+
+material abbarr : BZBase
+{
+	set_texture_alias DiffuseMap abbarr_D.dds
+	set_texture_alias NormalMap flat_N.dds
+	set_texture_alias SpecularMap abbarr_S.dds
+	set_texture_alias EmissiveMap abbarr_E.dds
+
+	set $diffuse "1 1 1"
+	set $ambient "1 1 1"
+	set $specular ".7 .7 .7"
+	set $shininess "127"
+}
+
+
+"""
+
+STOCK_SVTANK_MATERIAL = """import * from "BZBase.material"
+
+material svtank00 : BZBase
+{
+	set_texture_alias DiffuseMap svtank_d.dds
+	set_texture_alias NormalMap svtank_N.dds
+	set_texture_alias SpecularMap svtank_S.dds
+	set_texture_alias EmissiveMap svtank_e.dds
+
+	set $diffuse "1 1 1"
+	set $ambient "1 1 1"
+	set $specular ".7 .7 .7"
+	set $shininess "127"
+}
+
+
+material svtank01 : BZBaseCockpit
+{
+	set_texture_alias DiffuseMap soviet_units_cockpit_d.dds
+	set_texture_alias NormalMap soviet_units_cockpit_n.dds
+	set_texture_alias SpecularMap soviet_units_cockpit_S.dds
+	set_texture_alias EmissiveMap soviet_units_cockpit_e.dds
+
+	set $diffuse "1 1 1"
+	set $ambient "1 1 1"
+	set $specular ".7 .7 .7"
+	set $shininess "127"
+}
+"""
+
+
+def _material_blocks(text):
+    """name -> (parent, [(alias, file)], [(param, value)]): what two .material texts must agree on."""
+    import re
+
+    out = {}
+    for match in re.finditer(r"material\s+(\S+)\s*:\s*(\S+)\s*\{(.*?)\}", text, re.S):
+        body = match.group(3)
+        out[match.group(1)] = (
+            match.group(2),
+            re.findall(r"set_texture_alias\s+(\w+)\s+(\S+)", body),
+            re.findall(r'set\s+\$(\w+)\s+"([^"]*)"', body),
+        )
+    return out
+
+
+class SourceMaterialTests(unittest.TestCase):
+    """A material read from a .material comes back as it was (parent, aliases, exact file names, values)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="bzmaya_srcmat_")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def _sourced(self, text, name="stock.material"):
+        from bz98maya.core import material
+
+        path = os.path.join(self.tmp, name)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        parsed = material.parse_material_file(path)
+        return {n: {"source": {"raw": i["raw"], "preamble": i["preamble"]}, "diffuse": [1, 1, 1]} for n, i in parsed.items()}
+
+    def _export(self, materials, folder_name="out"):
+        from bz98maya.core import material
+
+        folder = os.path.join(self.tmp, folder_name)
+        os.makedirs(folder, exist_ok=True)
+        warnings = []
+        path = material.write_material_file(os.path.join(folder, "m.mesh"), materials, True, False, warnings)
+        with open(path, encoding="utf-8") as handle:
+            return handle.read(), warnings
+
+    def test_stock_abbarr_and_svtank_materials_round_trip_exactly(self):
+        for text in (STOCK_ABBARR_MATERIAL, STOCK_SVTANK_MATERIAL):
+            out, warnings = self._export(self._sourced(text))
+            self.assertEqual(_material_blocks(out), _material_blocks(text))
+            self.assertEqual(warnings, [])
+        out, _ = self._export(self._sourced(STOCK_SVTANK_MATERIAL))
+        self.assertIn("material svtank01 : BZBaseCockpit", out)
+        self.assertIn("set_texture_alias NormalMap flat_N.dds", self._export(self._sourced(STOCK_ABBARR_MATERIAL))[0])
+
+    def test_real_stock_materials_round_trip_when_the_game_is_installed(self):
+        import glob
+
+        root = r"C:\\Program Files (x86)\\GOG Galaxy\\Games\\Battlezone 98 Redux"
+        files = glob.glob(os.path.join(root, "**", "abbarr.material"), recursive=True)[:1] + \
+            glob.glob(os.path.join(root, "**", "svtank.material"), recursive=True)[:1]
+        if not files:
+            self.skipTest("no stock .material files found")
+        for path in files:
+            with open(path, encoding="utf-8", errors="replace") as handle:
+                text = handle.read()
+            out, _ = self._export(self._sourced(text, os.path.basename(path)))
+            self.assertEqual(_material_blocks(out), _material_blocks(text), path)
+
+    def test_only_what_the_user_changed_is_rewritten(self):
+        materials = self._sourced(STOCK_ABBARR_MATERIAL)
+        materials["abbarr"]["source"]["diffuse_override"] = [0.5, 0.25, 0.125]
+        materials["abbarr"]["source"]["texture_override"] = "Paint_D.dds"
+        out, warnings = self._export(materials)
+        got, want = _material_blocks(out)["abbarr"], _material_blocks(STOCK_ABBARR_MATERIAL)["abbarr"]
+        self.assertEqual(got[0], want[0])
+        self.assertEqual([a for a in got[1] if a[0] != "DiffuseMap"], [a for a in want[1] if a[0] != "DiffuseMap"])
+        self.assertEqual(dict(got[1])["DiffuseMap"], "Paint_D.dds")
+        self.assertEqual(dict(got[2])["diffuse"], "0.5 0.25 0.125")
+        self.assertEqual({k: v for k, v in got[2] if k != "diffuse"}, {k: v for k, v in want[2] if k != "diffuse"})
+        self.assertTrue(any("Paint_D.dds" in w for w in warnings), warnings)  # not next to the .material
+
+    def test_a_material_without_a_source_never_names_a_missing_texture(self):
+        from bz98maya.core import material
+
+        out, warnings = self._export({"newmat": {"diffuse": [0.5, 0.5, 0.5]}}, "fresh")
+        self.assertNotIn("set_texture_alias", out)
+        self.assertTrue(any("not found next to the .material" in w for w in warnings), warnings)
+        folder = os.path.join(self.tmp, "fresh")
+        open(os.path.join(folder, "NewMat_D.dds"), "wb").close()
+        out, _ = self._export({"newmat": {"diffuse": [0.5, 0.5, 0.5]}}, "fresh")
+        self.assertIn("set_texture_alias DiffuseMap NewMat_D.dds", out)  # the real file's case
+        self.assertNotIn("NormalMap", out)
+        self.assertIn("newmat_d.dds", material.material_text({"newmat": {}}))  # Blender's own text is unchanged
+
+    def test_materials_missing_from_the_source_file_are_not_redefined(self):
+        from bz98maya.core import ogre_io, redux
+        from bz98maya.core.model import KIND_PART, Node, Scene
+
+        cube = vdf_io.box_mesh((-1, -1, -1), (1, 1, 1))
+        cube.face_materials = ["abbarr"] * 3 + ["svheadlight00"] * 3
+        scene = Scene(nodes=[Node("m", None, axes.identity4(), KIND_PART, cube, {})])
+        src = os.path.join(self.tmp, "src")
+        os.makedirs(src)
+        redux.write_bzr_mesh(scene, os.path.join(src, "m.mesh"), {"export_materials": False})
+        with open(os.path.join(src, "m.material"), "w", encoding="utf-8") as handle:
+            handle.write(STOCK_ABBARR_MATERIAL)
+        back = ogre_io.read_ogre_mesh(os.path.join(src, "m.mesh"))
+        self.assertTrue(back.materials["svheadlight00"]["not_in_source"])
+        dst = os.path.join(self.tmp, "dst")
+        os.makedirs(dst)
+        warnings = redux.write_bzr_mesh(back, os.path.join(dst, "m.mesh"), {})
+        with open(os.path.join(dst, "m.material"), encoding="utf-8") as handle:
+            text = handle.read()
+        self.assertEqual(set(_material_blocks(text)), {"abbarr"})
+        self.assertEqual(_material_blocks(text), _material_blocks(STOCK_ABBARR_MATERIAL))
+        self.assertTrue(any("svheadlight00" in w and "not defined" in w for w in warnings), warnings)
 
 
 

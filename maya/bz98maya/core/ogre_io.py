@@ -115,8 +115,11 @@ def _attach_materials(scene: Scene, material_path: str, folder: str) -> None:
         for name in {m for m in node.mesh.face_materials if m} if node.mesh else ():
             info = parsed.get(name)
             if info is None:
+                if parsed:  # the stock .material does not define it (the game resolves it elsewhere): do not redefine it
+                    scene.materials.setdefault(name, {})["not_in_source"] = True
                 continue
             entry = scene.materials.setdefault(name, {})
+            entry["source"] = {"raw": info["raw"], "preamble": info["preamble"], "template": info["template"]}
             if info.get("diffuse"):
                 entry["diffuse"] = list(info["diffuse"])
             texture = info["textures"].get("DiffuseMap")
