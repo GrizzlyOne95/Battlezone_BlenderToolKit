@@ -422,6 +422,96 @@ def _test_pilot_ui_baked_replacement(temp_dir: Path):
     print("[PASS] Blender 5.2 pilot-animation bake helper through pure facade")
 
 
+_SMOKE_MATERIAL = "\n".join(
+    [
+        'import * from "BZBase.material"',
+        "",
+        "material smoke_cockpit : BZBaseCockpit",
+        "{",
+        "\tset_texture_alias DiffuseMap smoke_cockpit_D.png",
+        "\tset_texture_alias NormalMap flat_N.dds",
+        "\tset_texture_alias SpecularMap black.dds",
+        "\tset_texture_alias EmissiveMap black.dds",
+        "",
+        '\tset $diffuse "1 1 1"',
+        '\tset $glow "1 1 1"',
+        "}",
+        "",
+    ]
+)
+
+
+def _test_material_source_roundtrip(temp_dir: Path):
+    """Import a mesh with a stock-style .material, export it, and keep parent + aliases."""
+    src_dir = temp_dir / "mat_src"
+    out_dir = temp_dir / "mat_out"
+    src_dir.mkdir()
+    out_dir.mkdir()
+
+    _clear_scene()
+    obj = _triangle("smoke_cockpit_mesh")
+    obj.data.materials.append(bpy.data.materials.new("smoke_cockpit"))
+    _select_only(obj)
+    mesh_path = src_dir / "smoke_cockpit.mesh"
+    operator = _Operator()
+    result = backend.export_mesh(
+        operator, bpy.context, str(mesh_path), _legacy_forbidden, **_export_kwargs()
+    )
+    if result != {"FINISHED"} or not mesh_path.is_file():
+        raise AssertionError(f"material fixture mesh export failed: {result} {operator.messages}")
+    (src_dir / "smoke_cockpit.material").write_text(_SMOKE_MATERIAL, encoding="utf-8")
+
+    _clear_scene()
+    for material in list(bpy.data.materials):
+        bpy.data.materials.remove(material)
+    operator = _Operator()
+    result = backend.import_mesh(
+        operator,
+        bpy.context,
+        str(mesh_path),
+        _legacy_forbidden,
+        xml_converter=None,
+        keep_xml=False,
+        import_normals=True,
+        normal_mode="custom",
+        import_shapekeys=True,
+        import_animations=False,
+        round_frames=True,
+        use_selected_skeleton=False,
+        import_materials=True,
+    )
+    if result != {"FINISHED"}:
+        raise AssertionError(f"material fixture import failed: {result} {operator.messages}")
+    material = bpy.data.materials.get("smoke_cockpit")
+    if material is None or "bz_material_source" not in material:
+        raise AssertionError("import did not store the .material source on the Blender material")
+
+    imported = [o for o in bpy.data.objects if o.type == "MESH"]
+    _select_only(*imported)
+    out_mesh = out_dir / "smoke_cockpit.mesh"
+    operator = _Operator()
+    result = backend.export_mesh(
+        operator,
+        bpy.context,
+        str(out_mesh),
+        _legacy_forbidden,
+        **_export_kwargs(export_materials=True, overwrite_material=True),
+    )
+    if result != {"FINISHED"}:
+        raise AssertionError(f"material round-trip export failed: {result} {operator.messages}")
+    text = (out_dir / "smoke_cockpit.material").read_text(encoding="utf-8")
+    for needle in (
+        "material smoke_cockpit : BZBaseCockpit",
+        "set_texture_alias DiffuseMap smoke_cockpit_D.png",
+        "set_texture_alias NormalMap flat_N.dds",
+        "set_texture_alias SpecularMap black.dds",
+        'set $glow "1 1 1"',
+    ):
+        if needle not in text:
+            raise AssertionError(f"exported .material lost {needle!r}:\n{text}")
+    print("[PASS] Blender 5.2 .material source round trip")
+
+
 def main():
     print("BLENDER_VERSION", bpy.app.version_string)
     if bpy.app.version[:2] != (5, 2):
@@ -433,6 +523,7 @@ def main():
     _test_batch_export(temp_dir)
     _test_visual_keying_skeleton_bake(temp_dir)
     _test_pilot_ui_baked_replacement(temp_dir)
+    _test_material_source_roundtrip(temp_dir)
     print("BLENDER 5.2 PURE OGRE SMOKE PASSED")
 
 

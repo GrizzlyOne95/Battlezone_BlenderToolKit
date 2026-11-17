@@ -883,8 +883,25 @@ def xSaveMeshData(meshData, filepath, export_skeleton):
         fileWr.write(xDoc.toxml(encoding="utf-8"))
 
 
+def _material_source_module():
+    try:
+        from . import material_source
+    except ImportError:  # loaded by file path (tests), not as part of the package
+        import importlib.util
+
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "material_source.py")
+        spec = importlib.util.spec_from_file_location("bz98_material_source", path)
+        material_source = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(material_source)
+    return material_source
+
+
 def xSaveMaterialData(filepath, meshData, overwriteMaterialFlag, copyTextures):
-    """Write Battlezone-style .material using BZBase templates."""
+    """Write Battlezone-style .material using BZBase templates.
+
+    A material with a ``source`` (its imported .material block, see material_source.py) is written
+    from that block with only the user's changes applied; any other is generated as before.
+    """
     if "materials" not in meshData:
         return
     allMatData = meshData["materials"]
@@ -934,9 +951,18 @@ def xSaveMaterialData(filepath, meshData, overwriteMaterialFlag, copyTextures):
     if not isMaterial or overwriteMaterialFlag:
         with open(matFile, "w", encoding="utf-8") as fileWr:
             # Header
-            fileWr.write('import * from "BZBase.material"\n\n')
+            msrc = _material_source_module()
+            fileWr.write(msrc.preamble_for(allMatData))
 
             for matName, matInfo in allMatData.items():
+                if matInfo.get("source"):
+                    if matInfo["source"].get("local_parent"):
+                        print(
+                            "WARNING: material %s: parent %s is defined in its source .material "
+                            "and is not carried over" % (matName, matInfo["source"]["local_parent"])
+                        )
+                    fileWr.write(msrc.block_for(matInfo, matName))
+                    continue
                 base_template = guess_bz_base_template(matName)
 
                 # Colors (fall back to sane defaults if missing)
@@ -1457,6 +1483,13 @@ def bCollectMaterialData(blenderMeshData, selectedObjects):
                 matInfo["texture"] = tex_name
             if tex_path:
                 matInfo["texture_path"] = tex_path
+
+            # imported .material block: reproduce it, changing only what the user changed
+            source = _material_source_module().source_info(
+                mat, diffuse, tex_path or tex_name or ""
+            )
+            if source:
+                matInfo["source"] = source
 
 
 def XMLtoOGREConvert(

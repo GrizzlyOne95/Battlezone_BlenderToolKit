@@ -84,6 +84,7 @@ def load(
             normal_mode=normal_mode,
             import_shapekeys=import_shapekeys,
             create_materials=create_materials,
+            mesh_path=filepath,
         )
 
         if import_animations and skeleton_data is not None and selected_skeleton is not None:
