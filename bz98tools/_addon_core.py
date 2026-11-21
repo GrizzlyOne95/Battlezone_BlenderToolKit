@@ -5918,7 +5918,26 @@ class ImportVDF(bpy.types.Operator, ImportHelper):
                 "split_mode",
             )
         )
-        return import_vdf.load(context, **keywords)
+        meshes_before = _count_mesh_objects()
+        result = import_vdf.load(context, **keywords)
+        if getattr(self, "ImportGEOs", True):
+            _warn_if_no_geometry(self, meshes_before, "VDF")
+        return result
+
+
+def _count_mesh_objects():
+    return sum(1 for obj in bpy.data.objects if obj.type == "MESH")
+
+
+def _warn_if_no_geometry(operator, meshes_before, kind):
+    if _count_mesh_objects() > meshes_before:
+        return
+    operator.report(
+        {"WARNING"},
+        f"No GEO parts found for this {kind}: none beside it, in the .MAP "
+        "Texture ZFS, or in a bzone.zfs in a parent folder. Set .MAP Texture "
+        "ZFS to the game's bzone.zfs and import again.",
+    )
 
 
 class ImportSDF(bpy.types.Operator, ImportHelper):
@@ -5977,7 +5996,10 @@ class ImportSDF(bpy.types.Operator, ImportHelper):
                 "split_mode",
             )
         )
-        return import_sdf.load(context, **keywords)
+        meshes_before = _count_mesh_objects()
+        result = import_sdf.load(context, **keywords)
+        _warn_if_no_geometry(self, meshes_before, "SDF")
+        return result
 
 
 class ExportGEO(bpy.types.Operator, ExportHelper):

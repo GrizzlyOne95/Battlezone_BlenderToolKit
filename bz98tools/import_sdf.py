@@ -240,6 +240,10 @@ def load(
 
         # Load all the geos we now know about.
         OBJList = {}
+        part_zfs_list = import_geo.part_zfs_sources(
+            MapTextureZFS, os.path.dirname(filepath)
+        )
+        part_zfs = part_zfs_list[0] if part_zfs_list else ""
         currentlod = 0
         currentgeo = 0
         skipped_slots = 0
@@ -258,6 +262,21 @@ def load(
                                 )
                                 break
 
+                # Mods often ship only the SDF; the game reads parts from bzone.zfs.
+                if not os.path.exists(geofilename):
+                    extracted, source_zfs = import_geo.extract_part_geo(
+                        GEO.name + ".geo", part_zfs_list
+                    )
+                    if extracted:
+                        geofilename = extracted
+                        _add_import_diagnostic(
+                            scene,
+                            "INFO",
+                            "SGEO",
+                            GEO.name,
+                            f"GEO not beside the SDF; loaded from {os.path.basename(source_zfs)}.",
+                        )
+
                 newobj = None
                 try:
                     newobj = import_geo.geoload(
@@ -267,7 +286,7 @@ def load(
                         ImportMapTextures=ImportMapTextures,
                         map_base_dir=os.path.dirname(filepath),
                         MapTextureDirectory=MapTextureDirectory,
-                        MapTextureZFS=MapTextureZFS,
+                        MapTextureZFS=part_zfs,
                     )
                 except Exception as exc:
                     _add_import_diagnostic(
