@@ -3,3 +3,4 @@ __pycache__/
 dist/
 .venv-ogre52/
 artifacts/ogre-fastpath-acceptance/
+bz98tools/_cache/

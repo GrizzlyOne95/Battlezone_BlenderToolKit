@@ -324,6 +324,8 @@ def load(
     weapon_hardpoints = 0
     imported_variant_count = 0
     extra_band_samples = []
+    part_zfs_list = import_geo.part_zfs_sources(MapTextureZFS, os.path.dirname(filepath))
+    part_zfs = part_zfs_list[0] if part_zfs_list else ""
 
     if ImportGEOs:
         lod_bands = ((0, 1), (4, 2), (8, 3))
@@ -347,6 +349,14 @@ def load(
                                 )
                                 break
 
+                # Mods often ship only the VDF; the game reads parts from bzone.zfs.
+                if not os.path.exists(geofilename):
+                    extracted, _source_zfs = import_geo.extract_part_geo(
+                        GEO.name + ".geo", part_zfs_list
+                    )
+                    if extracted:
+                        geofilename = extracted
+
                 newobj = None
 
                 # Load mesh GEO if file exists.
@@ -359,7 +369,7 @@ def load(
                             ImportMapTextures=ImportMapTextures,
                             map_base_dir=os.path.dirname(filepath),
                             MapTextureDirectory=MapTextureDirectory,
-                            MapTextureZFS=MapTextureZFS,
+                            MapTextureZFS=part_zfs,
                         )
                     except Exception as e:
                         print(

@@ -415,6 +415,67 @@ def _extract_map_from_zfs(map_name, zfs_path):
     return None
 
 
+def find_stock_zfs(start_dir, max_levels=4):
+    """Find the game's bzone.zfs in start_dir or a parent (mods\\<id> -> game root)."""
+    directory = os.path.abspath(start_dir or "")
+    for _ in range(max_levels + 1):
+        candidate = os.path.join(directory, "bzone.zfs")
+        if os.path.isfile(candidate):
+            return candidate
+        parent = os.path.dirname(directory)
+        if parent == directory:
+            break
+        directory = parent
+    return ""
+
+
+def part_zfs_sources(user_zfs, model_dir):
+    """ZFS archives to search for a model's part GEOs: the user's first, then stock."""
+    sources = []
+    for path in (user_zfs, find_stock_zfs(model_dir)):
+        if path and path not in sources:
+            sources.append(path)
+    return sources
+
+
+def extract_part_geo(geo_filename, zfs_sources):
+    """Extract a part GEO from the first archive that has it; return (path, zfs)."""
+    for zfs_path in zfs_sources:
+        extracted = extract_file_from_zfs(geo_filename, zfs_path)
+        if extracted:
+            return extracted, zfs_path
+    return None, ""
+
+
+def extract_file_from_zfs(filename, zfs_path):
+    """Extract one file from a ZFS into the import cache; return its path or None."""
+    zfs_path = bpy.path.abspath(zfs_path or "")
+    if not filename or not zfs_path or not os.path.exists(zfs_path):
+        return None
+
+    cache_dir = _get_import_texture_cache_dir(zfs_path)
+    cached = os.path.join(cache_dir, filename)
+    if os.path.exists(cached):
+        return cached
+
+    try:
+        from .zfs_reader import ZFSReader
+
+        reader = ZFSReader(zfs_path)
+        reader.open()
+        try:
+            extracted = reader.extract(filename, cache_dir)
+        finally:
+            reader.close()
+    except Exception as exc:
+        print(f"[BZ ZFS] Failed to extract '{filename}' from ZFS '{zfs_path}': {exc}")
+        return None
+
+    if extracted and os.path.exists(extracted):
+        return extracted
+    return None
+
+
 def _resolve_map_file(map_name, base_dir, texture_dir="", texture_zfs=""):
     for directory in _build_map_search_dirs(base_dir, texture_dir):
         map_path = _find_map_file(map_name, directory)
