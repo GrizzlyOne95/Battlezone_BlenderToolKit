@@ -7335,6 +7335,13 @@ class BZ98TOOLS_OT_open_zfs(bpy.types.Operator, ImportHelper):
         except Exception as e:
             self.report({"ERROR"}, f"Failed to open ZFS: {e}")
             return {"CANCELLED"}
+        # The file list only shows in the Properties editor, so say where.
+        self.report(
+            {"INFO"},
+            f"Indexed {len(context.scene.zfs_files)} files from "
+            f"{os.path.basename(self.filepath)}. Browse them in Properties > "
+            "Scene > Battlezone > Battlezone ZFS Explorer.",
+        )
         return {"FINISHED"}
 
 
@@ -7570,7 +7577,6 @@ class BZ98TOOLS_PT_zfs_explorer(bpy.types.Panel):
     bl_region_type = "WINDOW"
     bl_context = "scene"
     bl_parent_id = "SCENE_PT_BZ_SDFVDF"
-    bl_options = {"DEFAULT_CLOSED"}
 
     def draw(self, context):
         layout = self.layout
